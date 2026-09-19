@@ -22,6 +22,7 @@ import {
   TerminalSquare,
 } from 'lucide-react'
 import { useState } from 'react'
+import { AccessPanel } from './AccessPanel'
 import { api, type Profile, type RouterModel, type Runtime } from './api'
 import { ProfilePanel, RuntimePanel } from './SetupPanels'
 
@@ -199,6 +200,8 @@ function App() {
             <RuntimePanel runtimes={runtimes.data ?? []} />
           ) : section === 'Profiles' ? (
             <ProfilePanel profiles={profiles.data ?? []} runtimes={runtimes.data ?? []} />
+          ) : section === 'Access' ? (
+            <AccessPanel running={running} tokens={tokens.data ?? []} />
           ) : (
             <CollectionPanel section={section} runtimes={runtimes.data ?? []} profiles={profiles.data ?? []} tokens={tokens.data ?? []} />
           )}

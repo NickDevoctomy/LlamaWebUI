@@ -16,3 +16,4 @@ build/
 runtime/
 temp/
 backend/data/
+/data/

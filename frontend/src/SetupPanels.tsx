@@ -16,7 +16,7 @@ function optionalNumber(value: string) {
   return value === '' ? undefined : Number(value)
 }
 
-function Field({ label, hint, children }: {
+export function Field({ label, hint, children }: {
   label: string
   hint?: string
   children: React.ReactNode
@@ -30,7 +30,7 @@ function Field({ label, hint, children }: {
   )
 }
 
-function Dialog({ title, description, onClose, children }: {
+export function Dialog({ title, description, onClose, children }: {
   title: string
   description: string
   onClose: () => void

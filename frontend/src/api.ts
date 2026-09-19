@@ -50,6 +50,10 @@ export interface AccessToken {
   created_at: string
 }
 
+export interface CreatedAccessToken extends AccessToken {
+  token: string
+}
+
 export interface RuntimeRegistration {
   name: string
   executable_path: string
@@ -101,6 +105,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(profile),
     }),
+  createToken: (name: string, expiryNote?: string) =>
+    request<CreatedAccessToken>('/api/tokens', {
+      method: 'POST',
+      body: JSON.stringify({ name, expiry_note: expiryNote || null }),
+    }),
+  revokeToken: (tokenId: string) =>
+    request<AccessToken>(`/api/tokens/${tokenId}`, { method: 'DELETE' }),
+  opencodeConfig: () => request<Record<string, unknown>>('/api/integrations/opencode'),
   start: (runtimeId: string) =>
     request<ServerStatus>('/api/server/start', {
       method: 'POST',

@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-19
 **Branch:** `alpha`
-**Baseline commit:** `2b053918` (`feat: add unified replayable event broker`)
+**Baseline commit:** `50cf97e` (`feat: add runtime and profile setup workflows`)
 **Active phase:** Frontend implementation
 
 This is the session handoff document. Update it after each completed implementation slice. The authoritative requirements remain in [llama-web-ui-plan.md](llama-web-ui-plan.md).
@@ -19,7 +19,7 @@ The delivery plan has eight numbered phases (`0` through `7`). Work has intentio
 | 3. Local library and profiles | Partial | Profile persistence, typed Qwen options, capability validation, shard completeness, deterministic atomic single/combined preset writing | Directory scanning, GGUF metadata, logical model records, command import/export |
 | 4. Server lifecycle | In progress | Router state machine, validated argument vector, process-group launch, single-process supervisor, HTTP readiness polling, bounded log tail, crash observation, owned process-tree graceful/forced shutdown, serialized status/start/stop/restart API, durable run and restart-attempt history, safe port preflight, bounded crash recovery with rapid-failure suppression, native model list/load/unload/SSE APIs, lifecycle/model event publication through unified replayable `/api/events` | Real-runtime SSE acceptance |
 | 5. Hugging Face and downloads | Advanced partial | Search, repository manifests, quant/shard grouping, revision-pinned durable jobs, staging, size verification, atomic publication, pause/resume/cancel coordination, startup reconciliation | In-file progress, retry/backoff, periodic disk checks, checksum/ETag verification, event streaming, projector association, safe deletion, library reconciliation |
-| 6. Tokens and onboarding | Advanced partial | Show-once token creation, HMAC metadata, last-four/name/expiry-note listing, permanent revocation, atomic restricted native key file, authenticated router launch/control calls, live-model OpenCode generation | Frontend workflow; authenticated connection tests remain deferred |
+| 6. Tokens and onboarding | Advanced partial | Show-once token creation, HMAC metadata, last-four/name/expiry-note listing, permanent revocation, atomic restricted native key file, authenticated router launch/control calls, live-model OpenCode generation, Access frontend workflow | End-to-end authenticated connection tests remain blocked on an available model/profile |
 | 7. Hardening and release | Not started | Unit quality gate established | Packaging, CI/platform matrix, accessibility, backup/restore, offline behavior, operator docs |
 
 No phase has met its complete release gate yet because each gate includes later integration, frontend, packaging, or real-runtime acceptance work.
@@ -34,7 +34,7 @@ From `backend/` using `..\.venv\Scripts\python.exe`:
 ..\.venv\Scripts\python.exe -m mypy src/llamawebui
 ```
 
-Current working tree after the token and OpenCode slice:
+Backend baseline before the current frontend-only slice:
 
 - 141 tests passed.
 - 94.35% total coverage; configured floor is 90% with branch coverage enabled.
@@ -44,8 +44,8 @@ Current working tree after the token and OpenCode slice:
 
 Frontend foundation validation:
 
-- Vite production build passed; JavaScript bundle is 86.79 kB gzip.
-- Vitest/Testing Library passed: 3 component integration tests.
+- Vite production build passed; JavaScript bundle is 299.34 kB (91.45 kB gzip).
+- Vitest/Testing Library passed: 6 component integration tests.
 - Desktop 1440x1000 and mobile 390x844 browser checks passed without horizontal overflow.
 - Live FastAPI queries and responsive navigation were verified in the browser.
 - Runtime registration was accepted end to end against local llama.cpp b11053 and displayed build `0.4.1-dev` as ready.
@@ -76,11 +76,13 @@ Frontend foundation validation:
 - Model inventory, server process/runtime/log view, and persisted record views for profiles, runtimes, and access keys
 - Runtime registration dialog with executable probing, backend selection, pending/error states, and ready-state inventory
 - Basic/Advanced model profile editor with alias normalization, first-shard guidance, runtime selection, and capability-aware controls
+- Access workspace with show-once in-memory key reveal, clipboard feedback, metadata-only listing, and confirmed revocation
+- OpenCode configuration panel generated from live router model IDs with an environment-variable key placeholder
 - Desktop and mobile layouts use stable metrics, table reduction, and fixed navigation without content overlap
 
 ## Important Constraints
 
-- The backend required for the first usable UI is complete; begin frontend work next.
+- The backend APIs for discovery and downloads exist, but their frontend destinations are placeholders.
 - Do not download the real 93.7 GB Qwen group during development or tests.
 - Do not invoke executables through a shell; use argument vectors.
 - The control plane supervises native `llama-server`; it does not proxy or reimplement inference.
@@ -100,6 +102,19 @@ Frontend foundation validation:
 
 ## Next Implementation Slice
 
-Build the Access workflow: show-once token creation, copy affordance, revocation confirmation, and copyable live OpenCode configuration.
+Build the Discover and Downloads workflow: Hugging Face search, repository/quantization selection, durable download creation, and visible job controls.
+
+This is also the current acceptance blocker. A runtime can be registered and a profile can be created from a manually entered local GGUF path, but the UI cannot yet acquire or browse to a model. Consequently, the router cannot be started from a fresh installation and the live-model OpenCode flow cannot be tested end to end. Do not describe the Access slice as fully accepted until that dependency is available.
+
+For development acceptance, use a tiny test GGUF or a mocked download/catalog path; do not download the 93.7 GB target model. Once a model is available, create its profile, start the router, verify the live model ID, then verify generated OpenCode configuration and authenticated access.
+
+## Resume State
+
+- Commit `50cf97e` is the clean checked-in baseline on `alpha` and `origin/alpha`.
+- The Access/OpenCode frontend slice is complete but uncommitted in `frontend/src/AccessPanel.tsx`, `App.tsx`, `SetupPanels.tsx`, `api.ts`, `styles.css`, and `App.test.tsx`.
+- `data/llamawebui.db` and `data/generated/` contain local runtime/application state. Do not commit, delete, or reset them.
+- Six frontend tests pass, the production build passes, editor diagnostics are clean, and `git diff --check` passes.
+- At handoff, the backend is healthy on `http://127.0.0.1:18080/api/health` and Vite is serving `http://127.0.0.1:5173/`.
+- First action next session: commit the completed Access slice if desired, then implement the Discover/Downloads frontend against the existing backend APIs.
 
 Deferred backend work includes real-runtime SSE/inference acceptance, local library scanning, release installation, broader event publication, and authenticated connection tests.

@@ -21,20 +21,40 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-function renderApp(runtimeList: unknown[] = []) {
+function renderApp({
+  runtimeList = [],
+  tokenList = [],
+  serverStatus = responses['/api/server/status'],
+}: {
+  runtimeList?: unknown[]
+  tokenList?: unknown[]
+  serverStatus?: unknown
+} = {}) {
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const path = typeof input === 'string'
       ? input
       : input instanceof URL
         ? input.pathname
         : new URL(input.url).pathname
-    const payload = init?.method === 'POST'
+    const payload = init?.method === 'DELETE'
+      ? { ...tokenList[0] as object, enabled: false }
+      : init?.method === 'POST'
       ? path === '/api/runtimes'
         ? { id: 'runtime-1', name: 'Local CPU', executable_path: 'E:\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset', 'ctx-size'], usable: true }
+        : path === '/api/tokens'
+          ? { id: 'token-1', name: 'OpenCode', token: 'lwui_once_only', last_four: 'only', expiry_note: 'Rotate monthly', enabled: true, created_at: '2026-09-19T12:00:00' }
         : { id: 'profile-1', alias: 'qwen-local', runtime_id: 'runtime-1', model_path: 'E:\\models\\qwen.gguf', configuration: {}, enabled: true }
       : path === '/api/runtimes'
         ? runtimeList
-        : responses[path]
+        : path === '/api/tokens'
+          ? tokenList
+          : path === '/api/server/status'
+            ? serverStatus
+            : path === '/api/integrations/opencode'
+              ? { provider: { 'llama-web-ui': { options: { apiKey: '{env:LLAMA_WEB_UI_API_KEY}' }, models: { 'qwen-local': { name: 'qwen-local' } } } } }
+              : path === '/api/server/models'
+                ? []
+                : responses[path]
     return Promise.resolve(new Response(JSON.stringify(payload), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -75,7 +95,7 @@ describe('App', () => {
 
   it('creates a profile with only supported advanced options', async () => {
     const runtime = { id: 'runtime-1', name: 'Local CPU', executable_path: 'E:\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset', 'ctx-size'], usable: true }
-    const fetchMock = renderApp([runtime])
+    const fetchMock = renderApp({ runtimeList: [runtime] })
     fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
     const createButton = screen.getAllByRole('button', { name: 'Create profile' })[0]
     await waitFor(() => expect(createButton).toBeEnabled())
@@ -93,5 +113,50 @@ describe('App', () => {
       expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ alias: 'qwen-local', runtime_id: 'runtime-1', ctx_size: 32768 })
       expect(JSON.parse(String(call?.[1]?.body))).not.toHaveProperty('n_gpu_layers')
     })
+  })
+
+  it('shows a created key once and removes plaintext when closed', async () => {
+    const fetchMock = renderApp()
+    const writeText = vi.fn(() => Promise.resolve())
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Access' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create key' })[0])
+    fireEvent.change(screen.getByLabelText(/Key name/i), { target: { value: 'OpenCode' } })
+    fireEvent.change(screen.getByLabelText(/Expiry note/i), { target: { value: 'Rotate monthly' } })
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create key' }))
+
+    expect(await screen.findByText('lwui_once_only')).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledWith('/api/tokens', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ name: 'OpenCode', expiry_note: 'Rotate monthly' }),
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'Copy key' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('lwui_once_only'))
+    fireEvent.click(screen.getByRole('button', { name: 'I have saved the key' }))
+    expect(screen.queryByText('lwui_once_only')).not.toBeInTheDocument()
+  })
+
+  it('requires confirmation before revoking a key', async () => {
+    const token = { id: 'token-1', name: 'CI workstation', last_four: '7xQp', expiry_note: null, enabled: true, created_at: '2026-09-19T12:00:00' }
+    const fetchMock = renderApp({ tokenList: [token] })
+    fireEvent.click(screen.getByRole('button', { name: 'Access' }))
+    const revoke = await screen.findByRole('button', { name: 'Revoke CI workstation' })
+    fireEvent.click(revoke)
+    expect(screen.getByRole('heading', { name: 'Revoke access key?' })).toBeInTheDocument()
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Revoke key' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/tokens/token-1', { method: 'DELETE' }))
+  })
+
+  it('shows live OpenCode configuration without embedding a token', async () => {
+    renderApp({ serverStatus: { ...responses['/api/server/status'] as object, state: 'ready' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Access' }))
+
+    expect(await screen.findByText('opencode.jsonc')).toBeInTheDocument()
+    expect(screen.getByText(/LLAMA_WEB_UI_API_KEY/)).toBeInTheDocument()
+    expect(screen.queryByText(/lwui_/)).not.toBeInTheDocument()
   })
 })
