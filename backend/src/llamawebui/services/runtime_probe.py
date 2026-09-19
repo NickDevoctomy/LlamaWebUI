@@ -42,6 +42,9 @@ class RuntimeProbeResult:
         return not self.errors and bool(self.capabilities.options)
 
 
+RuntimeProber = Callable[[Path], Awaitable[RuntimeProbeResult]]
+
+
 async def run_command(arguments: Sequence[str], timeout_seconds: float) -> CommandResult:
     """Run one executable directly and capture decoded output."""
 
