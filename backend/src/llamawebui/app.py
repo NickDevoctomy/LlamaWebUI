@@ -1,5 +1,6 @@
 """FastAPI application factory."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -41,6 +42,7 @@ from llamawebui.services.profile_registry import (
     ProfileNotFoundError,
     ProfileRegistry,
 )
+from llamawebui.services.router_port import RouterPortProbe, probe_router_port
 from llamawebui.services.router_supervisor import RouterSupervisor
 from llamawebui.services.runtime_probe import RuntimeProber, probe_runtime
 from llamawebui.services.runtime_registry import (
@@ -197,6 +199,7 @@ def create_app(
     catalog: Catalog | None = None,
     file_transfer: FileTransfer | None = None,
     router_supervisor: RouterSupervisor | None = None,
+    router_port_probe: RouterPortProbe = probe_router_port,
 ) -> FastAPI:
     app_settings = settings or Settings()
 
@@ -219,6 +222,7 @@ def create_app(
         app.state.router_supervisor = router_supervisor or RouterSupervisor()
         app.state.server_run_registry = ServerRunRegistry(engine)
         app.state.active_server_run_id = None
+        app.state.router_lifecycle_lock = asyncio.Lock()
 
         def record_router_state(
             state: RouterState, pid: int | None, exit_code: int | None
@@ -233,36 +237,15 @@ def create_app(
         try:
             yield
         finally:
-            await app.state.router_supervisor.stop()
+            async with app.state.router_lifecycle_lock:
+                await app.state.router_supervisor.stop()
             app.state.router_supervisor.set_state_observer(None)
             await app.state.download_coordinator.shutdown()
             engine.dispose()
 
     app = FastAPI(title="LlamaWebUI", version="0.1.0", lifespan=lifespan)
 
-    @app.get("/api/health")
-    async def health() -> dict[str, object]:
-        return {
-            "status": "ok",
-            "data_dir": str(app_settings.data_dir),
-            "database_path": str(app_settings.database_path),
-            "hugging_face_token_configured": app_settings.hf_token is not None,
-        }
-
-    @app.get("/api/server/status")
-    async def server_status(request: Request) -> dict[str, object]:
-        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
-        return _server_payload(supervisor, app_settings)
-
-    @app.get("/api/server/runs")
-    async def list_server_runs(request: Request) -> list[dict[str, object]]:
-        registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
-        return [_server_run_payload(run) for run in registry.list()]
-
-    @app.post("/api/server/start")
-    async def start_server(
-        start_request: ServerStartRequest, request: Request
-    ) -> dict[str, object]:
+    async def start_router(runtime_id: str, request: Request) -> dict[str, object]:
         runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
         profiles = cast(ProfileRegistry, request.app.state.profile_registry)
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
@@ -273,7 +256,7 @@ def create_app(
                 detail=f"router cannot start while {supervisor.state}",
             )
         try:
-            runtime = runtimes.get(start_request.runtime_id)
+            runtime = runtimes.get(runtime_id)
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         if "models-preset" not in runtime.options:
@@ -301,6 +284,20 @@ def create_app(
         endpoint = f"http://{app_settings.router_host}:{app_settings.router_port}"
         run = run_registry.create(runtime.id, endpoint)
         request.app.state.active_server_run_id = run.id
+        if not await router_port_probe(app_settings.router_host, app_settings.router_port):
+            detail = (
+                "router port is already in use: "
+                f"{app_settings.router_host}:{app_settings.router_port}"
+            )
+            run_registry.update(
+                run.id,
+                RouterState.CRASHED,
+                pid=None,
+                exit_code=None,
+                error=detail,
+            )
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
         try:
             await supervisor.start(launch)
             await supervisor.wait_until_ready(
@@ -339,14 +336,71 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         return _server_payload(supervisor, app_settings)
 
+    @app.get("/api/health")
+    async def health() -> dict[str, object]:
+        return {
+            "status": "ok",
+            "data_dir": str(app_settings.data_dir),
+            "database_path": str(app_settings.database_path),
+            "hugging_face_token_configured": app_settings.hf_token is not None,
+        }
+
+    @app.get("/api/server/status")
+    async def server_status(request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        return _server_payload(supervisor, app_settings)
+
+    @app.get("/api/server/runs")
+    async def list_server_runs(request: Request) -> list[dict[str, object]]:
+        registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
+        return [_server_run_payload(run) for run in registry.list()]
+
+    @app.post("/api/server/start")
+    async def start_server(
+        start_request: ServerStartRequest, request: Request
+    ) -> dict[str, object]:
+        lock = cast(asyncio.Lock, request.app.state.router_lifecycle_lock)
+        async with lock:
+            return await start_router(start_request.runtime_id, request)
+
     @app.post("/api/server/stop")
     async def stop_server(request: Request) -> dict[str, object]:
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
-        try:
-            await supervisor.stop()
-        except (RuntimeError, ValueError) as error:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        lock = cast(asyncio.Lock, request.app.state.router_lifecycle_lock)
+        async with lock:
+            try:
+                await supervisor.stop()
+            except (RuntimeError, ValueError) as error:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT, detail=str(error)
+                ) from error
         return _server_payload(supervisor, app_settings)
+
+    @app.post("/api/server/restart")
+    async def restart_server(request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        run_registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
+        lock = cast(asyncio.Lock, request.app.state.router_lifecycle_lock)
+        async with lock:
+            run_id = cast(str | None, request.app.state.active_server_run_id)
+            if run_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="router has no previous runtime selection",
+                )
+            runtime_id = run_registry.get(run_id).runtime_id
+            if runtime_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="previous router runtime is no longer registered",
+                )
+            try:
+                await supervisor.stop()
+            except (RuntimeError, ValueError) as error:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT, detail=str(error)
+                ) from error
+            return await start_router(runtime_id, request)
 
     @app.get("/api/runtimes")
     async def list_runtimes(request: Request) -> list[dict[str, object]]:

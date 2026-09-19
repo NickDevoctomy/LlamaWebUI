@@ -160,7 +160,7 @@ class RouterSupervisor:
             return
         if self._state is RouterState.CRASHED:
             require_transition(self._state, RouterState.STOPPED)
-            self._set_state(RouterState.STOPPED)
+            self._state = RouterState.STOPPED
             return
 
         require_transition(self._state, RouterState.STOPPING)

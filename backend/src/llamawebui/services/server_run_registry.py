@@ -27,6 +27,10 @@ class ServerRunRegistry:
             statement = select(ServerRunRecord).order_by(ServerRunRecord.started_at.desc())
             return list(session.scalars(statement))
 
+    def get(self, run_id: str) -> ServerRunRecord:
+        with self._sessions() as session:
+            return self._get(session, run_id)
+
     def create(self, runtime_id: str, endpoint: str) -> ServerRunRecord:
         record = ServerRunRecord(
             id=str(uuid4()),

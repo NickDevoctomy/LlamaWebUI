@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-19
 **Branch:** `alpha`
-**Baseline commit:** `ddb626b` (`feat: expose router lifecycle API`)
+**Baseline commit:** `25891cf` (`feat: persist router run history`)
 **Active phase:** Phase 4 - Server lifecycle
 
 This is the session handoff document. Update it after each completed implementation slice. The authoritative requirements remain in [llama-web-ui-plan.md](llama-web-ui-plan.md).
@@ -17,7 +17,7 @@ The delivery plan has eight numbered phases (`0` through `7`). Work has intentio
 | 1. Application foundation | Partial | Python package, FastAPI, settings, SQLite, Alembic, portable data directory | Event channel, structured/redacted logging, single-instance lock, diagnostics, frontend/static packaging |
 | 2. Runtime manager | Partial | Register/list/get/reprobe/remove; option/device capability parsing; in-use deletion guard | GitHub release discovery/install, stable-to-build resolution, digest verification, switching/rollback |
 | 3. Local library and profiles | Partial | Profile persistence, typed Qwen options, capability validation, shard completeness, deterministic atomic single/combined preset writing | Directory scanning, GGUF metadata, logical model records, command import/export |
-| 4. Server lifecycle | In progress | Router state machine, validated argument vector, process-group launch, single-process supervisor, HTTP readiness polling, bounded log tail, crash observation, bounded stop/kill, status/start/stop API, durable run history | Restart policy/API, lifecycle serialization, port ownership, native model operations, Windows process-tree proof |
+| 4. Server lifecycle | In progress | Router state machine, validated argument vector, process-group launch, single-process supervisor, HTTP readiness polling, bounded log tail, crash observation, bounded stop/kill, serialized status/start/stop/restart API, durable run history, safe port preflight | Bounded crash restart policy, native model operations, Windows process-tree proof |
 | 5. Hugging Face and downloads | Advanced partial | Search, repository manifests, quant/shard grouping, revision-pinned durable jobs, staging, size verification, atomic publication, pause/resume/cancel coordination, startup reconciliation | In-file progress, retry/backoff, periodic disk checks, checksum/ETag verification, event streaming, projector association, safe deletion, library reconciliation |
 | 6. Tokens and onboarding | Not started | None | Token metadata/key file, lifecycle integration, OpenCode generation, authenticated connection tests |
 | 7. Hardening and release | Not started | Unit quality gate established | Packaging, CI/platform matrix, accessibility, backup/restore, offline behavior, operator docs |
@@ -34,18 +34,18 @@ From `backend/` using `..\.venv\Scripts\python.exe`:
 ..\.venv\Scripts\python.exe -m mypy src/llamawebui
 ```
 
-Last verified at commit `ddb626b`:
+Last verified at commit `25891cf`:
 
-- 84 tests passed.
-- 94.93% total coverage; configured floor is 90% with branch coverage enabled.
+- 87 tests passed.
+- 94.95% total coverage; configured floor is 90% with branch coverage enabled.
 - Ruff passed.
 - Strict mypy passed for 27 source files.
 - Two dependency deprecation warnings remain: Starlette/httpx and AnyIO `BlockingPortal`.
 
-Current working tree after the durable server-run slice:
+Current working tree after the serialized restart/port-preflight slice:
 
-- 87 tests passed.
-- 94.95% total coverage.
+- 91 tests passed.
+- 94.82% total coverage.
 - Ruff, strict mypy, and `git diff --check` passed.
 
 ## Implemented Backend Surfaces
@@ -80,9 +80,9 @@ Current working tree after the durable server-run slice:
 
 ## Next Implementation Slice
 
-1. Serialize start, stop, and restart operations through one application lifecycle lock.
-2. Add `POST /api/server/restart` using the active run's runtime selection.
-3. Add port availability/ownership checks before process launch without terminating unrelated processes.
-4. Persist conflict and occupied-port failure details where a run attempt has begun.
+1. Add a bounded restart-on-crash policy with rapid-failure suppression and durable attempt history.
+2. Ensure explicit stop/restart and application shutdown disable automatic restart.
+3. Add native router `/models` status plus load/unload operations through an injected HTTP client.
+4. Start Windows process-tree termination verification against a small fake child process.
 
-After that, add bounded crash restart policy, native router model operations, and Windows process-tree termination verification.
+After that, complete Phase 4 event synchronization and real-runtime lifecycle acceptance checks.

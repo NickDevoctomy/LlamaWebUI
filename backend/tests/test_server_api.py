@@ -4,6 +4,8 @@ import asyncio
 from collections.abc import Sequence
 from pathlib import Path
 
+import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from llamawebui.app import create_app
@@ -14,10 +16,10 @@ from llamawebui.services.runtime_probe import RuntimeProbeResult
 
 
 class FakeProcess:
-    pid = 4321
     stdout = None
 
-    def __init__(self) -> None:
+    def __init__(self, pid: int = 4321) -> None:
+        self.pid = pid
         self.returncode: int | None = None
         self._exited = asyncio.Event()
 
@@ -33,6 +35,10 @@ class FakeProcess:
         await self._exited.wait()
         assert self.returncode is not None
         return self.returncode
+
+
+async def available_port(host: str, port: int) -> bool:
+    return True
 
 
 def test_server_start_status_and_stop(tmp_path: Path) -> None:
@@ -63,7 +69,12 @@ def test_server_start_status_and_stop(tmp_path: Path) -> None:
 
     settings = Settings(data_dir=tmp_path / "data", router_port=9876)
     supervisor = RouterSupervisor(launcher, healthy)
-    app = create_app(settings, runtime_prober=fake_probe, router_supervisor=supervisor)
+    app = create_app(
+        settings,
+        runtime_prober=fake_probe,
+        router_supervisor=supervisor,
+        router_port_probe=available_port,
+    )
     with TestClient(app) as client:
         stopped = client.get("/api/server/status")
         runtime_id = client.post(
@@ -180,6 +191,7 @@ def test_server_start_reports_readiness_timeout(tmp_path: Path) -> None:
         settings,
         runtime_prober=fake_probe,
         router_supervisor=RouterSupervisor(launcher, unhealthy),
+        router_port_probe=available_port,
     )
     with TestClient(app) as client:
         runtime_id = client.post(
@@ -200,3 +212,172 @@ def test_server_start_reports_readiness_timeout(tmp_path: Path) -> None:
     assert len(runs) == 1
     assert runs[0]["state"] == "stopped"
     assert "did not become ready" in runs[0]["error"]
+
+
+def test_server_restart_uses_previous_runtime_and_creates_new_run(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    model = tmp_path / "model.gguf"
+    executable.touch()
+    model.touch()
+    processes = iter((FakeProcess(1001), FakeProcess(1002)))
+    launches: list[tuple[str, ...]] = []
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "models-preset"}), raw_help="help"
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        launches.append(tuple(arguments))
+        return next(processes)
+
+    async def healthy(host: str, port: int) -> bool:
+        return True
+
+    app = create_app(
+        Settings(data_dir=tmp_path / "data"),
+        runtime_prober=fake_probe,
+        router_supervisor=RouterSupervisor(launcher, healthy),
+        router_port_probe=available_port,
+    )
+    with TestClient(app) as client:
+        no_previous = client.post("/api/server/restart")
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        client.post(
+            "/api/profiles",
+            json={"alias": "local-model", "runtime_id": runtime_id, "model_path": str(model)},
+        )
+        client.post("/api/server/start", json={"runtime_id": runtime_id})
+        restarted = client.post("/api/server/restart")
+        runs = client.get("/api/server/runs").json()
+
+    assert no_previous.status_code == 409
+    assert restarted.status_code == 200
+    assert restarted.json()["pid"] == 1002
+    assert len(launches) == 2
+    assert len(runs) == 2
+    assert {run["pid"] for run in runs} == {1001, 1002}
+    assert {run["runtime_id"] for run in runs} == {runtime_id}
+
+
+def test_server_start_records_occupied_port_without_launching(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    model = tmp_path / "model.gguf"
+    executable.touch()
+    model.touch()
+    launched = False
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "models-preset"}), raw_help="help"
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        nonlocal launched
+        launched = True
+        return FakeProcess()
+
+    async def occupied(host: str, port: int) -> bool:
+        return False
+
+    app = create_app(
+        Settings(data_dir=tmp_path / "data", router_port=4567),
+        runtime_prober=fake_probe,
+        router_supervisor=RouterSupervisor(launcher),
+        router_port_probe=occupied,
+    )
+    with TestClient(app) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        client.post(
+            "/api/profiles",
+            json={"alias": "local-model", "runtime_id": runtime_id, "model_path": str(model)},
+        )
+        response = client.post("/api/server/start", json={"runtime_id": runtime_id})
+        runs = client.get("/api/server/runs").json()
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "router port is already in use: 127.0.0.1:4567"
+    assert not launched
+    assert runs[0]["state"] == "crashed"
+    assert runs[0]["error"] == response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_server_lifecycle_requests_are_serialized(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    model = tmp_path / "model.gguf"
+    executable.touch()
+    model.touch()
+    process = FakeProcess()
+    health_entered = asyncio.Event()
+    release_health = asyncio.Event()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "models-preset"}), raw_help="help"
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        return process
+
+    async def delayed_health(host: str, port: int) -> bool:
+        health_entered.set()
+        await release_health.wait()
+        return True
+
+    app = create_app(
+        Settings(data_dir=tmp_path / "data"),
+        runtime_prober=fake_probe,
+        router_supervisor=RouterSupervisor(launcher, delayed_health),
+        router_port_probe=available_port,
+    )
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            runtime_id = (
+                await client.post(
+                    "/api/runtimes",
+                    json={"name": "CPU", "executable_path": str(executable)},
+                )
+            ).json()["id"]
+            await client.post(
+                "/api/profiles",
+                json={
+                    "alias": "local-model",
+                    "runtime_id": runtime_id,
+                    "model_path": str(model),
+                },
+            )
+            start_task = asyncio.create_task(
+                client.post("/api/server/start", json={"runtime_id": runtime_id})
+            )
+            await health_entered.wait()
+            stop_task = asyncio.create_task(client.post("/api/server/stop"))
+            await asyncio.sleep(0)
+
+            assert not stop_task.done()
+            release_health.set()
+            assert (await start_task).status_code == 200
+            assert (await stop_task).json()["state"] == "stopped"
