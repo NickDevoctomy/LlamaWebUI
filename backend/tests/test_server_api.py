@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from llamawebui.app import create_app
 from llamawebui.config import Settings
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
+from llamawebui.services.router_client import RouterAPIError, RouterModel
 from llamawebui.services.router_supervisor import RouterProcess, RouterSupervisor
 from llamawebui.services.runtime_probe import RuntimeProbeResult
 
@@ -39,6 +40,35 @@ class FakeProcess:
 
 async def available_port(host: str, port: int) -> bool:
     return True
+
+
+class FakeRouterClient:
+    def __init__(self) -> None:
+        self.actions: list[tuple[str, object]] = []
+        self.error: RouterAPIError | None = None
+
+    async def list_models(self, *, reload: bool = False) -> tuple[RouterModel, ...]:
+        if self.error is not None:
+            raise self.error
+        self.actions.append(("list", reload))
+        return (
+            RouterModel(
+                id="local-model",
+                path="C:/models/model.gguf",
+                status={"value": "loaded"},
+                metadata={"architecture": {"input_modalities": ["text"]}},
+            ),
+        )
+
+    async def load_model(self, model: str) -> None:
+        if self.error is not None:
+            raise self.error
+        self.actions.append(("load", model))
+
+    async def unload_model(self, model: str) -> None:
+        if self.error is not None:
+            raise self.error
+        self.actions.append(("unload", model))
 
 
 def test_server_start_status_and_stop(tmp_path: Path) -> None:
@@ -381,3 +411,80 @@ async def test_server_lifecycle_requests_are_serialized(tmp_path: Path) -> None:
             release_health.set()
             assert (await start_task).status_code == 200
             assert (await stop_task).json()["state"] == "stopped"
+
+
+def test_router_model_operations_require_running_server(tmp_path: Path) -> None:
+    router_client = FakeRouterClient()
+    app = create_app(
+        Settings(data_dir=tmp_path / "data"), router_client=router_client
+    )
+    with TestClient(app) as client:
+        listed = client.get("/api/server/models")
+        loaded = client.post("/api/server/models/load", json={"model": "local-model"})
+        invalid = client.post("/api/server/models/load", json={"model": " "})
+
+    assert listed.status_code == 409
+    assert loaded.status_code == 409
+    assert invalid.status_code == 422
+    assert router_client.actions == []
+
+
+def test_router_model_list_load_and_unload(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    model = tmp_path / "model.gguf"
+    executable.touch()
+    model.touch()
+    process = FakeProcess()
+    router_client = FakeRouterClient()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "models-preset"}), raw_help="help"
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        return process
+
+    async def healthy(host: str, port: int) -> bool:
+        return True
+
+    app = create_app(
+        Settings(data_dir=tmp_path / "data"),
+        runtime_prober=fake_probe,
+        router_supervisor=RouterSupervisor(launcher, healthy),
+        router_port_probe=available_port,
+        router_client=router_client,
+    )
+    with TestClient(app) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        client.post(
+            "/api/profiles",
+            json={"alias": "local-model", "runtime_id": runtime_id, "model_path": str(model)},
+        )
+        client.post("/api/server/start", json={"runtime_id": runtime_id})
+        listed = client.get("/api/server/models", params={"reload": True})
+        loaded = client.post("/api/server/models/load", json={"model": "local-model"})
+        unloaded = client.post("/api/server/models/unload", json={"model": "local-model"})
+        router_client.error = RouterAPIError(503, "native router unavailable")
+        failed = client.get("/api/server/models")
+
+    assert listed.status_code == 200
+    assert listed.json()[0]["id"] == "local-model"
+    assert listed.json()[0]["status"] == {"value": "loaded"}
+    assert loaded.json() == {"success": True}
+    assert unloaded.json() == {"success": True}
+    assert failed.status_code == 502
+    assert failed.json() == {"detail": "native router unavailable"}
+    assert router_client.actions == [
+        ("list", True),
+        ("load", "local-model"),
+        ("unload", "local-model"),
+    ]

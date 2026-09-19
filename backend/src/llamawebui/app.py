@@ -8,7 +8,7 @@ from typing import Literal, cast
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from huggingface_hub.errors import HfHubHTTPError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
@@ -41,6 +41,12 @@ from llamawebui.services.profile_registry import (
     ProfileAliasExistsError,
     ProfileNotFoundError,
     ProfileRegistry,
+)
+from llamawebui.services.router_client import (
+    HttpRouterClient,
+    RouterAPIError,
+    RouterClient,
+    RouterModel,
 )
 from llamawebui.services.router_port import RouterPortProbe, probe_router_port
 from llamawebui.services.router_supervisor import RouterSupervisor
@@ -118,6 +124,17 @@ class ServerStartRequest(BaseModel):
     runtime_id: str
 
 
+class RouterModelRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=400)
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("model ID must not be empty")
+        return value
+
+
 def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
     return {
         "id": runtime.id,
@@ -184,6 +201,28 @@ def _server_run_payload(run: ServerRunRecord) -> dict[str, object]:
     }
 
 
+def _router_model_payload(model: RouterModel) -> dict[str, object]:
+    return {
+        "id": model.id,
+        "path": model.path,
+        "status": model.status,
+        "metadata": model.metadata,
+    }
+
+
+def _require_running_router(supervisor: RouterSupervisor) -> None:
+    if supervisor.state not in {RouterState.READY, RouterState.DEGRADED}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"router model operations are unavailable while {supervisor.state}",
+        )
+
+
+def _router_api_error(error: RouterAPIError) -> HTTPException:
+    status_code = error.status_code if 400 <= error.status_code < 500 else 502
+    return HTTPException(status_code=status_code, detail=str(error))
+
+
 def _hub_error(error: HfHubHTTPError) -> HTTPException:
     response_status = error.response.status_code if error.response is not None else None
     status_code = (
@@ -200,6 +239,7 @@ def create_app(
     file_transfer: FileTransfer | None = None,
     router_supervisor: RouterSupervisor | None = None,
     router_port_probe: RouterPortProbe = probe_router_port,
+    router_client: RouterClient | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
 
@@ -220,6 +260,9 @@ def create_app(
         )
         app.state.download_coordinator.start_pending()
         app.state.router_supervisor = router_supervisor or RouterSupervisor()
+        app.state.router_client = router_client or HttpRouterClient(
+            app_settings.router_host, app_settings.router_port
+        )
         app.state.server_run_registry = ServerRunRegistry(engine)
         app.state.active_server_run_id = None
         app.state.router_lifecycle_lock = asyncio.Lock()
@@ -401,6 +444,45 @@ def create_app(
                     status_code=status.HTTP_409_CONFLICT, detail=str(error)
                 ) from error
             return await start_router(runtime_id, request)
+
+    @app.get("/api/server/models")
+    async def list_router_models(
+        request: Request, reload: bool = False
+    ) -> list[dict[str, object]]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        client = cast(RouterClient, request.app.state.router_client)
+        _require_running_router(supervisor)
+        try:
+            models = await client.list_models(reload=reload)
+        except RouterAPIError as error:
+            raise _router_api_error(error) from error
+        return [_router_model_payload(model) for model in models]
+
+    @app.post("/api/server/models/load")
+    async def load_router_model(
+        model_request: RouterModelRequest, request: Request
+    ) -> dict[str, bool]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        client = cast(RouterClient, request.app.state.router_client)
+        _require_running_router(supervisor)
+        try:
+            await client.load_model(model_request.model)
+        except RouterAPIError as error:
+            raise _router_api_error(error) from error
+        return {"success": True}
+
+    @app.post("/api/server/models/unload")
+    async def unload_router_model(
+        model_request: RouterModelRequest, request: Request
+    ) -> dict[str, bool]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        client = cast(RouterClient, request.app.state.router_client)
+        _require_running_router(supervisor)
+        try:
+            await client.unload_model(model_request.model)
+        except RouterAPIError as error:
+            raise _router_api_error(error) from error
+        return {"success": True}
 
     @app.get("/api/runtimes")
     async def list_runtimes(request: Request) -> list[dict[str, object]]:
