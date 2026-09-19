@@ -45,9 +45,10 @@ Current working tree after the token and OpenCode slice:
 Frontend foundation validation:
 
 - Vite production build passed; JavaScript bundle is 86.79 kB gzip.
-- Vitest/Testing Library passed: 1 component integration test.
+- Vitest/Testing Library passed: 3 component integration tests.
 - Desktop 1440x1000 and mobile 390x844 browser checks passed without horizontal overflow.
 - Live FastAPI queries and responsive navigation were verified in the browser.
+- Runtime registration was accepted end to end against local llama.cpp b11053 and displayed build `0.4.1-dev` as ready.
 
 ## Implemented Backend Surfaces
 
@@ -73,6 +74,8 @@ Frontend foundation validation:
 - Live router, runtime, profile, access-key, and model state queries with periodic reconciliation
 - Functional router start/stop/restart and native model load/unload controls with disabled and error states
 - Model inventory, server process/runtime/log view, and persisted record views for profiles, runtimes, and access keys
+- Runtime registration dialog with executable probing, backend selection, pending/error states, and ready-state inventory
+- Basic/Advanced model profile editor with alias normalization, first-shard guidance, runtime selection, and capability-aware controls
 - Desktop and mobile layouts use stable metrics, table reduction, and fixed navigation without content overlap
 
 ## Important Constraints
@@ -97,6 +100,6 @@ Frontend foundation validation:
 
 ## Next Implementation Slice
 
-Build the first create/edit workflow in the frontend, starting with runtime registration and profile creation so an empty installation can reach a startable router entirely through the UI.
+Build the Access workflow: show-once token creation, copy affordance, revocation confirmation, and copyable live OpenCode configuration.
 
 Deferred backend work includes real-runtime SSE/inference acceptance, local library scanning, release installation, broader event publication, and authenticated connection tests.

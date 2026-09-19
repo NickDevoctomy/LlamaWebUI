@@ -111,6 +111,47 @@ tbody tr:hover { background: #f4f4ee; }
 .collection-row div { min-width: 0; display: grid; gap: 4px; }
 .collection-row strong { font-size: 12px; }
 .collection-row div span { overflow: hidden; color: var(--muted); font: 10px 'IBM Plex Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
+.record-list { padding: 0 19px; }
+.record-row { min-height: 76px; border-bottom: 1px solid #e2e2da; display: grid; grid-template-columns: 38px minmax(220px, 1fr) 110px 100px auto; align-items: center; gap: 14px; }
+.record-row:last-child { border-bottom: 0; }
+.record-icon { width: 36px; height: 36px; border: 1px solid var(--line); border-radius: 4px; display: grid; place-items: center; color: #62645d; background: #efefe9; }
+.record-copy { min-width: 0; display: grid; gap: 5px; }
+.record-copy strong { font-size: 12px; }
+.record-copy span { overflow: hidden; color: var(--muted); font: 10px 'IBM Plex Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
+.record-meta { min-width: 0; display: grid; gap: 4px; }
+.record-meta small { color: #898b83; font: 9px 'IBM Plex Mono', monospace; text-transform: uppercase; }
+.record-meta span { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.record-meta.wide { width: 170px; }
+.dialog-backdrop { position: fixed; z-index: 30; inset: 0; padding: 24px; display: grid; place-items: center; background: rgba(23, 24, 22, .58); backdrop-filter: blur(3px); }
+.dialog { width: min(650px, 100%); max-height: min(760px, calc(100vh - 48px)); overflow-y: auto; border: 1px solid #bfc0b7; background: var(--paper); box-shadow: 0 20px 70px rgba(18, 19, 17, .28); animation: dialog-in .18s ease-out; }
+.dialog-header { padding: 22px 24px 19px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 20px; }
+.dialog-header h2 { margin: 0 0 6px; color: var(--ink); font-size: 21px; }
+.dialog-header p:last-child { margin: 0; color: var(--muted); font-size: 11px; }
+.dialog form { margin: 0; }
+.form-body { padding: 22px 24px 25px; display: grid; gap: 18px; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.form-field { min-width: 0; display: grid; gap: 7px; color: #4e504a; font-size: 11px; font-weight: 600; }
+.form-field input, .form-field select { width: 100%; height: 41px; padding: 0 11px; border: 1px solid #c8c9c0; border-radius: 3px; outline: none; color: var(--ink); background: #fff; font-size: 12px; }
+.form-field input::placeholder { color: #a1a39b; }
+.form-field input:focus, .form-field select:focus { border-color: #6d8140; box-shadow: 0 0 0 3px rgba(214, 255, 66, .28); }
+.form-field input[aria-invalid='true'] { border-color: var(--red); }
+.form-field input:disabled, .form-field select:disabled { color: #989a92; background: #ebebe6; }
+.form-field small { color: #898b83; font-size: 10px; font-weight: 400; line-height: 1.4; }
+.toggle-row { min-height: 58px; padding: 11px 13px; border: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.toggle-row span { display: grid; gap: 4px; }
+.toggle-row strong { font-size: 11px; }
+.toggle-row small { color: var(--muted); font-size: 10px; }
+.toggle-row input { width: 34px; height: 18px; accent-color: #718c16; }
+.dialog-actions { padding: 14px 24px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; background: #f1f1ec; }
+.form-error { padding: 10px 12px; border-left: 3px solid var(--red); display: flex; align-items: center; gap: 8px; color: #7d2e25; background: #f5e4e0; font-size: 11px; }
+.segmented { margin: 18px 24px 0; padding: 3px; border: 1px solid var(--line); display: grid; grid-template-columns: 1fr 1fr; background: #ecece6; }
+.segmented button { height: 32px; border: 0; color: var(--muted); background: transparent; font-size: 11px; font-weight: 600; }
+.segmented button[aria-selected='true'] { color: var(--ink); background: #fff; box-shadow: 0 1px 3px rgba(23, 24, 22, .12); }
+.capability-note { padding: 11px 12px; display: flex; gap: 9px; color: #5e6255; background: #eef1e5; font-size: 10px; }
+.capability-note svg { flex: 0 0 auto; }
+.spin { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes dialog-in { from { opacity: 0; transform: translateY(8px) scale(.99); } }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 @media (max-width: 980px) {
@@ -143,6 +184,13 @@ tbody tr:hover { background: #f4f4ee; }
   .metric-icon { width: 30px; height: 30px; }
   .metric strong { font-size: 13px; }
   .server-grid { grid-template-columns: 1fr; }
+  .record-row { grid-template-columns: 38px minmax(0, 1fr) auto; }
+  .record-meta { display: none; }
+  .form-grid { grid-template-columns: 1fr; }
+  .dialog-backdrop { padding: 10px; align-items: end; }
+  .dialog { max-height: calc(100vh - 20px); }
+  .dialog-header, .form-body { padding-left: 18px; padding-right: 18px; }
+  .dialog-actions { position: sticky; bottom: 0; padding: 12px 18px; }
   .log-panel { grid-column: auto; }
   .server-actions .secondary { display: none; }
   th:nth-child(3), td:nth-child(3), th:nth-child(4), td:nth-child(4), th:nth-child(5), td:nth-child(5) { display: none; }

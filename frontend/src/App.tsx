@@ -23,6 +23,7 @@ import {
 } from 'lucide-react'
 import { useState } from 'react'
 import { api, type Profile, type RouterModel, type Runtime } from './api'
+import { ProfilePanel, RuntimePanel } from './SetupPanels'
 
 const navigation = [
   ['Models', Library],
@@ -194,6 +195,10 @@ function App() {
             />
           ) : section === 'Server' ? (
             <ServerPanel status={status.data} runtimes={runtimes.data ?? []} selectedRuntime={runtime?.id ?? ''} onRuntime={setSelectedRuntime} />
+          ) : section === 'Runtimes' ? (
+            <RuntimePanel runtimes={runtimes.data ?? []} />
+          ) : section === 'Profiles' ? (
+            <ProfilePanel profiles={profiles.data ?? []} runtimes={runtimes.data ?? []} />
           ) : (
             <CollectionPanel section={section} runtimes={runtimes.data ?? []} profiles={profiles.data ?? []} tokens={tokens.data ?? []} />
           )}

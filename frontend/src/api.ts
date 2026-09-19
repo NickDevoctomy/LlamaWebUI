@@ -21,6 +21,7 @@ export interface Runtime {
   build: string | null
   backend: string | null
   devices: string[]
+  options: string[]
   usable: boolean
 }
 
@@ -49,6 +50,28 @@ export interface AccessToken {
   created_at: string
 }
 
+export interface RuntimeRegistration {
+  name: string
+  executable_path: string
+  backend?: string
+}
+
+export interface ProfileCreate {
+  alias: string
+  runtime_id: string
+  model_path: string
+  enabled: boolean
+  no_reasoning_preserve: boolean
+  n_gpu_layers?: number
+  ctx_size?: number
+  flash_attn?: string
+  cache_type_k?: string
+  cache_type_v?: string
+  threads?: number
+  batch_size?: number
+  ubatch_size?: number
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -68,6 +91,16 @@ export const api = {
   profiles: () => request<Profile[]>('/api/profiles'),
   tokens: () => request<AccessToken[]>('/api/tokens'),
   models: () => request<RouterModel[]>('/api/server/models'),
+  registerRuntime: (runtime: RuntimeRegistration) =>
+    request<Runtime>('/api/runtimes', {
+      method: 'POST',
+      body: JSON.stringify(runtime),
+    }),
+  createProfile: (profile: ProfileCreate) =>
+    request<Profile>('/api/profiles', {
+      method: 'POST',
+      body: JSON.stringify(profile),
+    }),
   start: (runtimeId: string) =>
     request<ServerStatus>('/api/server/start', {
       method: 'POST',
