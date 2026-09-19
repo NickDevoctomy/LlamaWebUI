@@ -11,13 +11,18 @@ from pydantic import BaseModel, Field
 
 from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
-from llamawebui.domain.download_job import DownloadState
 from llamawebui.domain.model_profile import AdvancedOption, ModelProfile, ProfileValidationError
 from llamawebui.models import DownloadJobRecord, ModelProfileRecord, RuntimeRecord
+from llamawebui.services.download_coordinator import DownloadCoordinator
 from llamawebui.services.download_registry import (
     DownloadJobNotFoundError,
     DownloadPlanError,
     DownloadRegistry,
+)
+from llamawebui.services.download_worker import (
+    DownloadWorker,
+    FileTransfer,
+    HuggingFaceFileTransfer,
 )
 from llamawebui.services.huggingface_catalog import Catalog, HuggingFaceCatalog
 from llamawebui.services.profile_registry import (
@@ -149,6 +154,7 @@ def create_app(
     *,
     runtime_prober: RuntimeProber = probe_runtime,
     catalog: Catalog | None = None,
+    file_transfer: FileTransfer | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
 
@@ -162,9 +168,16 @@ def create_app(
         app.state.download_registry = DownloadRegistry(engine, app_settings.data_dir / "models")
         token = app_settings.hf_token.get_secret_value() if app_settings.hf_token else None
         app.state.huggingface_catalog = catalog or HuggingFaceCatalog(token)
+        transfer = file_transfer or HuggingFaceFileTransfer(token)
+        app.state.download_coordinator = DownloadCoordinator(
+            app.state.download_registry,
+            DownloadWorker(app.state.download_registry, transfer),
+        )
+        app.state.download_coordinator.start_pending()
         try:
             yield
         finally:
+            await app.state.download_coordinator.shutdown()
             engine.dispose()
 
     app = FastAPI(title="LlamaWebUI", version="0.1.0", lifespan=lifespan)
@@ -324,7 +337,11 @@ def create_app(
         registry = cast(DownloadRegistry, request.app.state.download_registry)
         try:
             manifest = await hub.repository(download.repo_id, revision=download.revision)
-            return _download_payload(registry.create(manifest, download.group_key))
+            job = registry.create(manifest, download.group_key)
+            payload = _download_payload(job)
+            coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
+            coordinator.start(job.id)
+            return payload
         except HfHubHTTPError as error:
             raise _hub_error(error) from error
         except DownloadPlanError as error:
@@ -334,9 +351,29 @@ def create_app(
 
     @app.post("/api/downloads/{job_id}/cancel")
     async def cancel_download(job_id: str, request: Request) -> dict[str, object]:
-        registry = cast(DownloadRegistry, request.app.state.download_registry)
+        coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
         try:
-            return _download_payload(registry.transition(job_id, DownloadState.CANCELLED))
+            return _download_payload(coordinator.cancel(job_id))
+        except DownloadJobNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    @app.post("/api/downloads/{job_id}/pause")
+    async def pause_download(job_id: str, request: Request) -> dict[str, object]:
+        coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
+        try:
+            return _download_payload(coordinator.pause(job_id))
+        except DownloadJobNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    @app.post("/api/downloads/{job_id}/resume")
+    async def resume_download(job_id: str, request: Request) -> dict[str, object]:
+        coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
+        try:
+            return _download_payload(coordinator.resume(job_id))
         except DownloadJobNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         except ValueError as error:

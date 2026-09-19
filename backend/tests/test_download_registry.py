@@ -83,6 +83,20 @@ def test_create_rejects_unknown_group_and_insufficient_space(
             registry.create(manifest(), "Q4/model-Q4")
 
 
+def test_create_rejects_unsafe_repository_file_path(registry: DownloadRegistry) -> None:
+    source = manifest()
+    unsafe = GgufGroup(
+        key=source.groups[0].key,
+        quantization="Q4",
+        files=(HubFile("../escape.gguf", 30),),
+        total_size=30,
+        complete=True,
+    )
+
+    with pytest.raises(DownloadPlanError, match="unsafe repository file path"):
+        registry.create(RepositoryManifest(source.repo_id, source.revision, (unsafe,)), unsafe.key)
+
+
 def test_download_state_transitions_are_guarded(registry: DownloadRegistry) -> None:
     job = registry.create(manifest(), "Q4/model-Q4")
 
@@ -99,3 +113,15 @@ def test_download_state_transitions_are_guarded(registry: DownloadRegistry) -> N
         require_transition(DownloadState.CANCELLED, DownloadState.QUEUED)
     with pytest.raises(DownloadJobNotFoundError):
         registry.transition("missing", DownloadState.CANCELLED)
+
+
+def test_progress_rejects_regression_and_ignores_terminal_job(registry: DownloadRegistry) -> None:
+    job = registry.create(manifest(), "Q4/model-Q4")
+    registry.transition(job.id, DownloadState.DOWNLOADING)
+    registry.update_progress(job.id, 20)
+
+    with pytest.raises(ValueError, match="outside the valid range"):
+        registry.update_progress(job.id, 10)
+    registry.transition(job.id, DownloadState.CANCELLED)
+
+    assert registry.update_progress(job.id, 30).completed_bytes == 20

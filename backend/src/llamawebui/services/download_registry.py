@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import Engine, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from llamawebui.domain.download_job import DownloadState, require_transition
 from llamawebui.models import DownloadJobRecord
@@ -36,6 +36,21 @@ class DownloadRegistry:
             statement = select(DownloadJobRecord).order_by(DownloadJobRecord.created_at)
             return list(session.scalars(statement))
 
+    def get(self, job_id: str) -> DownloadJobRecord:
+        with self._sessions() as session:
+            return self._get(session, job_id)
+
+    def reconcile_interrupted(self) -> tuple[DownloadJobRecord, ...]:
+        with self._sessions() as session:
+            statement = select(DownloadJobRecord).where(
+                DownloadJobRecord.state == DownloadState.DOWNLOADING
+            )
+            records = tuple(session.scalars(statement))
+            for record in records:
+                record.state = DownloadState.PAUSED
+            session.commit()
+            return records
+
     def create(self, manifest: RepositoryManifest, group_key: str) -> DownloadJobRecord:
         repo_parts = manifest.repo_id.split("/")
         if (
@@ -53,6 +68,11 @@ class DownloadRegistry:
             raise DownloadPlanError(f"GGUF group is incomplete: {group_key}")
         if group.total_size is None:
             raise DownloadPlanError(f"GGUF group size is unknown: {group_key}")
+        for file in group.files:
+            relative_path = Path(file.path)
+            unsafe_segment = any(part in {".", ".."} for part in relative_path.parts)
+            if relative_path.is_absolute() or unsafe_segment:
+                raise DownloadPlanError(f"unsafe repository file path: {file.path}")
 
         destination = (self._model_root / manifest.repo_id / manifest.revision).resolve()
         if not destination.is_relative_to(self._model_root):
@@ -82,10 +102,37 @@ class DownloadRegistry:
 
     def transition(self, job_id: str, target: DownloadState) -> DownloadJobRecord:
         with self._sessions() as session:
-            record = session.get(DownloadJobRecord, job_id)
-            if record is None:
-                raise DownloadJobNotFoundError(f"download job not found: {job_id}")
+            record = self._get(session, job_id)
             require_transition(DownloadState(record.state), target)
             record.state = target
             session.commit()
             return record
+
+    def update_progress(self, job_id: str, completed_bytes: int) -> DownloadJobRecord:
+        with self._sessions() as session:
+            record = self._get(session, job_id)
+            if DownloadState(record.state) is not DownloadState.DOWNLOADING:
+                return record
+            if completed_bytes < record.completed_bytes or completed_bytes > record.total_bytes:
+                raise ValueError("download progress is outside the valid range")
+            record.completed_bytes = completed_bytes
+            session.commit()
+            return record
+
+    def fail(self, job_id: str, message: str) -> DownloadJobRecord:
+        with self._sessions() as session:
+            record = self._get(session, job_id)
+            if DownloadState(record.state) is not DownloadState.DOWNLOADING:
+                return record
+            require_transition(DownloadState.DOWNLOADING, DownloadState.FAILED)
+            record.state = DownloadState.FAILED
+            record.error = message
+            session.commit()
+            return record
+
+    @staticmethod
+    def _get(session: Session, job_id: str) -> DownloadJobRecord:
+        record = session.get(DownloadJobRecord, job_id)
+        if record is None:
+            raise DownloadJobNotFoundError(f"download job not found: {job_id}")
+        return record

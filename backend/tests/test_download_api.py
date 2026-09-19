@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -32,8 +33,20 @@ class FakeCatalog:
         )
 
 
+class BlockingTransfer:
+    async def download(
+        self, *, repo_id: str, filename: str, revision: str, destination: Path
+    ) -> Path:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
 def test_create_list_and_cancel_download(tmp_path: Path) -> None:
-    app = create_app(Settings(data_dir=tmp_path / "data"), catalog=FakeCatalog())
+    app = create_app(
+        Settings(data_dir=tmp_path / "data"),
+        catalog=FakeCatalog(),
+        file_transfer=BlockingTransfer(),
+    )
     with TestClient(app) as client:
         created = client.post(
             "/api/downloads",
