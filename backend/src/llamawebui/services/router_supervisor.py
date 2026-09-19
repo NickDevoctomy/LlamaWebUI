@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import subprocess
 from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
@@ -31,9 +32,7 @@ class RouterProcess(Protocol):
     @property
     def stdout(self) -> RouterOutput | None: ...
 
-    def terminate(self) -> None: ...
-
-    def kill(self) -> None: ...
+    async def terminate_tree(self, *, force: bool) -> None: ...
 
     async def wait(self) -> int: ...
 
@@ -74,20 +73,73 @@ async def probe_router_health(host: str, port: int) -> bool:
     return response.status_code == 200
 
 
+class ManagedRouterProcess:
+    def __init__(self, process: asyncio.subprocess.Process) -> None:
+        self._process = process
+
+    @property
+    def pid(self) -> int:
+        return self._process.pid
+
+    @property
+    def returncode(self) -> int | None:
+        return self._process.returncode
+
+    @property
+    def stdout(self) -> asyncio.StreamReader | None:
+        return self._process.stdout
+
+    async def terminate_tree(self, *, force: bool) -> None:
+        if os.name == "nt":
+            if not force:
+                with suppress(ProcessLookupError):
+                    self._process.send_signal(
+                        getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM)
+                    )
+                return
+            arguments = ["taskkill", "/PID", str(self.pid), "/T", "/F"]
+            killer = await asyncio.create_subprocess_exec(
+                *arguments,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            result = await killer.wait()
+            if result != 0 and self.returncode is None:
+                self._process.kill()
+            return
+
+        try:
+            force_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+            os.kill(-self.pid, force_signal if force else signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except OSError:
+            if self.returncode is None:
+                if force:
+                    self._process.kill()
+                else:
+                    self._process.terminate()
+
+    async def wait(self) -> int:
+        return await self._process.wait()
+
+
 async def launch_router(arguments: Sequence[str]) -> RouterProcess:
     if os.name == "nt":
-        return await asyncio.create_subprocess_exec(
+        process = await asyncio.create_subprocess_exec(
             *arguments,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
-    return await asyncio.create_subprocess_exec(
-        *arguments,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        start_new_session=True,
-    )
+    else:
+        process = await asyncio.create_subprocess_exec(
+            *arguments,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
+        )
+    return ManagedRouterProcess(process)
 
 
 class RouterSupervisor:
@@ -214,11 +266,11 @@ class RouterSupervisor:
             self._set_state(RouterState.CRASHED)
             raise RuntimeError("router process is missing")
 
-        process.terminate()
+        await process.terminate_tree(force=False)
         try:
             await asyncio.wait_for(asyncio.shield(process.wait()), timeout_seconds)
         except TimeoutError:
-            process.kill()
+            await process.terminate_tree(force=True)
             await process.wait()
 
         if self._state is RouterState.STOPPING:

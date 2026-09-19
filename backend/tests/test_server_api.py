@@ -28,12 +28,8 @@ class FakeProcess:
         self.returncode: int | None = None
         self._exited = asyncio.Event()
 
-    def terminate(self) -> None:
-        self.returncode = 0
-        self._exited.set()
-
-    def kill(self) -> None:
-        self.returncode = -9
+    async def terminate_tree(self, *, force: bool) -> None:
+        self.returncode = -9 if force else 0
         self._exited.set()
 
     async def wait(self) -> int:
