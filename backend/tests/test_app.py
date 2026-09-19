@@ -28,6 +28,36 @@ def test_health_creates_data_directory_without_exposing_token(tmp_path: Path) ->
     assert settings.database_path.is_file()
 
 
+def test_access_token_is_shown_once_and_can_be_revoked(tmp_path: Path) -> None:
+    settings = Settings(data_dir=tmp_path / "data")
+
+    with TestClient(create_app(settings)) as client:
+        created = client.post(
+            "/api/tokens", json={"name": "OpenCode", "expiry_note": "Rotate monthly"}
+        )
+        token = created.json()["token"]
+        listed = client.get("/api/tokens")
+        revoked = client.delete(f"/api/tokens/{created.json()['id']}")
+        missing = client.delete("/api/tokens/missing")
+
+    assert created.status_code == 201
+    assert token.startswith("lwui_")
+    assert created.json()["last_four"] == token[-4:]
+    assert created.json()["expiry_note"] == "Rotate monthly"
+    assert listed.status_code == 200
+    assert "token" not in listed.json()[0]
+    assert token not in listed.text
+    assert revoked.status_code == 200
+    assert revoked.json()["enabled"] is False
+    assert missing.status_code == 404
+
+    with TestClient(create_app(settings)) as client:
+        persisted = client.get("/api/tokens")
+
+    assert persisted.json()[0]["enabled"] is False
+    assert token not in persisted.text
+
+
 def test_runtime_registration_persists_and_rejects_duplicate(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()

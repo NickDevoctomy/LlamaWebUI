@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -42,13 +42,25 @@ class RouterClient(Protocol):
 
 
 class HttpRouterClient:
-    def __init__(self, host: str, port: int, *, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        *,
+        api_key: str | None = None,
+        api_key_provider: Callable[[], str | None] | None = None,
+    ) -> None:
         probe_host = "127.0.0.1" if host == "0.0.0.0" else host
         if probe_host == "::":
             probe_host = "::1"
         formatted_host = f"[{probe_host}]" if ":" in probe_host else probe_host
         self._base_url = f"http://{formatted_host}:{port}"
-        self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self._api_key = api_key
+        self._api_key_provider = api_key_provider
+
+    def _headers(self) -> dict[str, str]:
+        api_key = self._api_key_provider() if self._api_key_provider else self._api_key
+        return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
     async def list_models(self, *, reload: bool = False) -> tuple[RouterModel, ...]:
         payload = await self._request(
@@ -92,7 +104,7 @@ class HttpRouterClient:
         try:
             timeout = httpx.Timeout(30.0, read=None)
             async with httpx.AsyncClient(
-                base_url=self._base_url, headers=self._headers, timeout=timeout
+                base_url=self._base_url, headers=self._headers(), timeout=timeout
             ) as client, client.stream("GET", "/models/sse") as response:
                 if response.is_error:
                     await response.aread()
@@ -139,7 +151,7 @@ class HttpRouterClient:
     ) -> dict[str, object]:
         try:
             async with httpx.AsyncClient(
-                base_url=self._base_url, headers=self._headers, timeout=30.0
+                base_url=self._base_url, headers=self._headers(), timeout=30.0
             ) as client:
                 response = await client.request(method, path, params=params, json=json_body)
         except httpx.HTTPError as error:

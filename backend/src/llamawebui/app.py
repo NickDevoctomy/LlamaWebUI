@@ -22,6 +22,7 @@ from llamawebui.domain.model_profile import (
 )
 from llamawebui.domain.router_lifecycle import RouterLaunch, RouterState
 from llamawebui.models import (
+    AccessTokenRecord,
     DownloadJobRecord,
     ModelProfileRecord,
     RuntimeRecord,
@@ -67,6 +68,7 @@ from llamawebui.services.runtime_registry import (
     RuntimeRegistry,
 )
 from llamawebui.services.server_run_registry import ServerRunRegistry
+from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRegistry
 
 
 class RuntimeRegistrationRequest(BaseModel):
@@ -144,6 +146,11 @@ class RouterModelRequest(BaseModel):
         return value
 
 
+class AccessTokenCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    expiry_note: str | None = Field(default=None, max_length=500)
+
+
 def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
     return {
         "id": runtime.id,
@@ -216,6 +223,18 @@ def _router_model_payload(model: RouterModel) -> dict[str, object]:
         "path": model.path,
         "status": model.status,
         "metadata": model.metadata,
+    }
+
+
+def _access_token_payload(token: AccessTokenRecord) -> dict[str, object]:
+    return {
+        "id": token.id,
+        "name": token.name,
+        "last_four": token.last_four,
+        "expiry_note": token.expiry_note,
+        "enabled": token.enabled,
+        "created_at": token.created_at,
+        "revoked_at": token.revoked_at,
     }
 
 
@@ -296,6 +315,7 @@ def create_app(
         engine = create_database_engine(app_settings.database_path)
         app.state.runtime_registry = RuntimeRegistry(engine, prober=runtime_prober)
         app.state.profile_registry = ProfileRegistry(engine)
+        app.state.token_registry = TokenRegistry(engine, app_settings.data_dir)
         app.state.download_registry = DownloadRegistry(engine, app_settings.data_dir / "models")
         token = app_settings.hf_token.get_secret_value() if app_settings.hf_token else None
         app.state.huggingface_catalog = catalog or HuggingFaceCatalog(token)
@@ -314,7 +334,9 @@ def create_app(
             )
         )
         app.state.router_client = router_client or HttpRouterClient(
-            app_settings.router_host, app_settings.router_port
+            app_settings.router_host,
+            app_settings.router_port,
+            api_key_provider=app.state.token_registry.control_token,
         )
         app.state.event_broker = EventBroker(app_settings.event_history_capacity)
         app.state.router_event_synchronizer = RouterEventSynchronizer(
@@ -367,6 +389,7 @@ def create_app(
     async def start_router(runtime_id: str, request: Request) -> dict[str, object]:
         runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
         profiles = cast(ProfileRegistry, request.app.state.profile_registry)
+        tokens = cast(TokenRegistry, request.app.state.token_registry)
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
         run_registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
         if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
@@ -399,6 +422,7 @@ def create_app(
             preset_path=preset_path,
             host=app_settings.router_host,
             port=app_settings.router_port,
+            api_key_file=tokens.key_file if tokens.has_enabled() else None,
         )
         endpoint = f"http://{app_settings.router_host}:{app_settings.router_port}"
         run = run_registry.create(runtime.id, endpoint)
@@ -629,6 +653,72 @@ def create_app(
         except RouterAPIError as error:
             raise _router_api_error(error) from error
         return {"success": True}
+
+    @app.get("/api/tokens")
+    async def list_access_tokens(request: Request) -> list[dict[str, object]]:
+        registry = cast(TokenRegistry, request.app.state.token_registry)
+        return [_access_token_payload(token) for token in registry.list()]
+
+    @app.post("/api/tokens", status_code=status.HTTP_201_CREATED)
+    async def create_access_token(
+        token_request: AccessTokenCreateRequest, request: Request
+    ) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="stop the router before changing access tokens",
+            )
+        registry = cast(TokenRegistry, request.app.state.token_registry)
+        try:
+            created = registry.create(token_request.name, token_request.expiry_note)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
+        return {**_access_token_payload(created.record), "token": created.token}
+
+    @app.delete("/api/tokens/{token_id}")
+    async def revoke_access_token(token_id: str, request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="stop the router before changing access tokens",
+            )
+        registry = cast(TokenRegistry, request.app.state.token_registry)
+        try:
+            return _access_token_payload(registry.revoke(token_id))
+        except AccessTokenNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    @app.get("/api/integrations/opencode")
+    async def opencode_configuration(request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        client = cast(RouterClient, request.app.state.router_client)
+        _require_running_router(supervisor)
+        try:
+            models = await client.list_models()
+        except RouterAPIError as error:
+            raise _router_api_error(error) from error
+        host = app_settings.router_host
+        if host in {"0.0.0.0", "::"}:
+            host = "127.0.0.1"
+        formatted_host = f"[{host}]" if ":" in host else host
+        return {
+            "$schema": "https://opencode.ai/config.json",
+            "provider": {
+                "llama-web-ui": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": "Local llama.cpp",
+                    "options": {
+                        "baseURL": f"http://{formatted_host}:{app_settings.router_port}/v1",
+                        "apiKey": "{env:LLAMA_WEB_UI_API_KEY}",
+                    },
+                    "models": {model.id: {"name": model.id} for model in models},
+                }
+            },
+        }
 
     @app.get("/api/runtimes")
     async def list_runtimes(request: Request) -> list[dict[str, object]]:

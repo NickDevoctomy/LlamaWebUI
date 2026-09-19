@@ -115,9 +115,11 @@ def test_server_start_status_and_stop(tmp_path: Path) -> None:
         runtime_prober=fake_probe,
         router_supervisor=supervisor,
         router_port_probe=available_port,
+        router_client=FakeRouterClient(),
     )
     with TestClient(app) as client:
         stopped = client.get("/api/server/status")
+        created_token = client.post("/api/tokens", json={"name": "OpenCode"})
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -126,18 +128,29 @@ def test_server_start_status_and_stop(tmp_path: Path) -> None:
             json={"alias": "local-model", "runtime_id": runtime_id, "model_path": str(model)},
         )
         started = client.post("/api/server/start", json={"runtime_id": runtime_id})
+        opencode = client.get("/api/integrations/opencode")
+        token_while_running = client.post("/api/tokens", json={"name": "Blocked"})
         running = client.get("/api/server/status")
         duplicate = client.post("/api/server/start", json={"runtime_id": runtime_id})
         stopped_again = client.post("/api/server/stop")
         runs = client.get("/api/server/runs")
 
     assert stopped.json()["state"] == "stopped"
+    assert created_token.status_code == 201
     assert started.status_code == 200
     assert started.json()["state"] == "ready"
     assert started.json()["pid"] == 4321
     assert started.json()["endpoint"] == "http://127.0.0.1:9876"
     assert running.json()["state"] == "ready"
     assert duplicate.status_code == 409
+    assert token_while_running.status_code == 409
+    assert opencode.status_code == 200
+    provider = opencode.json()["provider"]["llama-web-ui"]
+    assert provider["options"] == {
+        "baseURL": "http://127.0.0.1:9876/v1",
+        "apiKey": "{env:LLAMA_WEB_UI_API_KEY}",
+    }
+    assert provider["models"] == {"local-model": {"name": "local-model"}}
     assert stopped_again.json()["state"] == "stopped"
     assert len(runs.json()) == 1
     assert runs.json()[0]["state"] == "stopped"
@@ -145,6 +158,10 @@ def test_server_start_status_and_stop(tmp_path: Path) -> None:
     assert runs.json()[0]["exit_code"] == 0
     assert runs.json()[0]["ended_at"] is not None
     assert launched[0][0] == str(executable.resolve())
+    assert launched[0][-2] == "--api-key-file"
+    assert Path(launched[0][-1]).read_text(encoding="utf-8").strip() == (
+        created_token.json()["token"]
+    )
     preset_path = Path(launched[0][2])
     assert "[local-model]" in preset_path.read_text(encoding="utf-8")
 

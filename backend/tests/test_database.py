@@ -21,6 +21,7 @@ def test_upgrade_database_creates_schema_and_is_idempotent(tmp_path: Path) -> No
     engine = create_database_engine(path)
     try:
         assert set(inspect(engine).get_table_names()) == {
+            "access_tokens",
             "alembic_version",
             "download_jobs",
             "model_profiles",
