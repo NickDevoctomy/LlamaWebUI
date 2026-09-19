@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+
 import httpx
 import pytest
 
@@ -5,6 +7,19 @@ from llamawebui.services import router_client
 from llamawebui.services.router_client import HttpRouterClient, RouterAPIError
 
 pytestmark = pytest.mark.asyncio
+
+
+class ChunkedStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: tuple[bytes, ...]) -> None:
+        self._chunks = chunks
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            yield chunk
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 def install_transport(
@@ -101,3 +116,114 @@ async def test_router_client_rejects_unconfirmed_and_empty_actions(
         await client.load_model("model")
     with pytest.raises(ValueError, match="must not be empty"):
         await client.unload_model(" ")
+
+
+async def test_router_client_parses_native_model_event_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = ChunkedStream(
+        (
+            b": keepalive\n\ndata: {\"model\":\"local-model\",\n",
+            b'data: "event":"model_status","data":{"status":"loading"}}\n\n',
+            b"event: ignored-upstream-field\n",
+            b'data: {"model":"local-model","event":"download_progress",',
+            b'"data":{"file":{"done":5,"total":10}}}',
+        )
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/models/sse"
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=stream)
+
+    install_transport(monkeypatch, httpx.MockTransport(handler))
+    events = [event async for event in HttpRouterClient("127.0.0.1", 1234).model_events()]
+
+    assert [(event.model, event.event) for event in events] == [
+        ("local-model", "model_status"),
+        ("local-model", "download_progress"),
+    ]
+    assert events[0].data == {"status": "loading"}
+    assert events[1].data["file"] == {"done": 5, "total": 10}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        b"data: not-json\n\n",
+        b"data: []\n\n",
+        b'data: {"model":"local-model","event":"model_status"}\n\n',
+        b'data: {"model":"","event":"model_status","data":{}}\n\n',
+        b'data: {"model":"local-model","event":"bad\\nevent","data":{}}\n\n',
+    ),
+)
+async def test_router_client_rejects_invalid_model_events(
+    monkeypatch: pytest.MonkeyPatch, payload: bytes
+) -> None:
+    install_transport(
+        monkeypatch,
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=ChunkedStream((payload,)),
+            )
+        ),
+    )
+
+    with pytest.raises(RouterAPIError, match="invalid model event"):
+        _ = [event async for event in HttpRouterClient("127.0.0.1", 1234).model_events()]
+
+
+async def test_router_client_reports_model_event_stream_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_transport(
+        monkeypatch,
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                503,
+                json={"error": {"message": "router unavailable"}},
+            )
+        ),
+    )
+
+    with pytest.raises(RouterAPIError, match="router unavailable") as error:
+        _ = [event async for event in HttpRouterClient("127.0.0.1", 1234).model_events()]
+    assert error.value.status_code == 503
+
+
+async def test_closing_model_event_iterator_closes_upstream_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = ChunkedStream(
+        (b'data: {"model":"model","event":"model_status","data":{}}\n\n',)
+    )
+    install_transport(
+        monkeypatch,
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=stream,
+            )
+        ),
+    )
+    events = HttpRouterClient("127.0.0.1", 1234).model_events()
+
+    assert (await anext(events)).event == "model_status"
+    assert not stream.closed
+    await events.aclose()
+
+    assert stream.closed
+
+
+async def test_router_client_rejects_non_event_stream_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_transport(
+        monkeypatch,
+        httpx.MockTransport(lambda request: httpx.Response(200, text="not an event stream")),
+    )
+
+    with pytest.raises(RouterAPIError, match="invalid model event stream"):
+        _ = [event async for event in HttpRouterClient("127.0.0.1", 1234).model_events()]

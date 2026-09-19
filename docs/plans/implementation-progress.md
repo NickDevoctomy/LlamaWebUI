@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-19
 **Branch:** `alpha`
-**Baseline commit:** `5df2326` (`feat: add bounded router crash recovery`)
+**Baseline commit:** `e003434` (`feat: terminate owned router process trees`)
 **Active phase:** Phase 4 - Server lifecycle
 
 This is the session handoff document. Update it after each completed implementation slice. The authoritative requirements remain in [llama-web-ui-plan.md](llama-web-ui-plan.md).
@@ -14,10 +14,10 @@ The delivery plan has eight numbered phases (`0` through `7`). Work has intentio
 | Phase | Status | Implemented | Important remaining work |
 | --- | --- | --- | --- |
 | 0. Feasibility spikes | Partial | Real llama.cpp b11053 probed; required Qwen flags confirmed; generated preset accepted; `/v1/models` returned the test alias; Windows parent/child process-tree shutdown verified | Real load/inference/SSE/tool tests, API-key reload behavior, older-build comparison |
-| 1. Application foundation | Partial | Python package, FastAPI, settings, SQLite, Alembic, portable data directory | Event channel, structured/redacted logging, single-instance lock, diagnostics, frontend/static packaging |
+| 1. Application foundation | Partial | Python package, FastAPI, settings, SQLite, Alembic, portable data directory, native router model-event SSE relay | Unified event channel with sequencing/replay, structured/redacted logging, single-instance lock, diagnostics, frontend/static packaging |
 | 2. Runtime manager | Partial | Register/list/get/reprobe/remove; option/device capability parsing; in-use deletion guard | GitHub release discovery/install, stable-to-build resolution, digest verification, switching/rollback |
 | 3. Local library and profiles | Partial | Profile persistence, typed Qwen options, capability validation, shard completeness, deterministic atomic single/combined preset writing | Directory scanning, GGUF metadata, logical model records, command import/export |
-| 4. Server lifecycle | In progress | Router state machine, validated argument vector, process-group launch, single-process supervisor, HTTP readiness polling, bounded log tail, crash observation, owned process-tree graceful/forced shutdown, serialized status/start/stop/restart API, durable run and restart-attempt history, safe port preflight, bounded crash recovery with rapid-failure suppression, native model list/load/unload API | Native model SSE synchronization |
+| 4. Server lifecycle | In progress | Router state machine, validated argument vector, process-group launch, single-process supervisor, HTTP readiness polling, bounded log tail, crash observation, owned process-tree graceful/forced shutdown, serialized status/start/stop/restart API, durable run and restart-attempt history, safe port preflight, bounded crash recovery with rapid-failure suppression, native model list/load/unload/SSE APIs | Unified event sequencing/replay and real-runtime SSE acceptance |
 | 5. Hugging Face and downloads | Advanced partial | Search, repository manifests, quant/shard grouping, revision-pinned durable jobs, staging, size verification, atomic publication, pause/resume/cancel coordination, startup reconciliation | In-file progress, retry/backoff, periodic disk checks, checksum/ETag verification, event streaming, projector association, safe deletion, library reconciliation |
 | 6. Tokens and onboarding | Not started | None | Token metadata/key file, lifecycle integration, OpenCode generation, authenticated connection tests |
 | 7. Hardening and release | Not started | Unit quality gate established | Packaging, CI/platform matrix, accessibility, backup/restore, offline behavior, operator docs |
@@ -34,18 +34,18 @@ From `backend/` using `..\.venv\Scripts\python.exe`:
 ..\.venv\Scripts\python.exe -m mypy src/llamawebui
 ```
 
-Last verified at commit `5df2326`:
+Last verified at commit `e003434`:
 
-- 110 tests passed.
-- 94.44% total coverage; configured floor is 90% with branch coverage enabled.
+- 111 tests passed.
+- 93.72% total coverage; configured floor is 90% with branch coverage enabled.
 - Ruff passed.
 - Strict mypy passed for 31 source files.
 - Two dependency deprecation warnings remain: Starlette/httpx and AnyIO `BlockingPortal`.
 
-Current working tree after the Windows process-tree termination slice:
+Current working tree after the native router SSE synchronization slice:
 
-- 111 tests passed.
-- 93.72% total coverage.
+- 120 tests passed.
+- 94% total coverage.
 - Ruff, strict mypy, and `git diff --check` passed.
 
 ## Implemented Backend Surfaces
@@ -58,6 +58,7 @@ Current working tree after the Windows process-tree termination slice:
 - Downloads: `domain/download_job.py`, `services/download_registry.py`, `services/download_worker.py`, `services/download_coordinator.py`
 - Router lifecycle: `domain/router_lifecycle.py`, `services/router_supervisor.py`, `services/server_run_registry.py`, `services/router_client.py`
 - Native router model control: guarded `GET /api/server/models`, `POST /api/server/models/load`, and `POST /api/server/models/unload`; exact llama.cpp payloads, optional list reload, preserved metadata, and sanitized upstream errors
+- Native router model events: typed `/models/sse` parsing with frame/media validation, guarded `GET /api/server/models/events` relay, sanitized terminal errors, and disconnect-driven upstream cleanup
 - Crash recovery: configurable maximum attempts/window/backoff, readiness checks on each relaunch, rapid-failure suppression, cancellation on explicit stop/restart/shutdown, and a durable run row per attempt
 - Process-tree shutdown: `CTRL_BREAK_EVENT` to the owned Windows process group, bounded wait, then `taskkill /PID ... /T /F`; POSIX group signaling remains portable; a real Windows parent/child integration test verifies forced cleanup
 
@@ -83,6 +84,7 @@ Current working tree after the Windows process-tree termination slice:
 
 ## Next Implementation Slice
 
-1. Add native `/models/sse` event synchronization through the control plane.
+1. Add the unified `/api/events` broker with monotonic IDs, bounded replay, stale-cursor reconciliation, and native router event publication.
+2. Run real-runtime router SSE acceptance without downloading the 93.7 GB target model.
 
-After that, complete Phase 4 event synchronization and real-runtime lifecycle acceptance checks.
+After that, complete the remaining Phase 4 real-runtime lifecycle acceptance checks.

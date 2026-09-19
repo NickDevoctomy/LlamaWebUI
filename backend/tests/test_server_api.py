@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 
 import httpx
@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from llamawebui.app import create_app
 from llamawebui.config import Settings
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
-from llamawebui.services.router_client import RouterAPIError, RouterModel
+from llamawebui.services.router_client import RouterAPIError, RouterModel, RouterModelEvent
 from llamawebui.services.router_supervisor import (
     RouterProcess,
     RouterRestartPolicy,
@@ -50,6 +50,7 @@ class FakeRouterClient:
     def __init__(self) -> None:
         self.actions: list[tuple[str, object]] = []
         self.error: RouterAPIError | None = None
+        self.events: tuple[RouterModelEvent, ...] = ()
 
     async def list_models(self, *, reload: bool = False) -> tuple[RouterModel, ...]:
         if self.error is not None:
@@ -73,6 +74,12 @@ class FakeRouterClient:
         if self.error is not None:
             raise self.error
         self.actions.append(("unload", model))
+
+    async def model_events(self) -> AsyncIterator[RouterModelEvent]:
+        if self.error is not None:
+            raise self.error
+        for event in self.events:
+            yield event
 
 
 def test_server_start_status_and_stop(tmp_path: Path) -> None:
@@ -501,10 +508,12 @@ def test_router_model_operations_require_running_server(tmp_path: Path) -> None:
     )
     with TestClient(app) as client:
         listed = client.get("/api/server/models")
+        events = client.get("/api/server/models/events")
         loaded = client.post("/api/server/models/load", json={"model": "local-model"})
         invalid = client.post("/api/server/models/load", json={"model": " "})
 
     assert listed.status_code == 409
+    assert events.status_code == 409
     assert loaded.status_code == 409
     assert invalid.status_code == 422
     assert router_client.actions == []
@@ -517,6 +526,13 @@ def test_router_model_list_load_and_unload(tmp_path: Path) -> None:
     model.touch()
     process = FakeProcess()
     router_client = FakeRouterClient()
+    router_client.events = (
+        RouterModelEvent(
+            model="local-model",
+            event="model_status",
+            data={"status": "loaded"},
+        ),
+    )
 
     async def fake_probe(path: Path) -> RuntimeProbeResult:
         return RuntimeProbeResult(
@@ -554,16 +570,30 @@ def test_router_model_list_load_and_unload(tmp_path: Path) -> None:
         listed = client.get("/api/server/models", params={"reload": True})
         loaded = client.post("/api/server/models/load", json={"model": "local-model"})
         unloaded = client.post("/api/server/models/unload", json={"model": "local-model"})
+        events = client.get("/api/server/models/events")
         router_client.error = RouterAPIError(503, "native router unavailable")
         failed = client.get("/api/server/models")
+        failed_events = client.get("/api/server/models/events")
 
     assert listed.status_code == 200
     assert listed.json()[0]["id"] == "local-model"
     assert listed.json()[0]["status"] == {"value": "loaded"}
     assert loaded.json() == {"success": True}
     assert unloaded.json() == {"success": True}
+    assert events.headers["content-type"].startswith("text/event-stream")
+    assert events.text == (
+        "event: model_status\n"
+        'data: {"model":"local-model","event":"model_status",'
+        '"data":{"status":"loaded"}}\n\n'
+    )
     assert failed.status_code == 502
     assert failed.json() == {"detail": "native router unavailable"}
+    assert failed_events.status_code == 200
+    assert failed_events.text == (
+        "event: error\n"
+        'data: {"model":"*","event":"error",'
+        '"data":{"code":502,"message":"native router unavailable"}}\n\n'
+    )
     assert router_client.actions == [
         ("list", True),
         ("load", "local-model"),

@@ -1,12 +1,14 @@
 """FastAPI application factory."""
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, cast
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, Field, field_validator
 
@@ -47,6 +49,7 @@ from llamawebui.services.router_client import (
     RouterAPIError,
     RouterClient,
     RouterModel,
+    RouterModelEvent,
 )
 from llamawebui.services.router_port import RouterPortProbe, probe_router_port
 from llamawebui.services.router_supervisor import RouterRestartPolicy, RouterSupervisor
@@ -208,6 +211,14 @@ def _router_model_payload(model: RouterModel) -> dict[str, object]:
         "status": model.status,
         "metadata": model.metadata,
     }
+
+
+def _router_model_event_sse(event: RouterModelEvent) -> str:
+    payload = json.dumps(
+        {"model": event.model, "event": event.event, "data": event.data},
+        separators=(",", ":"),
+    )
+    return f"event: {event.event}\ndata: {payload}\n\n"
 
 
 def _require_running_router(supervisor: RouterSupervisor) -> None:
@@ -474,6 +485,32 @@ def create_app(
         except RouterAPIError as error:
             raise _router_api_error(error) from error
         return [_router_model_payload(model) for model in models]
+
+    @app.get("/api/server/models/events")
+    async def stream_router_model_events(request: Request) -> StreamingResponse:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        client = cast(RouterClient, request.app.state.router_client)
+        _require_running_router(supervisor)
+
+        async def event_stream() -> AsyncIterator[str]:
+            try:
+                async for event in client.model_events():
+                    yield _router_model_event_sse(event)
+            except RouterAPIError as error:
+                status_code = error.status_code if 400 <= error.status_code < 500 else 502
+                yield _router_model_event_sse(
+                    RouterModelEvent(
+                        model="*",
+                        event="error",
+                        data={"code": status_code, "message": str(error)},
+                    )
+                )
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.post("/api/server/models/load")
     async def load_router_model(

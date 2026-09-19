@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -22,12 +24,21 @@ class RouterModel:
     metadata: dict[str, object]
 
 
+@dataclass(frozen=True, slots=True)
+class RouterModelEvent:
+    model: str
+    event: str
+    data: dict[str, object]
+
+
 class RouterClient(Protocol):
     async def list_models(self, *, reload: bool = False) -> tuple[RouterModel, ...]: ...
 
     async def load_model(self, model: str) -> None: ...
 
     async def unload_model(self, model: str) -> None: ...
+
+    def model_events(self) -> AsyncIterator[RouterModelEvent]: ...
 
 
 class HttpRouterClient:
@@ -77,6 +88,40 @@ class HttpRouterClient:
     async def unload_model(self, model: str) -> None:
         await self._model_action("/models/unload", model)
 
+    async def model_events(self) -> AsyncIterator[RouterModelEvent]:
+        try:
+            timeout = httpx.Timeout(30.0, read=None)
+            async with httpx.AsyncClient(
+                base_url=self._base_url, headers=self._headers, timeout=timeout
+            ) as client, client.stream("GET", "/models/sse") as response:
+                if response.is_error:
+                    await response.aread()
+                    raise RouterAPIError(response.status_code, _error_message(response))
+                if response.headers.get("content-type", "").split(";", 1)[0].strip() != (
+                    "text/event-stream"
+                ):
+                    raise RouterAPIError(
+                        502, "llama.cpp returned an invalid model event stream"
+                    )
+                data_lines: list[str] = []
+                async for line in response.aiter_lines():
+                    if not line:
+                        if data_lines:
+                            yield _parse_model_event("\n".join(data_lines))
+                            data_lines.clear()
+                        continue
+                    if line.startswith(":"):
+                        continue
+                    field, _, value = line.partition(":")
+                    if field == "data":
+                        data_lines.append(value.removeprefix(" "))
+                if data_lines:
+                    yield _parse_model_event("\n".join(data_lines))
+        except RouterAPIError:
+            raise
+        except httpx.HTTPError as error:
+            raise RouterAPIError(502, "llama.cpp model event stream failed") from error
+
     async def _model_action(self, path: str, model: str) -> None:
         if not model.strip():
             raise ValueError("model ID must not be empty")
@@ -120,3 +165,30 @@ def _error_message(response: httpx.Response) -> str:
         if isinstance(error, dict) and isinstance(error.get("message"), str):
             return cast(str, error["message"])
     return "llama.cpp router request failed"
+
+
+def _parse_model_event(raw_data: str) -> RouterModelEvent:
+    try:
+        payload = json.loads(raw_data)
+    except json.JSONDecodeError as error:
+        raise RouterAPIError(502, "llama.cpp returned an invalid model event") from error
+    if not isinstance(payload, dict):
+        raise RouterAPIError(502, "llama.cpp returned an invalid model event")
+    model = payload.get("model")
+    event = payload.get("event")
+    data = payload.get("data")
+    if (
+        not isinstance(model, str)
+        or not model
+        or not isinstance(event, str)
+        or not event
+        or "\r" in event
+        or "\n" in event
+        or not isinstance(data, dict)
+    ):
+        raise RouterAPIError(502, "llama.cpp returned an invalid model event")
+    return RouterModelEvent(
+        model=model,
+        event=event,
+        data=cast(dict[str, object], data),
+    )
