@@ -74,3 +74,22 @@ class DownloadJobRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
+
+
+class ServerRunRecord(Base):
+    __tablename__ = "server_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    runtime_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("runtimes.id", ondelete="SET NULL"), index=True
+    )
+    endpoint: Mapped[str] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(String(20))
+    pid: Mapped[int | None] = mapped_column()
+    exit_code: Mapped[int | None] = mapped_column()
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )

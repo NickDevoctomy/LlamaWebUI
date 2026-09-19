@@ -37,6 +37,7 @@ class RouterProcess(Protocol):
 
 RouterLauncher = Callable[[Sequence[str]], Awaitable[RouterProcess]]
 RouterHealthProbe = Callable[[str, int], Awaitable[bool]]
+RouterStateObserver = Callable[[RouterState, int | None, int | None], None]
 
 
 async def probe_router_health(host: str, port: int) -> bool:
@@ -84,6 +85,7 @@ class RouterSupervisor:
         self._state = RouterState.STOPPED
         self._last_exit_code: int | None = None
         self._logs: deque[str] = deque(maxlen=log_capacity)
+        self._state_observer: RouterStateObserver | None = None
 
     @property
     def state(self) -> RouterState:
@@ -101,17 +103,21 @@ class RouterSupervisor:
     def logs(self) -> tuple[str, ...]:
         return tuple(self._logs)
 
+    def set_state_observer(self, observer: RouterStateObserver | None) -> None:
+        self._state_observer = observer
+
     async def start(self, launch: RouterLaunch) -> None:
         arguments = launch.arguments()
         require_transition(self._state, RouterState.STARTING)
-        self._state = RouterState.STARTING
+        self._set_state(RouterState.STARTING)
         self._last_exit_code = None
         try:
             process = await self._launcher(arguments)
         except Exception:
-            self._state = RouterState.CRASHED
+            self._set_state(RouterState.CRASHED)
             raise
         self._process = process
+        self._notify_state()
         self._watch_task = asyncio.create_task(self._watch(process))
         if process.stdout is not None:
             self._log_task = asyncio.create_task(self._capture_logs(process.stdout))
@@ -130,6 +136,8 @@ class RouterSupervisor:
                 while not await self._health_probe(launch.host, launch.port):
                     process = self._process
                     if process is None or process.returncode is not None:
+                        if self._watch_task is not None:
+                            await self._watch_task
                         raise RuntimeError(
                             f"router exited before becoming ready: {self._last_exit_code}"
                         )
@@ -141,25 +149,25 @@ class RouterSupervisor:
 
     def mark_ready(self) -> None:
         require_transition(self._state, RouterState.READY)
-        self._state = RouterState.READY
+        self._set_state(RouterState.READY)
 
     def mark_degraded(self) -> None:
         require_transition(self._state, RouterState.DEGRADED)
-        self._state = RouterState.DEGRADED
+        self._set_state(RouterState.DEGRADED)
 
     async def stop(self, timeout_seconds: float = 10.0) -> None:
         if self._state is RouterState.STOPPED:
             return
         if self._state is RouterState.CRASHED:
             require_transition(self._state, RouterState.STOPPED)
-            self._state = RouterState.STOPPED
+            self._set_state(RouterState.STOPPED)
             return
 
         require_transition(self._state, RouterState.STOPPING)
-        self._state = RouterState.STOPPING
+        self._set_state(RouterState.STOPPING)
         process = self._process
         if process is None:
-            self._state = RouterState.CRASHED
+            self._set_state(RouterState.CRASHED)
             raise RuntimeError("router process is missing")
 
         process.terminate()
@@ -170,7 +178,7 @@ class RouterSupervisor:
             await process.wait()
 
         if self._state is RouterState.STOPPING:
-            self._state = RouterState.STOPPED
+            self._set_state(RouterState.STOPPED)
         self._process = None
         if self._watch_task is not None:
             await self._watch_task
@@ -185,11 +193,19 @@ class RouterSupervisor:
             return
         self._last_exit_code = exit_code
         if self._state is RouterState.STOPPING:
-            self._state = RouterState.STOPPED
+            self._set_state(RouterState.STOPPED)
         elif self._state is not RouterState.STOPPED:
-            self._state = RouterState.CRASHED
+            self._set_state(RouterState.CRASHED)
             self._process = None
 
     async def _capture_logs(self, output: RouterOutput) -> None:
         while line := await output.readline():
             self._logs.append(line.decode(errors="replace").rstrip("\r\n"))
+
+    def _set_state(self, state: RouterState) -> None:
+        self._state = state
+        self._notify_state()
+
+    def _notify_state(self) -> None:
+        if self._state_observer is not None:
+            self._state_observer(self._state, self.pid, self._last_exit_code)

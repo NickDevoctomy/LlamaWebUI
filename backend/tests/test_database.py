@@ -25,6 +25,7 @@ def test_upgrade_database_creates_schema_and_is_idempotent(tmp_path: Path) -> No
             "download_jobs",
             "model_profiles",
             "runtimes",
+            "server_runs",
             "settings",
         }
         runtime_columns = {column["name"] for column in inspect(engine).get_columns("runtimes")}

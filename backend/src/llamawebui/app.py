@@ -17,8 +17,13 @@ from llamawebui.domain.model_profile import (
     ProfileValidationError,
     write_combined_preset_atomic,
 )
-from llamawebui.domain.router_lifecycle import RouterLaunch
-from llamawebui.models import DownloadJobRecord, ModelProfileRecord, RuntimeRecord
+from llamawebui.domain.router_lifecycle import RouterLaunch, RouterState
+from llamawebui.models import (
+    DownloadJobRecord,
+    ModelProfileRecord,
+    RuntimeRecord,
+    ServerRunRecord,
+)
 from llamawebui.services.download_coordinator import DownloadCoordinator
 from llamawebui.services.download_registry import (
     DownloadJobNotFoundError,
@@ -44,6 +49,7 @@ from llamawebui.services.runtime_registry import (
     RuntimeNotFoundError,
     RuntimeRegistry,
 )
+from llamawebui.services.server_run_registry import ServerRunRegistry
 
 
 class RuntimeRegistrationRequest(BaseModel):
@@ -162,6 +168,20 @@ def _server_payload(supervisor: RouterSupervisor, settings: Settings) -> dict[st
     }
 
 
+def _server_run_payload(run: ServerRunRecord) -> dict[str, object]:
+    return {
+        "id": run.id,
+        "runtime_id": run.runtime_id,
+        "endpoint": run.endpoint,
+        "state": run.state,
+        "pid": run.pid,
+        "exit_code": run.exit_code,
+        "error": run.error,
+        "started_at": run.started_at,
+        "ended_at": run.ended_at,
+    }
+
+
 def _hub_error(error: HfHubHTTPError) -> HTTPException:
     response_status = error.response.status_code if error.response is not None else None
     status_code = (
@@ -197,10 +217,24 @@ def create_app(
         )
         app.state.download_coordinator.start_pending()
         app.state.router_supervisor = router_supervisor or RouterSupervisor()
+        app.state.server_run_registry = ServerRunRegistry(engine)
+        app.state.active_server_run_id = None
+
+        def record_router_state(
+            state: RouterState, pid: int | None, exit_code: int | None
+        ) -> None:
+            run_id = cast(str | None, app.state.active_server_run_id)
+            if run_id is not None:
+                app.state.server_run_registry.update(
+                    run_id, state, pid=pid, exit_code=exit_code
+                )
+
+        app.state.router_supervisor.set_state_observer(record_router_state)
         try:
             yield
         finally:
             await app.state.router_supervisor.stop()
+            app.state.router_supervisor.set_state_observer(None)
             await app.state.download_coordinator.shutdown()
             engine.dispose()
 
@@ -220,6 +254,11 @@ def create_app(
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
         return _server_payload(supervisor, app_settings)
 
+    @app.get("/api/server/runs")
+    async def list_server_runs(request: Request) -> list[dict[str, object]]:
+        registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
+        return [_server_run_payload(run) for run in registry.list()]
+
     @app.post("/api/server/start")
     async def start_server(
         start_request: ServerStartRequest, request: Request
@@ -227,6 +266,12 @@ def create_app(
         runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
         profiles = cast(ProfileRegistry, request.app.state.profile_registry)
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        run_registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"router cannot start while {supervisor.state}",
+            )
         try:
             runtime = runtimes.get(start_request.runtime_id)
         except RuntimeNotFoundError as error:
@@ -253,20 +298,44 @@ def create_app(
             host=app_settings.router_host,
             port=app_settings.router_port,
         )
+        endpoint = f"http://{app_settings.router_host}:{app_settings.router_port}"
+        run = run_registry.create(runtime.id, endpoint)
+        request.app.state.active_server_run_id = run.id
         try:
             await supervisor.start(launch)
             await supervisor.wait_until_ready(
                 launch, timeout_seconds=app_settings.router_ready_timeout_seconds
             )
         except TimeoutError as error:
+            run_registry.update(
+                run.id,
+                supervisor.state,
+                pid=supervisor.pid,
+                exit_code=supervisor.last_exit_code,
+                error=str(error),
+            )
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(error)
             ) from error
-        except OSError as error:
+        except (OSError, RuntimeError) as error:
+            run_registry.update(
+                run.id,
+                supervisor.state,
+                pid=supervisor.pid,
+                exit_code=supervisor.last_exit_code,
+                error=str(error),
+            )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)
             ) from error
         except ValueError as error:
+            run_registry.update(
+                run.id,
+                supervisor.state,
+                pid=supervisor.pid,
+                exit_code=supervisor.last_exit_code,
+                error=str(error),
+            )
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         return _server_payload(supervisor, app_settings)
 

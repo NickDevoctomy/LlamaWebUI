@@ -142,6 +142,29 @@ async def test_supervisor_detects_unexpected_exit_and_can_reset(tmp_path: Path) 
     assert supervisor.state is RouterState.STOPPED
 
 
+async def test_readiness_reports_early_process_exit(tmp_path: Path) -> None:
+    process = FakeProcess()
+    observed: list[tuple[RouterState, int | None, int | None]] = []
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        return process
+
+    async def unhealthy(host: str, port: int) -> bool:
+        process.exit(23)
+        return False
+
+    supervisor = RouterSupervisor(launcher, unhealthy)
+    supervisor.set_state_observer(lambda state, pid, code: observed.append((state, pid, code)))
+    launch = launch_configuration(tmp_path)
+    await supervisor.start(launch)
+
+    with pytest.raises(RuntimeError, match="exited before becoming ready: 23"):
+        await supervisor.wait_until_ready(launch, poll_interval_seconds=0)
+
+    assert supervisor.state is RouterState.CRASHED
+    assert observed[-1] == (RouterState.CRASHED, 1234, 23)
+
+
 async def test_supervisor_force_kills_after_timeout(tmp_path: Path) -> None:
     process = FakeProcess(terminate_exits=False)
 

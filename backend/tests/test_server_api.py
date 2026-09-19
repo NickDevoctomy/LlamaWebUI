@@ -77,6 +77,7 @@ def test_server_start_status_and_stop(tmp_path: Path) -> None:
         running = client.get("/api/server/status")
         duplicate = client.post("/api/server/start", json={"runtime_id": runtime_id})
         stopped_again = client.post("/api/server/stop")
+        runs = client.get("/api/server/runs")
 
     assert stopped.json()["state"] == "stopped"
     assert started.status_code == 200
@@ -86,6 +87,11 @@ def test_server_start_status_and_stop(tmp_path: Path) -> None:
     assert running.json()["state"] == "ready"
     assert duplicate.status_code == 409
     assert stopped_again.json()["state"] == "stopped"
+    assert len(runs.json()) == 1
+    assert runs.json()[0]["state"] == "stopped"
+    assert runs.json()[0]["pid"] == 4321
+    assert runs.json()[0]["exit_code"] == 0
+    assert runs.json()[0]["ended_at"] is not None
     assert launched[0][0] == str(executable.resolve())
     preset_path = Path(launched[0][2])
     assert "[local-model]" in preset_path.read_text(encoding="utf-8")
@@ -189,3 +195,8 @@ def test_server_start_reports_readiness_timeout(tmp_path: Path) -> None:
     assert response.status_code == 504
     assert "did not become ready" in response.json()["detail"]
     assert status_response.json()["state"] == "stopped"
+    with TestClient(app) as client:
+        runs = client.get("/api/server/runs").json()
+    assert len(runs) == 1
+    assert runs[0]["state"] == "stopped"
+    assert "did not become ready" in runs[0]["error"]
