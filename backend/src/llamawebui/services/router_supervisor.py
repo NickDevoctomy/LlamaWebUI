@@ -5,10 +5,17 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Protocol
 
+import httpx
+
 from llamawebui.domain.router_lifecycle import RouterLaunch, RouterState, require_transition
+
+
+class RouterOutput(Protocol):
+    async def readline(self) -> bytes: ...
 
 
 class RouterProcess(Protocol):
@@ -18,6 +25,9 @@ class RouterProcess(Protocol):
     @property
     def returncode(self) -> int | None: ...
 
+    @property
+    def stdout(self) -> RouterOutput | None: ...
+
     def terminate(self) -> None: ...
 
     def kill(self) -> None: ...
@@ -26,6 +36,20 @@ class RouterProcess(Protocol):
 
 
 RouterLauncher = Callable[[Sequence[str]], Awaitable[RouterProcess]]
+RouterHealthProbe = Callable[[str, int], Awaitable[bool]]
+
+
+async def probe_router_health(host: str, port: int) -> bool:
+    probe_host = "127.0.0.1" if host == "0.0.0.0" else host
+    if probe_host == "::":
+        probe_host = "::1"
+    formatted_host = f"[{probe_host}]" if ":" in probe_host else probe_host
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(f"http://{formatted_host}:{port}/health")
+    except httpx.HTTPError:
+        return False
+    return response.status_code == 200
 
 
 async def launch_router(arguments: Sequence[str]) -> RouterProcess:
@@ -45,12 +69,21 @@ async def launch_router(arguments: Sequence[str]) -> RouterProcess:
 
 
 class RouterSupervisor:
-    def __init__(self, launcher: RouterLauncher = launch_router) -> None:
+    def __init__(
+        self,
+        launcher: RouterLauncher = launch_router,
+        health_probe: RouterHealthProbe = probe_router_health,
+        *,
+        log_capacity: int = 500,
+    ) -> None:
         self._launcher = launcher
+        self._health_probe = health_probe
         self._process: RouterProcess | None = None
         self._watch_task: asyncio.Task[None] | None = None
+        self._log_task: asyncio.Task[None] | None = None
         self._state = RouterState.STOPPED
         self._last_exit_code: int | None = None
+        self._logs: deque[str] = deque(maxlen=log_capacity)
 
     @property
     def state(self) -> RouterState:
@@ -64,6 +97,10 @@ class RouterSupervisor:
     def last_exit_code(self) -> int | None:
         return self._last_exit_code
 
+    @property
+    def logs(self) -> tuple[str, ...]:
+        return tuple(self._logs)
+
     async def start(self, launch: RouterLaunch) -> None:
         arguments = launch.arguments()
         require_transition(self._state, RouterState.STARTING)
@@ -76,6 +113,31 @@ class RouterSupervisor:
             raise
         self._process = process
         self._watch_task = asyncio.create_task(self._watch(process))
+        if process.stdout is not None:
+            self._log_task = asyncio.create_task(self._capture_logs(process.stdout))
+
+    async def wait_until_ready(
+        self,
+        launch: RouterLaunch,
+        *,
+        timeout_seconds: float = 30.0,
+        poll_interval_seconds: float = 0.25,
+    ) -> None:
+        if self._state is not RouterState.STARTING:
+            raise ValueError(f"router is not starting: {self._state}")
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                while not await self._health_probe(launch.host, launch.port):
+                    process = self._process
+                    if process is None or process.returncode is not None:
+                        raise RuntimeError(
+                            f"router exited before becoming ready: {self._last_exit_code}"
+                        )
+                    await asyncio.sleep(poll_interval_seconds)
+        except TimeoutError:
+            await self.stop()
+            raise TimeoutError(f"router did not become ready within {timeout_seconds:g}s") from None
+        self.mark_ready()
 
     def mark_ready(self) -> None:
         require_transition(self._state, RouterState.READY)
@@ -113,6 +175,9 @@ class RouterSupervisor:
         if self._watch_task is not None:
             await self._watch_task
             self._watch_task = None
+        if self._log_task is not None:
+            await self._log_task
+            self._log_task = None
 
     async def _watch(self, process: RouterProcess) -> None:
         exit_code = await process.wait()
@@ -124,3 +189,7 @@ class RouterSupervisor:
         elif self._state is not RouterState.STOPPED:
             self._state = RouterState.CRASHED
             self._process = None
+
+    async def _capture_logs(self, output: RouterOutput) -> None:
+        while line := await output.readline():
+            self._logs.append(line.decode(errors="replace").rstrip("\r\n"))

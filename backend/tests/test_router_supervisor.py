@@ -15,8 +15,11 @@ pytestmark = pytest.mark.asyncio
 class FakeProcess:
     pid = 1234
 
-    def __init__(self, *, terminate_exits: bool = True) -> None:
+    def __init__(
+        self, *, terminate_exits: bool = True, stdout: asyncio.StreamReader | None = None
+    ) -> None:
         self.returncode: int | None = None
+        self.stdout = stdout
         self.terminated = False
         self.killed = False
         self._terminate_exits = terminate_exits
@@ -72,6 +75,53 @@ async def test_supervisor_starts_marks_ready_and_stops(tmp_path: Path) -> None:
     assert supervisor.state is RouterState.STOPPED
     assert supervisor.pid is None
     assert supervisor.last_exit_code == 0
+
+
+async def test_supervisor_waits_for_health_and_captures_bounded_logs(tmp_path: Path) -> None:
+    output = asyncio.StreamReader()
+    process = FakeProcess(stdout=output)
+    health_results = iter((False, True))
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        return process
+
+    async def health_probe(host: str, port: int) -> bool:
+        assert (host, port) == ("127.0.0.1", 1234)
+        return next(health_results)
+
+    supervisor = RouterSupervisor(launcher, health_probe, log_capacity=2)
+    launch = launch_configuration(tmp_path)
+    await supervisor.start(launch)
+    output.feed_data(b"first\nsecond\nthird\xff\n")
+    output.feed_eof()
+    await supervisor.wait_until_ready(launch, poll_interval_seconds=0)
+    await asyncio.sleep(0)
+
+    assert supervisor.state is RouterState.READY
+    assert supervisor.logs == ("second", "third\ufffd")
+    await supervisor.stop()
+
+
+async def test_supervisor_stops_after_readiness_timeout(tmp_path: Path) -> None:
+    process = FakeProcess()
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        return process
+
+    async def unhealthy(host: str, port: int) -> bool:
+        return False
+
+    supervisor = RouterSupervisor(launcher, unhealthy)
+    launch = launch_configuration(tmp_path)
+    await supervisor.start(launch)
+
+    with pytest.raises(TimeoutError, match="did not become ready"):
+        await supervisor.wait_until_ready(
+            launch, timeout_seconds=0.001, poll_interval_seconds=0
+        )
+
+    assert process.terminated
+    assert supervisor.state is RouterState.STOPPED
 
 
 async def test_supervisor_detects_unexpected_exit_and_can_reset(tmp_path: Path) -> None:
