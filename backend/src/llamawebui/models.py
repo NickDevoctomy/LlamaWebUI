@@ -55,3 +55,22 @@ class ModelProfileRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
+
+
+class DownloadJobRecord(Base):
+    __tablename__ = "download_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    repo_id: Mapped[str] = mapped_column(String(400))
+    revision: Mapped[str] = mapped_column(String(64))
+    group_key: Mapped[str] = mapped_column(Text)
+    files: Mapped[list[dict[str, object]]] = mapped_column(JSON)
+    destination: Mapped[str] = mapped_column(Text)
+    total_bytes: Mapped[int] = mapped_column()
+    completed_bytes: Mapped[int] = mapped_column(default=0)
+    state: Mapped[str] = mapped_column(String(20))
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )

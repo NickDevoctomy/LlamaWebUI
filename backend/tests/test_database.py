@@ -22,6 +22,7 @@ def test_upgrade_database_creates_schema_and_is_idempotent(tmp_path: Path) -> No
     try:
         assert set(inspect(engine).get_table_names()) == {
             "alembic_version",
+            "download_jobs",
             "model_profiles",
             "runtimes",
             "settings",
