@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-19
 **Branch:** `alpha`
-**Baseline commit:** `50cf97e` (`feat: add runtime and profile setup workflows`)
+**Baseline commit:** `1f8eca6` (`feat: add access and OpenCode workflows`)
 **Active phase:** Frontend implementation
 
 This is the session handoff document. Update it after each completed implementation slice. The authoritative requirements remain in [llama-web-ui-plan.md](llama-web-ui-plan.md).
@@ -110,11 +110,11 @@ For development acceptance, use a tiny test GGUF or a mocked download/catalog pa
 
 ## Resume State
 
-- Commit `50cf97e` is the clean checked-in baseline on `alpha` and `origin/alpha`.
-- The Access/OpenCode frontend slice is complete but uncommitted in `frontend/src/AccessPanel.tsx`, `App.tsx`, `SetupPanels.tsx`, `api.ts`, `styles.css`, and `App.test.tsx`.
-- `data/llamawebui.db` and `data/generated/` contain local runtime/application state. Do not commit, delete, or reset them.
+- Commit `1f8eca6` is the checked-in Access/OpenCode baseline on `alpha` and `origin/alpha`.
+- The Access/OpenCode frontend slice and root `data/` ignore rule are committed.
+- Root `data/` is ignored because it contains local runtime/application state. Commit `1f8eca6` removed `data/llamawebui.db` from Git tracking only; the local file remains intact and must not be deleted or reset.
 - Six frontend tests pass, the production build passes, editor diagnostics are clean, and `git diff --check` passes.
 - At handoff, the backend is healthy on `http://127.0.0.1:18080/api/health` and Vite is serving `http://127.0.0.1:5173/`.
-- First action next session: commit the completed Access slice if desired, then implement the Discover/Downloads frontend against the existing backend APIs.
+- First action next session: implement the Discover/Downloads frontend against the existing backend APIs.
 
 Deferred backend work includes real-runtime SSE/inference acceptance, local library scanning, release installation, broader event publication, and authenticated connection tests.
