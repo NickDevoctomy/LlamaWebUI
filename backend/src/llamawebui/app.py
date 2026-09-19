@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal, cast
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
@@ -10,11 +11,18 @@ from pydantic import BaseModel, Field
 
 from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
-from llamawebui.models import RuntimeRecord
+from llamawebui.domain.model_profile import AdvancedOption, ModelProfile, ProfileValidationError
+from llamawebui.models import ModelProfileRecord, RuntimeRecord
 from llamawebui.services.huggingface_catalog import Catalog, HuggingFaceCatalog
+from llamawebui.services.profile_registry import (
+    ProfileAliasExistsError,
+    ProfileNotFoundError,
+    ProfileRegistry,
+)
 from llamawebui.services.runtime_probe import RuntimeProber, probe_runtime
 from llamawebui.services.runtime_registry import (
     RuntimeAlreadyRegisteredError,
+    RuntimeInUseError,
     RuntimeNotFoundError,
     RuntimeRegistry,
 )
@@ -24,6 +32,54 @@ class RuntimeRegistrationRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     executable_path: str
     backend: str | None = Field(default=None, max_length=50)
+
+
+class AdvancedOptionRequest(BaseModel):
+    name: str
+    value: str | int | bool = True
+
+
+class ProfileCreateRequest(BaseModel):
+    alias: str
+    runtime_id: str
+    model_path: str
+    enabled: bool = True
+    no_reasoning_preserve: bool = False
+    n_gpu_layers: int | None = None
+    ctx_size: int | None = None
+    flash_attn: str | None = None
+    load_mode: str | None = None
+    lazy_mode: str | None = None
+    cache_ram: int | None = None
+    fit: str | None = None
+    override_tensor: tuple[str, ...] = ()
+    cache_type_k: str | None = None
+    cache_type_v: str | None = None
+    threads: int | None = None
+    batch_size: int | None = None
+    ubatch_size: int | None = None
+    advanced: tuple[AdvancedOptionRequest, ...] = ()
+
+    def to_domain(self) -> ModelProfile:
+        return ModelProfile(
+            alias=self.alias,
+            model_path=Path(self.model_path),
+            no_reasoning_preserve=self.no_reasoning_preserve,
+            n_gpu_layers=self.n_gpu_layers,
+            ctx_size=self.ctx_size,
+            flash_attn=self.flash_attn,
+            load_mode=self.load_mode,
+            lazy_mode=self.lazy_mode,
+            cache_ram=self.cache_ram,
+            fit=self.fit,
+            override_tensor=self.override_tensor,
+            cache_type_k=self.cache_type_k,
+            cache_type_v=self.cache_type_v,
+            threads=self.threads,
+            batch_size=self.batch_size,
+            ubatch_size=self.ubatch_size,
+            advanced=tuple(AdvancedOption(option.name, option.value) for option in self.advanced),
+        )
 
 
 def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
@@ -38,6 +94,18 @@ def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
         "options": runtime.options,
         "usable": runtime.probe_error is None and bool(runtime.options),
         "probe_error": runtime.probe_error,
+    }
+
+
+def _profile_payload(profile: ModelProfileRecord) -> dict[str, object]:
+    return {
+        "id": profile.id,
+        "alias": profile.alias,
+        "runtime_id": profile.runtime_id,
+        "model_path": profile.model_path,
+        "configuration": profile.configuration,
+        "preset": profile.preset,
+        "enabled": profile.enabled,
     }
 
 
@@ -63,6 +131,7 @@ def create_app(
         upgrade_database(app_settings.database_path)
         engine = create_database_engine(app_settings.database_path)
         app.state.runtime_registry = RuntimeRegistry(engine, prober=runtime_prober)
+        app.state.profile_registry = ProfileRegistry(engine)
         token = app_settings.hf_token.get_secret_value() if app_settings.hf_token else None
         app.state.huggingface_catalog = catalog or HuggingFaceCatalog(token)
         try:
@@ -124,7 +193,43 @@ def create_app(
         registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
         try:
             registry.remove(runtime_id)
+        except RuntimeInUseError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    @app.get("/api/profiles")
+    async def list_profiles(request: Request) -> list[dict[str, object]]:
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        return [_profile_payload(profile) for profile in registry.list()]
+
+    @app.post("/api/profiles", status_code=status.HTTP_201_CREATED)
+    async def create_profile(
+        profile_request: ProfileCreateRequest, request: Request
+    ) -> dict[str, object]:
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        try:
+            profile = registry.create(
+                profile=profile_request.to_domain(),
+                runtime_id=profile_request.runtime_id,
+                enabled=profile_request.enabled,
+            )
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ProfileAliasExistsError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except ProfileValidationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
+            ) from error
+        return _profile_payload(profile)
+
+    @app.delete("/api/profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def remove_profile(profile_id: str, request: Request) -> None:
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        try:
+            registry.remove(profile_id)
+        except ProfileNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
     @app.get("/api/huggingface/models")

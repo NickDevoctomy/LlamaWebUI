@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import Engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from llamawebui.models import RuntimeRecord
@@ -18,6 +19,10 @@ class RuntimeAlreadyRegisteredError(ValueError):
 
 
 class RuntimeNotFoundError(LookupError):
+    pass
+
+
+class RuntimeInUseError(ValueError):
     pass
 
 
@@ -77,7 +82,11 @@ class RuntimeRegistry:
         with self._sessions() as session:
             record = self._get(session, runtime_id)
             session.delete(record)
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError as error:
+                session.rollback()
+                raise RuntimeInUseError(f"runtime is in use: {runtime_id}") from error
 
     @staticmethod
     def _ensure_unique(session: Session, executable_path: Path) -> None:

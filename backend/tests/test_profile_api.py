@@ -1,0 +1,104 @@
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from llamawebui.app import create_app
+from llamawebui.config import Settings
+from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
+from llamawebui.services.runtime_probe import RuntimeProbeResult
+
+
+def _profile_payload(runtime_id: str, model: Path) -> dict[str, object]:
+    return {
+        "alias": "local-model",
+        "runtime_id": runtime_id,
+        "model_path": str(model),
+        "ctx_size": 4096,
+        "no_reasoning_preserve": True,
+    }
+
+
+def test_profile_persists_preset_and_guards_runtime_removal(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model = tmp_path / "model.gguf"
+    model.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "ctx-size", "no-reasoning-preserve"}),
+                raw_help="help",
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    settings = Settings(data_dir=tmp_path / "data")
+    app = create_app(settings, runtime_prober=fake_probe)
+    with TestClient(app) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        payload = _profile_payload(runtime_id, model)
+        created = client.post("/api/profiles", json=payload)
+        duplicate = client.post("/api/profiles", json=payload)
+        blocked = client.delete(f"/api/runtimes/{runtime_id}")
+        listed = client.get("/api/profiles")
+        removed = client.delete(f"/api/profiles/{created.json()['id']}")
+        missing = client.delete(f"/api/profiles/{created.json()['id']}")
+        runtime_removed = client.delete(f"/api/runtimes/{runtime_id}")
+
+    assert created.status_code == 201
+    assert "ctx-size = 4096" in created.json()["preset"]
+    assert created.json()["configuration"]["no_reasoning_preserve"] is True
+    assert duplicate.status_code == 409
+    assert blocked.status_code == 409
+    assert len(listed.json()) == 1
+    assert removed.status_code == 204
+    assert missing.status_code == 404
+    assert runtime_removed.status_code == 204
+
+    with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        assert client.get("/api/profiles").json() == []
+
+
+def test_profile_rejects_unknown_runtime_and_invalid_options(tmp_path: Path) -> None:
+    model = tmp_path / "model.gguf"
+    model.touch()
+    settings = Settings(data_dir=tmp_path / "data")
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path,
+            version=RuntimeVersion(build="1", commit=None, raw=""),
+            capabilities=RuntimeCapabilities(options=frozenset({"model"}), raw_help=""),
+            devices_output=None,
+            errors=(),
+        )
+
+    with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        unknown = client.post(
+            "/api/profiles",
+            json={"alias": "model", "runtime_id": "missing", "model_path": str(model)},
+        )
+        executable = tmp_path / "llama-server.exe"
+        executable.touch()
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        invalid = client.post(
+            "/api/profiles",
+            json={
+                "alias": "model",
+                "runtime_id": runtime_id,
+                "model_path": str(model),
+                "ctx_size": 4096,
+            },
+        )
+
+    assert unknown.status_code == 404
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"] == ["runtime does not support --ctx-size"]

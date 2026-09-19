@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -34,6 +34,24 @@ class SettingRecord(Base):
 
     key: Mapped[str] = mapped_column(String(200), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ModelProfileRecord(Base):
+    __tablename__ = "model_profiles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    alias: Mapped[str] = mapped_column(String(64), unique=True)
+    runtime_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("runtimes.id", ondelete="RESTRICT"), index=True
+    )
+    model_path: Mapped[str] = mapped_column(Text)
+    configuration: Mapped[dict[str, object]] = mapped_column(JSON)
+    preset: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )

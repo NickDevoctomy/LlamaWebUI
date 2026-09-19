@@ -4,7 +4,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, event
 
 
 def database_url(path: Path) -> str:
@@ -12,7 +12,15 @@ def database_url(path: Path) -> str:
 
 
 def create_database_engine(path: Path) -> Engine:
-    return create_engine(database_url(path), connect_args={"check_same_thread": False})
+    engine = create_engine(database_url(path), connect_args={"check_same_thread": False})
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(dbapi_connection: object, _connection_record: object) -> None:
+        cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    return engine
 
 
 def migration_config(path: Path) -> Config:
