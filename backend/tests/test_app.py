@@ -85,3 +85,77 @@ def test_runtime_registration_reports_missing_executable(tmp_path: Path) -> None
 
     assert response.status_code == 404
     assert "llama-server executable not found" in response.json()["detail"]
+
+
+def test_runtime_can_be_reprobed_and_removed(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    build = "old"
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build=build, commit=None, raw=build),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"models-preset", build}), raw_help=build
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    with TestClient(
+        create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
+    ) as client:
+        created = client.post(
+            "/api/runtimes",
+            json={"name": "Mutable runtime", "executable_path": str(executable)},
+        ).json()
+        runtime_id = created["id"]
+        build = "new"
+
+        reprobed = client.post(f"/api/runtimes/{runtime_id}/probe")
+        fetched = client.get(f"/api/runtimes/{runtime_id}")
+        removed = client.delete(f"/api/runtimes/{runtime_id}")
+        missing = client.get(f"/api/runtimes/{runtime_id}")
+        remove_missing = client.delete(f"/api/runtimes/{runtime_id}")
+        probe_missing = client.post("/api/runtimes/unknown/probe")
+
+    assert reprobed.status_code == 200
+    assert reprobed.json()["build"] == "new"
+    assert reprobed.json()["options"] == ["models-preset", "new"]
+    assert fetched.json()["build"] == "new"
+    assert removed.status_code == 204
+    assert missing.status_code == 404
+    assert remove_missing.status_code == 404
+    assert probe_missing.status_code == 404
+
+
+def test_reprobe_missing_executable_preserves_runtime(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        if not path.exists():
+            raise FileNotFoundError(f"llama-server executable not found: {path}")
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="original", commit=None, raw="original"),
+            capabilities=RuntimeCapabilities(options=frozenset({"help"}), raw_help="help"),
+            devices_output=None,
+            errors=(),
+        )
+
+    with TestClient(
+        create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
+    ) as client:
+        runtime_id = client.post(
+            "/api/runtimes",
+            json={"name": "Removed binary", "executable_path": str(executable)},
+        ).json()["id"]
+        executable.unlink()
+
+        response = client.post(f"/api/runtimes/{runtime_id}/probe")
+        persisted = client.get(f"/api/runtimes/{runtime_id}")
+
+    assert response.status_code == 404
+    assert persisted.json()["build"] == "original"

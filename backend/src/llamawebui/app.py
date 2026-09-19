@@ -11,7 +11,11 @@ from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.models import RuntimeRecord
 from llamawebui.services.runtime_probe import RuntimeProber, probe_runtime
-from llamawebui.services.runtime_registry import RuntimeAlreadyRegisteredError, RuntimeRegistry
+from llamawebui.services.runtime_registry import (
+    RuntimeAlreadyRegisteredError,
+    RuntimeNotFoundError,
+    RuntimeRegistry,
+)
 
 
 class RuntimeRegistrationRequest(BaseModel):
@@ -67,6 +71,14 @@ def create_app(
         registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
         return [_runtime_payload(runtime) for runtime in registry.list()]
 
+    @app.get("/api/runtimes/{runtime_id}")
+    async def get_runtime(runtime_id: str, request: Request) -> dict[str, object]:
+        registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        try:
+            return _runtime_payload(registry.get(runtime_id))
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
     @app.post("/api/runtimes", status_code=status.HTTP_201_CREATED)
     async def register_runtime(
         registration: RuntimeRegistrationRequest, request: Request
@@ -83,6 +95,22 @@ def create_app(
         except RuntimeAlreadyRegisteredError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         return _runtime_payload(runtime)
+
+    @app.post("/api/runtimes/{runtime_id}/probe")
+    async def reprobe_runtime(runtime_id: str, request: Request) -> dict[str, object]:
+        registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        try:
+            return _runtime_payload(await registry.reprobe(runtime_id))
+        except (FileNotFoundError, RuntimeNotFoundError) as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    @app.delete("/api/runtimes/{runtime_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def remove_runtime(runtime_id: str, request: Request) -> None:
+        registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        try:
+            registry.remove(runtime_id)
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
     return app
 
