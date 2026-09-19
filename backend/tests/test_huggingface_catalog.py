@@ -38,6 +38,15 @@ async def test_search_requests_gguf_models_and_maps_results() -> None:
     assert results[0].gated
 
 
+async def test_search_preserves_provider_relevance_order_by_default() -> None:
+    api = Mock(spec=HfApi)
+    api.list_models.return_value = []
+
+    await HuggingFaceCatalog(api=api).search("model")
+
+    api.list_models.assert_called_once_with(filter="gguf", search="model", limit=25, full=True)
+
+
 async def test_repository_pins_revision_and_groups_files() -> None:
     api = Mock(spec=HfApi)
     api.model_info.return_value = SimpleNamespace(

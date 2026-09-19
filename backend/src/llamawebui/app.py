@@ -2,14 +2,16 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import cast
+from typing import Literal, cast
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
+from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, Field
 
 from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.models import RuntimeRecord
+from llamawebui.services.huggingface_catalog import Catalog, HuggingFaceCatalog
 from llamawebui.services.runtime_probe import RuntimeProber, probe_runtime
 from llamawebui.services.runtime_registry import (
     RuntimeAlreadyRegisteredError,
@@ -39,8 +41,19 @@ def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
     }
 
 
+def _hub_error(error: HfHubHTTPError) -> HTTPException:
+    response_status = error.response.status_code if error.response is not None else None
+    status_code = (
+        status.HTTP_404_NOT_FOUND if response_status == 404 else status.HTTP_502_BAD_GATEWAY
+    )
+    return HTTPException(status_code=status_code, detail="Hugging Face request failed")
+
+
 def create_app(
-    settings: Settings | None = None, *, runtime_prober: RuntimeProber = probe_runtime
+    settings: Settings | None = None,
+    *,
+    runtime_prober: RuntimeProber = probe_runtime,
+    catalog: Catalog | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
 
@@ -50,6 +63,8 @@ def create_app(
         upgrade_database(app_settings.database_path)
         engine = create_database_engine(app_settings.database_path)
         app.state.runtime_registry = RuntimeRegistry(engine, prober=runtime_prober)
+        token = app_settings.hf_token.get_secret_value() if app_settings.hf_token else None
+        app.state.huggingface_catalog = catalog or HuggingFaceCatalog(token)
         try:
             yield
         finally:
@@ -111,6 +126,57 @@ def create_app(
             registry.remove(runtime_id)
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    @app.get("/api/huggingface/models")
+    async def search_huggingface_models(
+        request: Request,
+        q: str = Query(min_length=1, max_length=200),
+        sort: Literal["downloads", "likes", "last_modified", "trending_score"] | None = None,
+        limit: int = Query(default=25, ge=1, le=100),
+    ) -> list[dict[str, object]]:
+        hub = cast(Catalog, request.app.state.huggingface_catalog)
+        try:
+            results = await hub.search(q, sort=sort, limit=limit)
+        except HfHubHTTPError as error:
+            raise _hub_error(error) from error
+        return [
+            {
+                "repo_id": result.repo_id,
+                "downloads": result.downloads,
+                "likes": result.likes,
+                "last_modified": result.last_modified,
+                "gated": result.gated,
+                "private": result.private,
+                "tags": result.tags,
+            }
+            for result in results
+        ]
+
+    @app.get("/api/huggingface/repositories/{repo_id:path}")
+    async def get_huggingface_repository(
+        repo_id: str, request: Request, revision: str | None = None
+    ) -> dict[str, object]:
+        hub = cast(Catalog, request.app.state.huggingface_catalog)
+        try:
+            manifest = await hub.repository(repo_id, revision=revision)
+        except HfHubHTTPError as error:
+            raise _hub_error(error) from error
+        return {
+            "repo_id": manifest.repo_id,
+            "revision": manifest.revision,
+            "groups": [
+                {
+                    "key": group.key,
+                    "quantization": group.quantization,
+                    "total_size": group.total_size,
+                    "complete": group.complete,
+                    "files": [
+                        {"path": file.path, "size": file.size} for file in group.files
+                    ],
+                }
+                for group in manifest.groups
+            ],
+        }
 
     return app
 

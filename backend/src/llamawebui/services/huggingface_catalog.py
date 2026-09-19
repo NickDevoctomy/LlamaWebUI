@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol
 
 from huggingface_hub import HfApi
 
@@ -29,20 +31,32 @@ class RepositoryManifest:
     groups: tuple[GgufGroup, ...]
 
 
+class Catalog(Protocol):
+    async def search(
+        self, query: str, *, sort: str | None = None, limit: int = 25
+    ) -> Sequence[ModelSearchResult]: ...
+
+    async def repository(
+        self, repo_id: str, *, revision: str | None = None
+    ) -> RepositoryManifest: ...
+
+
 class HuggingFaceCatalog:
     def __init__(self, token: str | None = None, *, api: HfApi | None = None) -> None:
         self._api = api or HfApi(token=token)
 
     async def search(
-        self, query: str, *, sort: str = "downloads", limit: int = 25
+        self, query: str, *, sort: str | None = None, limit: int = 25
     ) -> tuple[ModelSearchResult, ...]:
-        models = await asyncio.to_thread(
-            lambda: list(
-                self._api.list_models(
-                    filter="gguf", search=query, sort=sort, direction=-1, limit=limit, full=True
-                )
-            )
-        )
+        request: dict[str, object] = {
+            "filter": "gguf",
+            "search": query,
+            "limit": limit,
+            "full": True,
+        }
+        if sort is not None:
+            request.update(sort=sort, direction=-1)
+        models = await asyncio.to_thread(lambda: list(self._api.list_models(**request)))
         return tuple(
             ModelSearchResult(
                 repo_id=model.id,
