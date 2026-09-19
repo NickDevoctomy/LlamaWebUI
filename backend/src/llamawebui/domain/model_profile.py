@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -140,6 +141,34 @@ def write_preset_atomic(
     destination: Path, profile: ModelProfile, capabilities: RuntimeCapabilities
 ) -> None:
     content = render_preset(profile, capabilities)
+    _write_text_atomic(destination, content)
+
+
+def combine_presets(presets: Sequence[str]) -> str:
+    if not presets:
+        raise ValueError("at least one enabled model profile is required")
+
+    sections: list[str] = []
+    names: set[str] = set()
+    for preset in presets:
+        lines = preset.splitlines()
+        section_headers = [line for line in lines if line.startswith("[") and line.endswith("]")]
+        if not lines or lines[0] != "version = 1" or len(section_headers) != 1:
+            raise ValueError("stored model preset is malformed")
+        name = section_headers[0][1:-1]
+        if not name or name in names:
+            raise ValueError(f"duplicate or empty model preset section: {name}")
+        names.add(name)
+        section_start = lines.index(section_headers[0])
+        sections.append("\n".join(lines[section_start:]))
+    return "version = 1\n\n" + "\n\n".join(sections) + "\n"
+
+
+def write_combined_preset_atomic(destination: Path, presets: Sequence[str]) -> None:
+    _write_text_atomic(destination, combine_presets(presets))
+
+
+def _write_text_atomic(destination: Path, content: str) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
     try:

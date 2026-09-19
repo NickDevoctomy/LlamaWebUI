@@ -6,8 +6,10 @@ from llamawebui.domain.model_profile import (
     AdvancedOption,
     ModelProfile,
     ProfileValidationError,
+    combine_presets,
     render_preset,
     validate_profile,
+    write_combined_preset_atomic,
     write_preset_atomic,
 )
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities
@@ -123,3 +125,43 @@ def test_write_preset_atomically_replaces_existing_file(tmp_path: Path) -> None:
 
     assert destination.read_text(encoding="utf-8").startswith("version = 1\n")
     assert list(destination.parent.iterdir()) == [destination]
+
+
+def test_combine_presets_emits_one_version_and_each_section(tmp_path: Path) -> None:
+    first_model = tmp_path / "first.gguf"
+    second_model = tmp_path / "second.gguf"
+    first_model.touch()
+    second_model.touch()
+    supported = capabilities("model")
+    presets = (
+        render_preset(ModelProfile("first", first_model), supported),
+        render_preset(ModelProfile("second", second_model), supported),
+    )
+    destination = tmp_path / "generated" / "llama-models.ini"
+
+    write_combined_preset_atomic(destination, presets)
+
+    combined = destination.read_text(encoding="utf-8")
+    assert combined.count("version = 1") == 1
+    assert combined.count("[first]") == 1
+    assert combined.count("[second]") == 1
+    assert combined == combine_presets(presets)
+
+
+@pytest.mark.parametrize(
+    ("presets", "message"),
+    (
+        ((), "at least one enabled"),
+        (("[model]\nmodel = x\n",), "malformed"),
+        (("version = 1\n\n[one]\n[x]\n",), "malformed"),
+        (
+            ("version = 1\n\n[same]\nmodel = one\n",) * 2,
+            "duplicate or empty",
+        ),
+    ),
+)
+def test_combine_presets_rejects_invalid_input(
+    presets: tuple[str, ...], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        combine_presets(presets)

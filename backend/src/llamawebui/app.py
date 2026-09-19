@@ -11,7 +11,13 @@ from pydantic import BaseModel, Field
 
 from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
-from llamawebui.domain.model_profile import AdvancedOption, ModelProfile, ProfileValidationError
+from llamawebui.domain.model_profile import (
+    AdvancedOption,
+    ModelProfile,
+    ProfileValidationError,
+    write_combined_preset_atomic,
+)
+from llamawebui.domain.router_lifecycle import RouterLaunch
 from llamawebui.models import DownloadJobRecord, ModelProfileRecord, RuntimeRecord
 from llamawebui.services.download_coordinator import DownloadCoordinator
 from llamawebui.services.download_registry import (
@@ -30,6 +36,7 @@ from llamawebui.services.profile_registry import (
     ProfileNotFoundError,
     ProfileRegistry,
 )
+from llamawebui.services.router_supervisor import RouterSupervisor
 from llamawebui.services.runtime_probe import RuntimeProber, probe_runtime
 from llamawebui.services.runtime_registry import (
     RuntimeAlreadyRegisteredError,
@@ -99,6 +106,10 @@ class DownloadCreateRequest(BaseModel):
     revision: str | None = Field(default=None, max_length=100)
 
 
+class ServerStartRequest(BaseModel):
+    runtime_id: str
+
+
 def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
     return {
         "id": runtime.id,
@@ -141,6 +152,16 @@ def _download_payload(job: DownloadJobRecord) -> dict[str, object]:
     }
 
 
+def _server_payload(supervisor: RouterSupervisor, settings: Settings) -> dict[str, object]:
+    return {
+        "state": supervisor.state,
+        "pid": supervisor.pid,
+        "last_exit_code": supervisor.last_exit_code,
+        "endpoint": f"http://{settings.router_host}:{settings.router_port}",
+        "logs": supervisor.logs,
+    }
+
+
 def _hub_error(error: HfHubHTTPError) -> HTTPException:
     response_status = error.response.status_code if error.response is not None else None
     status_code = (
@@ -155,6 +176,7 @@ def create_app(
     runtime_prober: RuntimeProber = probe_runtime,
     catalog: Catalog | None = None,
     file_transfer: FileTransfer | None = None,
+    router_supervisor: RouterSupervisor | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
 
@@ -174,9 +196,11 @@ def create_app(
             DownloadWorker(app.state.download_registry, transfer),
         )
         app.state.download_coordinator.start_pending()
+        app.state.router_supervisor = router_supervisor or RouterSupervisor()
         try:
             yield
         finally:
+            await app.state.router_supervisor.stop()
             await app.state.download_coordinator.shutdown()
             engine.dispose()
 
@@ -190,6 +214,70 @@ def create_app(
             "database_path": str(app_settings.database_path),
             "hugging_face_token_configured": app_settings.hf_token is not None,
         }
+
+    @app.get("/api/server/status")
+    async def server_status(request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        return _server_payload(supervisor, app_settings)
+
+    @app.post("/api/server/start")
+    async def start_server(
+        start_request: ServerStartRequest, request: Request
+    ) -> dict[str, object]:
+        runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        profiles = cast(ProfileRegistry, request.app.state.profile_registry)
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        try:
+            runtime = runtimes.get(start_request.runtime_id)
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        if "models-preset" not in runtime.options:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="runtime does not support --models-preset",
+            )
+        enabled_profiles = profiles.list_enabled(runtime.id)
+        if not enabled_profiles:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="runtime has no enabled model profiles",
+            )
+
+        preset_path = app_settings.data_dir / "generated" / "llama-models.ini"
+        write_combined_preset_atomic(
+            preset_path, tuple(profile.preset for profile in enabled_profiles)
+        )
+        launch = RouterLaunch(
+            executable=Path(runtime.executable_path),
+            preset_path=preset_path,
+            host=app_settings.router_host,
+            port=app_settings.router_port,
+        )
+        try:
+            await supervisor.start(launch)
+            await supervisor.wait_until_ready(
+                launch, timeout_seconds=app_settings.router_ready_timeout_seconds
+            )
+        except TimeoutError as error:
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(error)
+            ) from error
+        except OSError as error:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)
+            ) from error
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return _server_payload(supervisor, app_settings)
+
+    @app.post("/api/server/stop")
+    async def stop_server(request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        try:
+            await supervisor.stop()
+        except (RuntimeError, ValueError) as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return _server_payload(supervisor, app_settings)
 
     @app.get("/api/runtimes")
     async def list_runtimes(request: Request) -> list[dict[str, object]]:

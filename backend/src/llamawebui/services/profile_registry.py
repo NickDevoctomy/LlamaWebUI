@@ -31,6 +31,18 @@ class ProfileRegistry:
             )
             return list(session.scalars(statement))
 
+    def list_enabled(self, runtime_id: str) -> tuple[ModelProfileRecord, ...]:
+        with self._sessions() as session:
+            statement = (
+                select(ModelProfileRecord)
+                .where(
+                    ModelProfileRecord.runtime_id == runtime_id,
+                    ModelProfileRecord.enabled.is_(True),
+                )
+                .order_by(ModelProfileRecord.alias, ModelProfileRecord.id)
+            )
+            return tuple(session.scalars(statement))
+
     def create(
         self, *, profile: ModelProfile, runtime_id: str, enabled: bool = True
     ) -> ModelProfileRecord:

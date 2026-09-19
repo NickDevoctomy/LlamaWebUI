@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     host: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1, le=65535)
+    router_host: str = "127.0.0.1"
+    router_port: int = Field(default=1234, ge=1, le=65535)
+    router_ready_timeout_seconds: float = Field(default=30.0, gt=0)
     hf_token: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("HF_TOKEN", "LLAMAWEBUI_HF_TOKEN"),
