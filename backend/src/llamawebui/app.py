@@ -11,8 +11,14 @@ from pydantic import BaseModel, Field
 
 from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
+from llamawebui.domain.download_job import DownloadState
 from llamawebui.domain.model_profile import AdvancedOption, ModelProfile, ProfileValidationError
-from llamawebui.models import ModelProfileRecord, RuntimeRecord
+from llamawebui.models import DownloadJobRecord, ModelProfileRecord, RuntimeRecord
+from llamawebui.services.download_registry import (
+    DownloadJobNotFoundError,
+    DownloadPlanError,
+    DownloadRegistry,
+)
 from llamawebui.services.huggingface_catalog import Catalog, HuggingFaceCatalog
 from llamawebui.services.profile_registry import (
     ProfileAliasExistsError,
@@ -82,6 +88,12 @@ class ProfileCreateRequest(BaseModel):
         )
 
 
+class DownloadCreateRequest(BaseModel):
+    repo_id: str = Field(min_length=3, max_length=400)
+    group_key: str = Field(min_length=1)
+    revision: str | None = Field(default=None, max_length=100)
+
+
 def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
     return {
         "id": runtime.id,
@@ -109,6 +121,21 @@ def _profile_payload(profile: ModelProfileRecord) -> dict[str, object]:
     }
 
 
+def _download_payload(job: DownloadJobRecord) -> dict[str, object]:
+    return {
+        "id": job.id,
+        "repo_id": job.repo_id,
+        "revision": job.revision,
+        "group_key": job.group_key,
+        "files": job.files,
+        "destination": job.destination,
+        "total_bytes": job.total_bytes,
+        "completed_bytes": job.completed_bytes,
+        "state": job.state,
+        "error": job.error,
+    }
+
+
 def _hub_error(error: HfHubHTTPError) -> HTTPException:
     response_status = error.response.status_code if error.response is not None else None
     status_code = (
@@ -132,6 +159,7 @@ def create_app(
         engine = create_database_engine(app_settings.database_path)
         app.state.runtime_registry = RuntimeRegistry(engine, prober=runtime_prober)
         app.state.profile_registry = ProfileRegistry(engine)
+        app.state.download_registry = DownloadRegistry(engine, app_settings.data_dir / "models")
         token = app_settings.hf_token.get_secret_value() if app_settings.hf_token else None
         app.state.huggingface_catalog = catalog or HuggingFaceCatalog(token)
         try:
@@ -282,6 +310,37 @@ def create_app(
                 for group in manifest.groups
             ],
         }
+
+    @app.get("/api/downloads")
+    async def list_downloads(request: Request) -> list[dict[str, object]]:
+        registry = cast(DownloadRegistry, request.app.state.download_registry)
+        return [_download_payload(job) for job in registry.list()]
+
+    @app.post("/api/downloads", status_code=status.HTTP_201_CREATED)
+    async def create_download(
+        download: DownloadCreateRequest, request: Request
+    ) -> dict[str, object]:
+        hub = cast(Catalog, request.app.state.huggingface_catalog)
+        registry = cast(DownloadRegistry, request.app.state.download_registry)
+        try:
+            manifest = await hub.repository(download.repo_id, revision=download.revision)
+            return _download_payload(registry.create(manifest, download.group_key))
+        except HfHubHTTPError as error:
+            raise _hub_error(error) from error
+        except DownloadPlanError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
+
+    @app.post("/api/downloads/{job_id}/cancel")
+    async def cancel_download(job_id: str, request: Request) -> dict[str, object]:
+        registry = cast(DownloadRegistry, request.app.state.download_registry)
+        try:
+            return _download_payload(registry.transition(job_id, DownloadState.CANCELLED))
+        except DownloadJobNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     return app
 
