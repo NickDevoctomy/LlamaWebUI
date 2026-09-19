@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from llamawebui.config import Settings
+from llamawebui.database import upgrade_database
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -14,6 +15,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         app_settings.data_dir.mkdir(parents=True, exist_ok=True)
+        upgrade_database(app_settings.database_path)
         yield
 
     app = FastAPI(title="LlamaWebUI", version="0.1.0", lifespan=lifespan)

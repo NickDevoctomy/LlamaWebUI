@@ -8,9 +8,11 @@ version = "0.1.0"
 description = "Local control plane for llama.cpp"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.16,<2",
     "fastapi>=0.116,<1",
     "httpx>=0.28,<1",
     "pydantic-settings>=2.10,<3",
+    "sqlalchemy>=2.0,<3",
     "uvicorn[standard]>=0.35,<1",
 ]
 
@@ -26,6 +28,9 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/llamawebui"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/llamawebui/migrations/script.py.mako" = "llamawebui/migrations/script.py.mako"
+
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers --cov=llamawebui --cov-branch --cov-report=term-missing --cov-fail-under=90"
 asyncio_mode = "strict"
@@ -34,6 +39,7 @@ testpaths = ["tests"]
 [tool.coverage.run]
 branch = true
 source = ["llamawebui"]
+omit = ["*/migrations/*"]
 
 [tool.coverage.report]
 fail_under = 90

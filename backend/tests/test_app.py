@@ -23,3 +23,4 @@ def test_health_creates_data_directory_without_exposing_token(tmp_path: Path) ->
     }
     assert "hf_private" not in response.text
     assert data_dir.is_dir()
+    assert settings.database_path.is_file()
