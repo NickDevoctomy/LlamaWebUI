@@ -8,6 +8,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+import uvicorn
+
+from llamawebui.app import create_app
+from llamawebui.config import Settings
 from llamawebui.services.runtime_probe import RuntimeProbeResult, probe_runtime
 
 
@@ -30,6 +34,7 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     probe_parser = subparsers.add_parser("probe-runtime", help="inspect a llama-server executable")
     probe_parser.add_argument("executable", type=Path)
+    subparsers.add_parser("serve", help="start the LlamaWebUI control API")
     return parser
 
 
@@ -44,6 +49,11 @@ def main() -> int:
 
         print(json.dumps(_probe_payload(result), indent=2))
         return 0 if result.usable else 1
+
+    if args.command == "serve":
+        settings = Settings()
+        uvicorn.run(create_app(settings), host=settings.host, port=settings.port)
+        return 0
 
     return 2
 

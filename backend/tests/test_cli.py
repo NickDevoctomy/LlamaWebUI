@@ -68,3 +68,20 @@ def test_probe_runtime_command_returns_failure_for_unusable_runtime(
 
     assert cli.main() == 1
     assert json.loads(capsys.readouterr().out)["errors"] == ["help probe failed"]
+
+
+def test_serve_command_uses_environment_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(app: object, *, host: str, port: int) -> None:
+        captured.update(app=app, host=host, port=port)
+
+    monkeypatch.setenv("LLAMAWEBUI_HOST", "127.0.0.2")
+    monkeypatch.setenv("LLAMAWEBUI_PORT", "9124")
+    monkeypatch.setattr("uvicorn.run", fake_run)
+    monkeypatch.setattr("sys.argv", ["llamawebui", "serve"])
+
+    assert cli.main() == 0
+    assert captured["host"] == "127.0.0.2"
+    assert captured["port"] == 9124
+    assert captured["app"] is not None
