@@ -38,6 +38,11 @@ from llamawebui.services.download_worker import (
     FileTransfer,
     HuggingFaceFileTransfer,
 )
+from llamawebui.services.event_broker import (
+    ControlEvent,
+    EventBroker,
+    EventCursorError,
+)
 from llamawebui.services.huggingface_catalog import Catalog, HuggingFaceCatalog
 from llamawebui.services.profile_registry import (
     ProfileAliasExistsError,
@@ -51,6 +56,7 @@ from llamawebui.services.router_client import (
     RouterModel,
     RouterModelEvent,
 )
+from llamawebui.services.router_event_sync import RouterEventSynchronizer
 from llamawebui.services.router_port import RouterPortProbe, probe_router_port
 from llamawebui.services.router_supervisor import RouterRestartPolicy, RouterSupervisor
 from llamawebui.services.runtime_probe import RuntimeProber, probe_runtime
@@ -221,6 +227,35 @@ def _router_model_event_sse(event: RouterModelEvent) -> str:
     return f"event: {event.event}\ndata: {payload}\n\n"
 
 
+def _control_event_sse(event: ControlEvent) -> str:
+    payload = json.dumps(event.data, separators=(",", ":"))
+    return f"id: {event.id}\nevent: {event.type}\ndata: {payload}\n\n"
+
+
+def _event_cursor(request: Request, after: int | None) -> int | None:
+    header = request.headers.get("last-event-id")
+    if header is None:
+        return after
+    try:
+        header_cursor = int(header)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Last-Event-ID must be a non-negative integer",
+        ) from error
+    if header_cursor < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Last-Event-ID must be a non-negative integer",
+        )
+    if after is not None and after != header_cursor:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="after and Last-Event-ID cursors must match",
+        )
+    return header_cursor
+
+
 def _require_running_router(supervisor: RouterSupervisor) -> None:
     if supervisor.state not in {RouterState.READY, RouterState.DEGRADED}:
         raise HTTPException(
@@ -281,6 +316,10 @@ def create_app(
         app.state.router_client = router_client or HttpRouterClient(
             app_settings.router_host, app_settings.router_port
         )
+        app.state.event_broker = EventBroker(app_settings.event_history_capacity)
+        app.state.router_event_synchronizer = RouterEventSynchronizer(
+            app.state.router_client, app.state.event_broker
+        )
         app.state.server_run_registry = ServerRunRegistry(engine)
         app.state.active_server_run_id = None
         app.state.router_lifecycle_lock = asyncio.Lock()
@@ -303,6 +342,14 @@ def create_app(
                 app.state.server_run_registry.update(
                     run_id, state, pid=pid, exit_code=exit_code
                 )
+            app.state.event_broker.publish(
+                "router.state",
+                {"state": state, "pid": pid, "exit_code": exit_code},
+            )
+            if state is RouterState.READY:
+                app.state.router_event_synchronizer.start()
+            elif state is not RouterState.DEGRADED:
+                app.state.router_event_synchronizer.deactivate()
 
         app.state.router_supervisor.set_state_observer(record_router_state)
         try:
@@ -311,6 +358,7 @@ def create_app(
             async with app.state.router_lifecycle_lock:
                 await app.state.router_supervisor.stop()
             app.state.router_supervisor.set_state_observer(None)
+            await app.state.router_event_synchronizer.shutdown()
             await app.state.download_coordinator.shutdown()
             engine.dispose()
 
@@ -415,6 +463,50 @@ def create_app(
             "database_path": str(app_settings.database_path),
             "hugging_face_token_configured": app_settings.hf_token is not None,
         }
+
+    @app.get("/api/events")
+    async def stream_events(
+        request: Request,
+        after: int | None = Query(default=None, ge=0),
+    ) -> StreamingResponse:
+        broker = cast(EventBroker, request.app.state.event_broker)
+        cursor = _event_cursor(request, after)
+        try:
+            subscription = broker.subscribe(cursor)
+        except EventCursorError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": str(error),
+                    "reconcile": "/api/server/status",
+                    "oldest_event_id": error.oldest,
+                    "latest_event_id": error.latest,
+                },
+            ) from error
+
+        async def event_stream() -> AsyncIterator[str]:
+            try:
+                async for event in subscription:
+                    yield _control_event_sse(event)
+            except EventCursorError as error:
+                payload = json.dumps(
+                    {
+                        "message": str(error),
+                        "reconcile": "/api/server/status",
+                        "oldest_event_id": error.oldest,
+                        "latest_event_id": error.latest,
+                    },
+                    separators=(",", ":"),
+                )
+                yield f"event: reconcile\ndata: {payload}\n\n"
+            finally:
+                subscription.close()
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/server/status")
     async def server_status(request: Request) -> dict[str, object]:

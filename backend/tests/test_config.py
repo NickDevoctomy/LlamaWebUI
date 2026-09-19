@@ -27,3 +27,8 @@ def test_settings_load_environment_and_resolve_data_directory(
 def test_settings_reject_invalid_port() -> None:
     with pytest.raises(ValidationError):
         Settings(port=70000)
+
+
+def test_settings_reject_empty_event_history() -> None:
+    with pytest.raises(ValidationError):
+        Settings(event_history_capacity=0)

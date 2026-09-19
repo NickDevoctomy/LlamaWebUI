@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     router_restart_max_attempts: int = Field(default=3, ge=0)
     router_restart_window_seconds: float = Field(default=60.0, gt=0)
     router_restart_delay_seconds: float = Field(default=1.0, ge=0)
+    event_history_capacity: int = Field(default=256, ge=1)
     hf_token: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("HF_TOKEN", "LLAMAWEBUI_HF_TOKEN"),

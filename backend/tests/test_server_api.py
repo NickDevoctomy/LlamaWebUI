@@ -434,6 +434,14 @@ async def test_server_recovers_with_durable_attempt_history(tmp_path: Path) -> N
     second_process = FakeProcess(1002)
     processes = iter((first_process, second_process))
     restarted = asyncio.Event()
+    router_client = FakeRouterClient()
+    router_client.events = (
+        RouterModelEvent(
+            model="local-model",
+            event="model_status",
+            data={"status": "loaded"},
+        ),
+    )
 
     async def fake_probe(path: Path) -> RuntimeProbeResult:
         return RuntimeProbeResult(
@@ -465,6 +473,7 @@ async def test_server_recovers_with_durable_attempt_history(tmp_path: Path) -> N
         runtime_prober=fake_probe,
         router_supervisor=supervisor,
         router_port_probe=available_port,
+        router_client=router_client,
     )
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
@@ -486,12 +495,17 @@ async def test_server_recovers_with_durable_attempt_history(tmp_path: Path) -> N
             assert (
                 await client.post("/api/server/start", json={"runtime_id": runtime_id})
             ).status_code == 200
+            await asyncio.sleep(0)
 
             first_process.exit(17)
             await asyncio.wait_for(restarted.wait(), 1)
             await asyncio.sleep(0)
             status_response = await client.get("/api/server/status")
             runs = (await client.get("/api/server/runs")).json()
+            broker = app.state.event_broker
+            subscription = broker.subscribe(0)
+            events = [await anext(subscription) for _ in range(broker.latest_id)]
+            subscription.close()
 
     assert status_response.json()["state"] == "ready"
     assert status_response.json()["pid"] == 1002
@@ -499,6 +513,12 @@ async def test_server_recovers_with_durable_attempt_history(tmp_path: Path) -> N
     assert {run["state"] for run in runs} == {"crashed", "ready"}
     assert {run["pid"] for run in runs} == {1001, 1002}
     assert second_process.returncode == 0
+    assert [event.id for event in events] == list(range(1, len(events) + 1))
+    assert any(
+        event.type == "router.state" and event.data["state"] == "crashed"
+        for event in events
+    )
+    assert any(event.type == "router.model.model_status" for event in events)
 
 
 def test_router_model_operations_require_running_server(tmp_path: Path) -> None:
