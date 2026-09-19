@@ -49,7 +49,7 @@ from llamawebui.services.router_client import (
     RouterModel,
 )
 from llamawebui.services.router_port import RouterPortProbe, probe_router_port
-from llamawebui.services.router_supervisor import RouterSupervisor
+from llamawebui.services.router_supervisor import RouterRestartPolicy, RouterSupervisor
 from llamawebui.services.runtime_probe import RuntimeProber, probe_runtime
 from llamawebui.services.runtime_registry import (
     RuntimeAlreadyRegisteredError,
@@ -259,7 +259,14 @@ def create_app(
             DownloadWorker(app.state.download_registry, transfer),
         )
         app.state.download_coordinator.start_pending()
-        app.state.router_supervisor = router_supervisor or RouterSupervisor()
+        app.state.router_supervisor = router_supervisor or RouterSupervisor(
+            restart_policy=RouterRestartPolicy(
+                max_attempts=app_settings.router_restart_max_attempts,
+                window_seconds=app_settings.router_restart_window_seconds,
+                delay_seconds=app_settings.router_restart_delay_seconds,
+                ready_timeout_seconds=app_settings.router_ready_timeout_seconds,
+            )
+        )
         app.state.router_client = router_client or HttpRouterClient(
             app_settings.router_host, app_settings.router_port
         )
@@ -272,6 +279,16 @@ def create_app(
         ) -> None:
             run_id = cast(str | None, app.state.active_server_run_id)
             if run_id is not None:
+                previous_run = app.state.server_run_registry.get(run_id)
+                if state is RouterState.STARTING and previous_run.state in {
+                    RouterState.STOPPED,
+                    RouterState.CRASHED,
+                }:
+                    retry = app.state.server_run_registry.create(
+                        previous_run.runtime_id, previous_run.endpoint
+                    )
+                    app.state.active_server_run_id = retry.id
+                    run_id = retry.id
                 app.state.server_run_registry.update(
                     run_id, state, pid=pid, exit_code=exit_code
                 )

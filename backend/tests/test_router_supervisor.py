@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from llamawebui.domain.router_lifecycle import RouterLaunch, RouterState
-from llamawebui.services.router_supervisor import RouterProcess, RouterSupervisor
+from llamawebui.services.router_supervisor import (
+    RouterProcess,
+    RouterRestartPolicy,
+    RouterSupervisor,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -50,6 +54,22 @@ def launch_configuration(tmp_path: Path) -> RouterLaunch:
     executable.touch()
     preset.touch()
     return RouterLaunch(executable, preset)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    (
+        ({"max_attempts": -1}, "max attempts"),
+        ({"window_seconds": 0}, "window"),
+        ({"delay_seconds": -1}, "delay"),
+        ({"ready_timeout_seconds": 0}, "readiness timeout"),
+    ),
+)
+async def test_restart_policy_rejects_invalid_values(
+    arguments: dict[str, int], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        RouterRestartPolicy(**arguments)
 
 
 async def test_supervisor_starts_marks_ready_and_stops(tmp_path: Path) -> None:
@@ -190,3 +210,125 @@ async def test_supervisor_records_launch_failure(tmp_path: Path) -> None:
 
     assert supervisor.state is RouterState.CRASHED
     assert supervisor.pid is None
+
+
+async def test_supervisor_restarts_after_unexpected_exit(tmp_path: Path) -> None:
+    processes = [FakeProcess(), FakeProcess()]
+    restarted = asyncio.Event()
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        process = processes.pop(0)
+        if len(processes) == 0:
+            restarted.set()
+        return process
+
+    async def healthy(host: str, port: int) -> bool:
+        return True
+
+    supervisor = RouterSupervisor(
+        launcher,
+        healthy,
+        restart_policy=RouterRestartPolicy(delay_seconds=0),
+    )
+    launch = launch_configuration(tmp_path)
+    await supervisor.start(launch)
+    supervisor.mark_ready()
+    first_process = supervisor._process
+    assert isinstance(first_process, FakeProcess)
+
+    first_process.exit(17)
+    await asyncio.wait_for(restarted.wait(), 1)
+    await asyncio.sleep(0)
+
+    assert supervisor.state is RouterState.READY
+    assert supervisor.pid == 1234
+    await supervisor.stop()
+
+
+async def test_supervisor_suppresses_rapid_restart_failures(tmp_path: Path) -> None:
+    process = FakeProcess()
+    launch_count = 0
+    attempts_exhausted = asyncio.Event()
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        nonlocal launch_count
+        launch_count += 1
+        if launch_count == 1:
+            return process
+        if launch_count == 3:
+            attempts_exhausted.set()
+        raise OSError("restart failed")
+
+    supervisor = RouterSupervisor(
+        launcher,
+        restart_policy=RouterRestartPolicy(max_attempts=2, delay_seconds=0),
+    )
+    await supervisor.start(launch_configuration(tmp_path))
+    supervisor.mark_ready()
+    process.exit(17)
+    await asyncio.wait_for(attempts_exhausted.wait(), 1)
+    await asyncio.sleep(0)
+
+    assert launch_count == 3
+    assert supervisor.state is RouterState.CRASHED
+    await supervisor.stop()
+
+
+async def test_supervisor_retries_after_restart_readiness_timeout(tmp_path: Path) -> None:
+    processes = [FakeProcess(), FakeProcess(), FakeProcess()]
+    launch_count = 0
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        nonlocal launch_count
+        process = processes[launch_count]
+        launch_count += 1
+        return process
+
+    async def unhealthy(host: str, port: int) -> bool:
+        return False
+
+    supervisor = RouterSupervisor(
+        launcher,
+        unhealthy,
+        restart_policy=RouterRestartPolicy(
+            max_attempts=2,
+            delay_seconds=0,
+            ready_timeout_seconds=0.001,
+        ),
+    )
+    await supervisor.start(launch_configuration(tmp_path))
+    supervisor.mark_ready()
+    processes[0].exit(17)
+    await asyncio.sleep(0)
+    restart_task = supervisor._restart_task
+    assert restart_task is not None
+    await asyncio.wait_for(asyncio.shield(restart_task), 1)
+
+    assert launch_count == 3
+    assert processes[1].terminated
+    assert processes[2].terminated
+    assert supervisor.state is RouterState.CRASHED
+    await supervisor.stop()
+
+
+async def test_explicit_stop_cancels_pending_restart(tmp_path: Path) -> None:
+    process = FakeProcess()
+    launch_count = 0
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        nonlocal launch_count
+        launch_count += 1
+        return process
+
+    supervisor = RouterSupervisor(
+        launcher,
+        restart_policy=RouterRestartPolicy(delay_seconds=60),
+    )
+    await supervisor.start(launch_configuration(tmp_path))
+    supervisor.mark_ready()
+    process.exit(17)
+    await asyncio.sleep(0)
+    await supervisor.stop()
+
+    assert launch_count == 1
+    assert supervisor.state is RouterState.STOPPED

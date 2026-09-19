@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     router_host: str = "127.0.0.1"
     router_port: int = Field(default=1234, ge=1, le=65535)
     router_ready_timeout_seconds: float = Field(default=30.0, gt=0)
+    router_restart_max_attempts: int = Field(default=3, ge=0)
+    router_restart_window_seconds: float = Field(default=60.0, gt=0)
+    router_restart_delay_seconds: float = Field(default=1.0, ge=0)
     hf_token: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("HF_TOKEN", "LLAMAWEBUI_HF_TOKEN"),

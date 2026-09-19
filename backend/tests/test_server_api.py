@@ -12,7 +12,11 @@ from llamawebui.app import create_app
 from llamawebui.config import Settings
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
 from llamawebui.services.router_client import RouterAPIError, RouterModel
-from llamawebui.services.router_supervisor import RouterProcess, RouterSupervisor
+from llamawebui.services.router_supervisor import (
+    RouterProcess,
+    RouterRestartPolicy,
+    RouterSupervisor,
+)
 from llamawebui.services.runtime_probe import RuntimeProbeResult
 
 
@@ -36,6 +40,10 @@ class FakeProcess:
         await self._exited.wait()
         assert self.returncode is not None
         return self.returncode
+
+    def exit(self, returncode: int) -> None:
+        self.returncode = returncode
+        self._exited.set()
 
 
 async def available_port(host: str, port: int) -> bool:
@@ -411,6 +419,83 @@ async def test_server_lifecycle_requests_are_serialized(tmp_path: Path) -> None:
             release_health.set()
             assert (await start_task).status_code == 200
             assert (await stop_task).json()["state"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_server_recovers_with_durable_attempt_history(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    model = tmp_path / "model.gguf"
+    executable.touch()
+    model.touch()
+    first_process = FakeProcess(1001)
+    second_process = FakeProcess(1002)
+    processes = iter((first_process, second_process))
+    restarted = asyncio.Event()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "models-preset"}), raw_help="help"
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        process = next(processes)
+        if process is second_process:
+            restarted.set()
+        return process
+
+    async def healthy(host: str, port: int) -> bool:
+        return True
+
+    supervisor = RouterSupervisor(
+        launcher,
+        healthy,
+        restart_policy=RouterRestartPolicy(delay_seconds=0),
+    )
+    app = create_app(
+        Settings(data_dir=tmp_path / "data"),
+        runtime_prober=fake_probe,
+        router_supervisor=supervisor,
+        router_port_probe=available_port,
+    )
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            runtime_id = (
+                await client.post(
+                    "/api/runtimes",
+                    json={"name": "CPU", "executable_path": str(executable)},
+                )
+            ).json()["id"]
+            await client.post(
+                "/api/profiles",
+                json={
+                    "alias": "local-model",
+                    "runtime_id": runtime_id,
+                    "model_path": str(model),
+                },
+            )
+            assert (
+                await client.post("/api/server/start", json={"runtime_id": runtime_id})
+            ).status_code == 200
+
+            first_process.exit(17)
+            await asyncio.wait_for(restarted.wait(), 1)
+            await asyncio.sleep(0)
+            status_response = await client.get("/api/server/status")
+            runs = (await client.get("/api/server/runs")).json()
+
+    assert status_response.json()["state"] == "ready"
+    assert status_response.json()["pid"] == 1002
+    assert len(runs) == 2
+    assert {run["state"] for run in runs} == {"crashed", "ready"}
+    assert {run["pid"] for run in runs} == {1001, 1002}
+    assert second_process.returncode == 0
 
 
 def test_router_model_operations_require_running_server(tmp_path: Path) -> None:
