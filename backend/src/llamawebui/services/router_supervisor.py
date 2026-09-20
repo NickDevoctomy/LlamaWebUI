@@ -172,8 +172,8 @@ class RouterSupervisor:
             "decode_tokens_per_second": None,
             "decode_tokens_per_second_peak": None,
             "task_id": None,
-            "task_elapsed_seconds": None,
             "context_tokens": None,
+            "task_elapsed_seconds": None,
         }
 
     @property
