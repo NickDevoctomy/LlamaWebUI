@@ -82,6 +82,7 @@ export function RuntimePanel({ runtimes }: { runtimes: Runtime[] }) {
   const [releaseTag, setReleaseTag] = useState('latest')
   const [release, setRelease] = useState<RuntimeRelease>()
   const [assetName, setAssetName] = useState('')
+  const [deletingRuntime, setDeletingRuntime] = useState<Runtime>()
   const queryClient = useQueryClient()
   const registration = useMutation({
     mutationFn: () => api.registerRuntime({ name, executable_path: path, backend }),
@@ -108,6 +109,13 @@ export function RuntimePanel({ runtimes }: { runtimes: Runtime[] }) {
       setAssetName('')
     },
   })
+  const removal = useMutation({
+    mutationFn: (runtimeId: string) => api.removeRuntime(runtimeId),
+    onSuccess: async () => {
+      setDeletingRuntime(undefined)
+      await queryClient.invalidateQueries({ queryKey: ['runtimes'] })
+    },
+  })
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -127,10 +135,11 @@ export function RuntimePanel({ runtimes }: { runtimes: Runtime[] }) {
             <div className="record-copy"><strong>{runtime.name}</strong><span>{runtime.executable_path}</span></div>
             <div className="record-meta"><small>Build</small><span>{runtime.build ?? 'Unknown'}</span></div>
             <div className="record-meta"><small>Backend</small><span>{runtime.backend?.toUpperCase() ?? 'AUTO'}</span></div>
-            <span className={`state-pill ${runtime.usable ? 'ready' : 'error'}`}>{runtime.usable ? 'Ready' : 'Probe failed'}</span>
+            <span className={`state-pill ${runtime.usable ? 'ready' : 'error'}`}>{runtime.usable ? 'Ready' : 'Probe failed'}</span><button aria-label={`Remove runtime ${runtime.name}`} className="icon-button small danger-icon" onClick={() => setDeletingRuntime(runtime)} title="Remove runtime" type="button"><Trash2 size={16} /></button>
           </article>
         ))}</div> : <div className="empty"><Cpu size={28} /><strong>No runtime registered</strong><span>Point Llama Control at an existing llama-server executable to begin.</span><button className="button primary" onClick={() => setOpen(true)} type="button"><Plus size={15} /> Register runtime</button></div>}
       </section>
+      {deletingRuntime && <Dialog title="Remove runtime?" description="This unregisters the runtime only. Installed files are not deleted." onClose={() => setDeletingRuntime(undefined)}><div className="confirm-body"><Trash2 size={24} /><p><strong>{deletingRuntime.name}</strong> will be removed from the runtime registry. Profiles or an active router may prevent removal.</p>{removal.error && <div className="form-error"><AlertCircle size={15} /> {removal.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setDeletingRuntime(undefined)} type="button">Keep runtime</button><button className="button danger" disabled={removal.isPending} onClick={() => removal.mutate(deletingRuntime.id)} type="button">{removal.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Remove runtime</button></footer></Dialog>}
       {installOpen && <Dialog title="Install official llama.cpp build" description="Choose a published asset. The download is staged, verified, probed, and promoted only after validation." onClose={() => setInstallOpen(false)}>
         <form onSubmit={(event) => { event.preventDefault(); installation.mutate() }}>
           <div className="form-body">

@@ -26,6 +26,10 @@ class RuntimeInUseError(ValueError):
     pass
 
 
+class RuntimeReferencedError(RuntimeInUseError):
+    pass
+
+
 class RuntimeRegistry:
     def __init__(self, engine: Engine, *, prober: RuntimeProber) -> None:
         self._sessions = sessionmaker(engine, expire_on_commit=False)
@@ -78,7 +82,9 @@ class RuntimeRegistry:
             session.commit()
             return record
 
-    def remove(self, runtime_id: str) -> None:
+    def remove(self, runtime_id: str, *, active_runtime_id: str | None = None) -> None:
+        if runtime_id == active_runtime_id:
+            raise RuntimeInUseError(f"runtime is active: {runtime_id}")
         with self._sessions() as session:
             record = self._get(session, runtime_id)
             session.delete(record)

@@ -198,6 +198,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(runtime),
     }),
+  removeRuntime: (runtimeId: string) =>
+    request<void>(`/api/runtimes/${runtimeId}`, { method: 'DELETE' }),
   runtimeRelease: (tag: string) =>
     request<RuntimeRelease>(`/api/runtimes/releases/${encodeURIComponent(tag)}`),
   installRuntime: (tag: string, assetName: string, backend?: string) =>

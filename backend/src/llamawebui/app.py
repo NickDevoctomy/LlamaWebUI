@@ -878,8 +878,19 @@ def create_app(
     @app.delete("/api/runtimes/{runtime_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def remove_runtime(runtime_id: str, request: Request) -> None:
         registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        run_registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        active_run_id = cast(str | None, request.app.state.active_server_run_id)
+        active_runtime_id = None
+        if active_run_id is not None:
+            active_runtime_id = run_registry.get(active_run_id).runtime_id
+        guarded_active_runtime = (
+            active_runtime_id
+            if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}
+            else None
+        )
         try:
-            registry.remove(runtime_id)
+            registry.remove(runtime_id, active_runtime_id=guarded_active_runtime)
         except RuntimeInUseError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         except RuntimeNotFoundError as error:
