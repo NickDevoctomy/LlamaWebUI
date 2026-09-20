@@ -77,6 +77,21 @@ class DownloadJobRecord(Base):
     )
 
 
+class LogicalModelRecord(Base):
+    __tablename__ = "logical_models"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    canonical_path: Mapped[str] = mapped_column(Text, unique=True)
+    primary_path: Mapped[str] = mapped_column(Text)
+    files: Mapped[list[str]] = mapped_column(JSON, default=list)
+    attributes: Mapped[dict[str, object]] = mapped_column("metadata", JSON, default=dict)
+    validation_state: Mapped[str] = mapped_column(String(20), default="valid")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ServerRunRecord(Base):
     __tablename__ = "server_runs"
 
