@@ -19,9 +19,11 @@ from llamawebui.domain.model_profile import (
     AdvancedOption,
     ModelProfile,
     ProfileValidationError,
+    validate_profile,
     write_combined_preset_atomic,
 )
 from llamawebui.domain.router_lifecycle import RouterLaunch, RouterState
+from llamawebui.domain.runtime_capabilities import RuntimeCapabilities
 from llamawebui.models import (
     AccessTokenRecord,
     DownloadJobRecord,
@@ -1111,6 +1113,33 @@ def create_app(
             registry.remove(profile_id)
         except ProfileNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    @app.post("/api/profiles/{profile_id}/validate")
+    async def validate_profile_configuration(
+        profile_id: str, request: Request
+    ) -> dict[str, object]:
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        profile = next((item for item in registry.list() if item.id == profile_id), None)
+        if profile is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="model profile not found"
+            )
+        runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        try:
+            runtime = runtimes.get(profile.runtime_id)
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        try:
+            configuration = dict(profile.configuration)
+            configuration["alias"] = profile.alias
+            configuration["runtime_id"] = profile.runtime_id
+            validated = ProfileCreateRequest.model_validate(configuration).to_domain()
+            errors = validate_profile(
+                validated, RuntimeCapabilities(options=frozenset(runtime.options), raw_help="")
+            )
+        except ProfileValidationError as error:
+            errors = error.errors
+        return {"valid": not errors, "errors": list(errors), "preset": profile.preset}
 
     @app.get("/api/profiles/{profile_id}/export", response_class=PlainTextResponse)
     async def export_profile(profile_id: str, request: Request) -> PlainTextResponse:

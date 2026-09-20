@@ -240,6 +240,42 @@ def test_profile_import_recreates_export_as_disabled_profile(tmp_path: Path) -> 
     assert imported.json()["configuration"]["ctx_size"] == 4096
 
 
+def test_profile_validate_reports_runtime_and_file_errors_without_mutation(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model = tmp_path / "missing.gguf"
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(options=frozenset({"model"}), raw_help="help"),
+            devices_output=None,
+            errors=(),
+        )
+
+    settings = Settings(data_dir=tmp_path / "data")
+    with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        model.touch()
+        created = client.post(
+            "/api/profiles",
+            json={"alias": "validate-model", "runtime_id": runtime_id, "model_path": str(model)},
+        )
+        model.unlink()
+        validation = client.post(f"/api/profiles/{created.json()['id']}/validate")
+        listed = client.get("/api/profiles")
+
+    assert validation.status_code == 200
+    assert validation.json()["valid"] is False
+    assert any("model file not found" in error for error in validation.json()["errors"])
+    assert listed.json()[0]["alias"] == "validate-model"
+
+
 def test_profile_update_populates_and_persists_all_editor_settings(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
