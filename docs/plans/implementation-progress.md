@@ -100,7 +100,7 @@ Frontend foundation validation:
  - Server/Dashboard telemetry also exposes parsed context-token usage and current-task elapsed time when reported by llama.cpp
 - Dashboard and Server refresh live server status telemetry every two seconds while the router is ready
 - Dashboard is now the default workspace with router, runtime, model, profile, activity, and timing summaries
-- Dashboard system telemetry now converts Windows Paths correctly for psutil-backed disk metrics; CPU/RAM/network/disk gauges are available, while GPU/VRAM remains explicitly unavailable
+ - Dashboard system telemetry now converts Windows Paths correctly for psutil-backed disk metrics; CPU/RAM/network/disk/GPU/VRAM gauges are available with an explicit GPU-supported flag
 - Added root `README.md` with setup, backend/frontend start, router startup, hello-world inference, OpenCode, API, and validation instructions
 - Server exposes an expandable effective launch-arguments view with the exact validated vector persisted at startup; secrets remain represented only by the key-file path
 - Server shows enabled profiles and model paths associated with the selected runtime

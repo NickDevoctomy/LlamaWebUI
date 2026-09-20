@@ -25,6 +25,7 @@ def collect_system_metrics(data_dir: Path) -> dict[str, object]:
         "disk_free_bytes": disk.free,
         "disk_total_bytes": disk.total,
         "gpu": gpu,
+        "gpu_supported": gpu is not None,
     }
 
 
