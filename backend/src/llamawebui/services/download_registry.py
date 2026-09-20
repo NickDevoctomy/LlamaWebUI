@@ -104,7 +104,14 @@ class DownloadRegistry:
             repo_id=manifest.repo_id,
             revision=manifest.revision.lower(),
             group_key=group.key,
-            files=[{"path": file.path, "size": file.size} for file in group.files],
+            files=[
+                {
+                    "path": file.path,
+                    "size": file.size,
+                    **({"sha256": file.sha256} if file.sha256 else {}),
+                }
+                for file in group.files
+            ],
             destination=str(destination),
             total_bytes=group.total_size,
             completed_bytes=0,

@@ -15,6 +15,7 @@ _QUANT_PATTERN = re.compile(r"(?:UD-)?(?:I?Q)\d[A-Z0-9_]*", re.IGNORECASE)
 class HubFile:
     path: str
     size: int | None
+    sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

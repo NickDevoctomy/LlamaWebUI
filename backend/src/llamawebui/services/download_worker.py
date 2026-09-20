@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import shutil
 import sys
@@ -108,6 +109,11 @@ class DownloadWorker:
                         f"downloaded file size mismatch: {filename} "
                         f"(expected {expected_size}, got {actual_size})"
                     )
+                expected_sha256 = file_data.get("sha256")
+                if isinstance(expected_sha256, str):
+                    digest = await asyncio.to_thread(_sha256_file, downloaded)
+                    if digest != expected_sha256.lower():
+                        raise OSError(f"downloaded file checksum mismatch: {filename}")
                 completed_bytes += actual_size
                 if completed_bytes > job.completed_bytes:
                     job = self._registry.update_progress(job_id, completed_bytes)
@@ -210,3 +216,11 @@ class DownloadWorker:
                 await asyncio.sleep(_TRANSFER_RETRY_DELAYS[attempt])
         assert last_error is not None
         raise last_error
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

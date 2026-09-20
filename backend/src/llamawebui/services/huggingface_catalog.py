@@ -82,10 +82,28 @@ class HuggingFaceCatalog:
         if model.sha is None:
             raise ValueError(f"repository did not resolve to a commit SHA: {repo_id}")
         files = tuple(
-            HubFile(path=sibling.rfilename, size=sibling.size) for sibling in model.siblings or ()
+            HubFile(
+                path=sibling.rfilename,
+                size=sibling.size,
+                sha256=_sibling_sha256(sibling),
+            )
+            for sibling in model.siblings or ()
         )
         return RepositoryManifest(
             repo_id=model.id,
             revision=model.sha,
             groups=group_gguf_files(files),
         )
+
+
+def _sibling_sha256(sibling: object) -> str | None:
+    """Read a Hub LFS SHA-256 without depending on one SDK metadata shape."""
+    lfs = getattr(sibling, "lfs", None)
+    oid = getattr(lfs, "oid", None)
+    if (
+        isinstance(oid, str)
+        and len(oid) == 64
+        and all(character in "0123456789abcdefABCDEF" for character in oid)
+    ):
+        return oid.lower()
+    return None

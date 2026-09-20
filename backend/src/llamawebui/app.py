@@ -1080,7 +1080,12 @@ def create_app(
                     "total_size": group.total_size,
                     "complete": group.complete,
                     "files": [
-                        {"path": file.path, "size": file.size} for file in group.files
+                        {
+                            "path": file.path,
+                            "size": file.size,
+                            **({"sha256": file.sha256} if file.sha256 else {}),
+                        }
+                        for file in group.files
                     ],
                 }
                 for group in manifest.groups

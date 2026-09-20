@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 
@@ -72,6 +73,25 @@ async def test_worker_retries_transient_transfer_failure(tmp_path: Path) -> None
     await DownloadWorker(registry, Transfer()).run(job_id)
 
     assert attempts == 3
+    assert registry.get(job_id).state == DownloadState.COMPLETED
+
+
+async def test_worker_verifies_published_file_checksum(tmp_path: Path) -> None:
+    registry, job_id = create_registry(tmp_path, (2,))
+    job = registry.get(job_id)
+    job.files[0]["sha256"] = hashlib.sha256(b"xx").hexdigest()
+
+    class Transfer:
+        async def download(
+            self, *, repo_id: str, filename: str, revision: str, destination: Path
+        ) -> Path:
+            target = destination / filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"xx")
+            return target
+
+    await DownloadWorker(registry, Transfer()).run(job_id)
+
     assert registry.get(job_id).state == DownloadState.COMPLETED
 
 
