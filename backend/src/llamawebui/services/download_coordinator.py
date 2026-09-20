@@ -37,7 +37,7 @@ class DownloadCoordinator:
         task = asyncio.create_task(self._worker.run(job_id))
         self._tasks[job_id] = task
         self._publish(job_id, "started")
-        task.add_done_callback(lambda _: self._tasks.pop(job_id, None))
+        task.add_done_callback(lambda _: self._task_finished(job_id))
 
     async def cancel(self, job_id: str) -> DownloadJobRecord:
         record = self._registry.transition(job_id, DownloadState.CANCELLED)
@@ -49,6 +49,14 @@ class DownloadCoordinator:
     def _publish(self, job_id: str, action: str) -> None:
         if self._event_broker is not None:
             self._event_broker.publish("download." + action, {"job_id": job_id})
+
+    def _task_finished(self, job_id: str) -> None:
+        self._tasks.pop(job_id, None)
+        if self._event_broker is None:
+            return
+        state = DownloadState(self._registry.get(job_id).state)
+        if state in {DownloadState.COMPLETED, DownloadState.FAILED}:
+            self._publish(job_id, state.value)
 
     async def pause(self, job_id: str) -> DownloadJobRecord:
         record = self._registry.transition(job_id, DownloadState.PAUSED)
@@ -62,6 +70,7 @@ class DownloadCoordinator:
             raise ValueError("download cannot resume until the active transfer stops")
         record = self._registry.transition(job_id, DownloadState.QUEUED)
         self.start(job_id)
+        self._publish(job_id, "resumed")
         return record
 
     def redownload(self, job_id: str) -> DownloadJobRecord:
