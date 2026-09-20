@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -57,6 +58,46 @@ def test_library_projects_only_complete_valid_downloads(tmp_path: Path) -> None:
     assert len(ModelLibrary(registry, model_root).list()) == 1
 
     destination.joinpath("Q4/model-00002-of-00002.gguf").unlink()
+    assert ModelLibrary(registry, model_root).list() == ()
+
+
+def test_library_rejects_checksum_modified_file(tmp_path: Path) -> None:
+    database = tmp_path / "app.db"
+    model_root = tmp_path / "models"
+    upgrade_database(database)
+    registry = DownloadRegistry(create_database_engine(database), model_root)
+    manifest = RepositoryManifest(
+        repo_id="owner/model-GGUF",
+        revision="d" * 40,
+        groups=(
+            GgufGroup(
+                key="model-Q4",
+                quantization="Q4",
+                files=(
+                    HubFile(
+                        "model-Q4.gguf",
+                        8,
+                        hashlib.sha256(b"original").hexdigest(),
+                    ),
+                ),
+                total_size=8,
+                complete=True,
+            ),
+        ),
+    )
+    job = registry.create(manifest, "model-Q4")
+    destination = Path(job.destination)
+    destination.mkdir(parents=True)
+    file_path = destination / "model-Q4.gguf"
+    file_path.write_bytes(b"original")
+    registry.transition(job.id, DownloadState.DOWNLOADING)
+    registry.update_progress(job.id, 8)
+    registry.transition(job.id, DownloadState.COMPLETED)
+
+    assert len(ModelLibrary(registry, model_root).list()) == 1
+
+    file_path.write_bytes(b"modified")
+
     assert ModelLibrary(registry, model_root).list() == ()
 
 

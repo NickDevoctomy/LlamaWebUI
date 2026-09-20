@@ -64,6 +64,12 @@ class ModelLibrary:
                 or file_path.stat().st_size != expected_size
             ):
                 return None
+            expected_sha256 = file_data.get("sha256")
+            if (
+                isinstance(expected_sha256, str)
+                and _sha256_file(file_path) != expected_sha256.lower()
+            ):
+                return None
             if file_path.suffix.lower() != ".gguf":
                 continue
             shard = _SHARD_PATTERN.match(file_path.name)
@@ -81,3 +87,13 @@ class ModelLibrary:
             file_count=len(job.files),
             total_bytes=job.total_bytes,
         )
+
+
+def _sha256_file(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
