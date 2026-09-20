@@ -54,6 +54,7 @@ from llamawebui.services.llama_release_installer import (
     RuntimeInstaller,
     group_runtime_assets,
 )
+from llamawebui.services.logical_model_registry import LogicalModelRegistry
 from llamawebui.services.model_artifact_registry import ModelArtifactError, ModelArtifactRegistry
 from llamawebui.services.model_library import ModelLibrary
 from llamawebui.services.profile_registry import (
@@ -390,6 +391,7 @@ def create_app(
         app.state.model_library = ModelLibrary(
             app.state.download_registry, app_settings.data_dir / "models"
         )
+        app.state.logical_model_registry = LogicalModelRegistry(engine)
         app.state.model_artifact_registry = ModelArtifactRegistry(
             app.state.download_registry, app_settings.data_dir / "models"
         )
@@ -1306,6 +1308,8 @@ def create_app(
     @app.get("/api/library")
     async def list_library_models(request: Request) -> list[dict[str, object]]:
         library = cast(ModelLibrary, request.app.state.model_library)
+        logical_models = cast(LogicalModelRegistry, request.app.state.logical_model_registry)
+        logical_models.reconcile_discovered(library.discover())
         return [
             {
                 "download_id": model.download_id,
@@ -1317,6 +1321,20 @@ def create_app(
                 "total_bytes": model.total_bytes,
             }
             for model in library.list()
+        ]
+
+    @app.get("/api/library/logical")
+    async def list_logical_library_models(request: Request) -> list[dict[str, object]]:
+        registry = cast(LogicalModelRegistry, request.app.state.logical_model_registry)
+        return [
+            {
+                "id": model.id,
+                "primary_path": str(model.primary_path),
+                "files": [str(path) for path in model.files],
+                "metadata": model.metadata,
+                "validation_state": model.validation_state,
+            }
+            for model in registry.list()
         ]
 
     @app.post("/api/library/reconcile")

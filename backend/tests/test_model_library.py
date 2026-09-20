@@ -11,6 +11,7 @@ from llamawebui.domain.model_manifest import GgufGroup, HubFile
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
 from llamawebui.services.download_registry import DownloadRegistry
 from llamawebui.services.huggingface_catalog import RepositoryManifest
+from llamawebui.services.logical_model_registry import LogicalModelRegistry
 from llamawebui.services.model_library import ModelLibrary
 from llamawebui.services.runtime_probe import RuntimeProbeResult
 
@@ -261,6 +262,23 @@ def test_library_reads_scalar_gguf_metadata(tmp_path: Path) -> None:
     discovered = ModelLibrary(registry, tmp_path).discover()
 
     assert discovered[0].metadata == {"general.name": "Demo Model", "general.context_length": 4096}
+
+
+def test_logical_model_registry_reconciles_discovered_models(tmp_path: Path) -> None:
+    database = tmp_path / "app.db"
+    upgrade_database(database)
+    registry = DownloadRegistry(create_database_engine(database), tmp_path)
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"gguf")
+    discovered = ModelLibrary(registry, tmp_path).discover()
+
+    logical = LogicalModelRegistry(create_database_engine(database))
+    first = logical.reconcile_discovered(discovered)
+    second = logical.reconcile_discovered(discovered)
+
+    assert len(first) == 1
+    assert second[0].id == first[0].id
+    assert second[0].primary_path == model
 
 
 def test_library_import_creates_disabled_profile_for_discovered_model(tmp_path: Path) -> None:

@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import sessionmaker
 
 from llamawebui.models import LogicalModelRecord
+
+if TYPE_CHECKING:
+    from llamawebui.services.model_library import DiscoveredModel
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,8 +40,7 @@ class LogicalModelRegistry:
     def reconcile(self, models: tuple[LogicalModel, ...]) -> tuple[LogicalModel, ...]:
         with self._sessions() as session:
             existing = {
-                record.canonical_path
-                : record
+                record.canonical_path: record
                 for record in session.scalars(select(LogicalModelRecord))
             }
             for model in models:
@@ -53,6 +56,26 @@ class LogicalModelRegistry:
                 record.validation_state = model.validation_state
             session.commit()
             return self.list()
+
+    def reconcile_discovered(
+        self, models: tuple[DiscoveredModel, ...]
+    ) -> tuple[LogicalModel, ...]:
+        normalized: list[LogicalModel] = []
+        for model in models:
+            primary = model.primary_path
+            files = tuple(model.files)
+            metadata: dict[str, object] = dict(model.metadata)
+            normalized.append(
+                LogicalModel(
+                    id="",
+                    canonical_path=primary.resolve(),
+                    primary_path=primary.resolve(),
+                    files=tuple(path.resolve() for path in files),
+                    metadata=metadata,
+                    validation_state="valid",
+                )
+            )
+        return self.reconcile(tuple(normalized))
 
     @staticmethod
     def _domain(record: LogicalModelRecord) -> LogicalModel:
