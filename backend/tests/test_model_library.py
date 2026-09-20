@@ -321,6 +321,24 @@ def test_logical_model_registry_links_profiles_by_canonical_path(tmp_path: Path)
     assert logical.profile_ids(record.id) == ("profile-1",)
 
 
+def test_logical_model_registry_marks_unseen_models_missing(tmp_path: Path) -> None:
+    database = tmp_path / "app.db"
+    upgrade_database(database)
+    engine = create_database_engine(database)
+    registry = DownloadRegistry(engine, tmp_path)
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"gguf")
+    discovered = ModelLibrary(registry, tmp_path).discover()
+    logical = LogicalModelRegistry(engine)
+    record = logical.reconcile_discovered(discovered)[0]
+    model.unlink()
+
+    updated = logical.reconcile_discovered(())
+
+    assert updated[0].id == record.id
+    assert updated[0].validation_state == "missing"
+
+
 def test_library_import_creates_disabled_profile_for_discovered_model(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()

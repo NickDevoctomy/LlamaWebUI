@@ -72,8 +72,11 @@ class LogicalModelRegistry:
                 record.canonical_path: record
                 for record in session.scalars(select(LogicalModelRecord))
             }
+            seen: set[str] = set()
             for model in models:
-                record = existing.get(str(model.canonical_path))
+                canonical_path = str(model.canonical_path)
+                seen.add(canonical_path)
+                record = existing.get(canonical_path)
                 if record is None:
                     record = LogicalModelRecord(
                         id=str(uuid4()), canonical_path=str(model.canonical_path)
@@ -83,6 +86,9 @@ class LogicalModelRegistry:
                 record.files = [str(path) for path in model.files]
                 record.attributes = model.metadata
                 record.validation_state = model.validation_state
+            for canonical_path, record in existing.items():
+                if canonical_path not in seen:
+                    record.validation_state = "missing"
             session.commit()
             return self.list()
 
