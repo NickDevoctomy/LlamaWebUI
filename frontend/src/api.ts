@@ -132,6 +132,7 @@ export interface DiscoveredModel {
   files: string[]
   total_bytes: number
   model_name: string
+  metadata: Record<string, string | number>
 }
 
 export interface RuntimeRegistration {

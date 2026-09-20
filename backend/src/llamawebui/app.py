@@ -1339,6 +1339,7 @@ def create_app(
                 "files": [str(path) for path in model.files],
                 "total_bytes": model.total_bytes,
                 "model_name": model.model_name,
+                "metadata": model.metadata,
             }
             for model in library.discover()
         ]

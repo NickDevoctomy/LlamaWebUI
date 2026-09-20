@@ -235,6 +235,34 @@ def test_library_discover_finds_complete_external_shards(tmp_path: Path) -> None
     assert discovered[0].model_name == "model"
 
 
+def test_library_reads_scalar_gguf_metadata(tmp_path: Path) -> None:
+    model = tmp_path / "model.gguf"
+    metadata = [("general.name", 4, "Demo Model"), ("general.context_length", 10, 4096)]
+    content = bytearray(
+        b"GGUF"
+        + (3).to_bytes(4, "little")
+        + (0).to_bytes(8, "little")
+        + len(metadata).to_bytes(8, "little")
+    )
+    for key, value_type, value in metadata:
+        encoded = key.encode()
+        content.extend(len(encoded).to_bytes(8, "little"))
+        content.extend(encoded)
+        content.extend(value_type.to_bytes(4, "little"))
+        if isinstance(value, str):
+            encoded_value = value.encode()
+            content.extend(len(encoded_value).to_bytes(8, "little"))
+            content.extend(encoded_value)
+        else:
+            content.extend(value.to_bytes(8, "little"))
+    model.write_bytes(content)
+    registry = DownloadRegistry(create_database_engine(tmp_path / "app.db"), tmp_path)
+
+    discovered = ModelLibrary(registry, tmp_path).discover()
+
+    assert discovered[0].metadata == {"general.name": "Demo Model", "general.context_length": 4096}
+
+
 def test_library_import_creates_disabled_profile_for_discovered_model(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
