@@ -75,6 +75,32 @@ async def test_worker_retries_transient_transfer_failure(tmp_path: Path) -> None
     assert registry.get(job_id).state == DownloadState.COMPLETED
 
 
+async def test_worker_fails_when_disk_space_drops_during_transfer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    registry, job_id = create_registry(tmp_path, (10,))
+    finish_transfer = asyncio.Event()
+
+    class Transfer:
+        async def download(
+            self, *, repo_id: str, filename: str, revision: str, destination: Path
+        ) -> Path:
+            await finish_transfer.wait()
+            raise AssertionError("transfer should be cancelled by disk check")
+
+    monkeypatch.setattr("llamawebui.services.download_worker._PROGRESS_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr("llamawebui.services.download_worker._DISK_CHECK_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(
+        "llamawebui.services.download_worker.shutil.disk_usage",
+        lambda path: type("Usage", (), {"free": 0})(),
+    )
+
+    await DownloadWorker(registry, Transfer()).run(job_id)
+
+    assert registry.get(job_id).state == DownloadState.FAILED
+    assert "insufficient disk space" in (registry.get(job_id).error or "")
+
+
 async def test_worker_tracks_progress_inside_a_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

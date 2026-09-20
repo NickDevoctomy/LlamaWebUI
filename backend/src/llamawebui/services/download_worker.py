@@ -15,6 +15,7 @@ from llamawebui.services.download_registry import DownloadRegistry
 _PROGRESS_INTERVAL_SECONDS = 0.25
 _TRANSFER_RETRY_LIMIT = 3
 _TRANSFER_RETRY_DELAYS = (0.1, 0.25)
+_DISK_CHECK_INTERVAL_SECONDS = 5.0
 
 
 class FileTransfer(Protocol):
@@ -154,8 +155,10 @@ class DownloadWorker:
         cache_directory = destination / ".cache" / "huggingface" / "download"
         reported_bytes = self._registry.get(job_id).completed_bytes
         try:
+            elapsed = 0.0
             while not transfer.done():
                 await asyncio.sleep(_PROGRESS_INTERVAL_SECONDS)
+                elapsed += _PROGRESS_INTERVAL_SECONDS
                 incomplete_bytes = max(
                     (
                         path.stat().st_size
@@ -168,6 +171,14 @@ class DownloadWorker:
                     target.stat().st_size if target.is_file() else 0,
                     incomplete_bytes,
                 )
+                if elapsed >= _DISK_CHECK_INTERVAL_SECONDS:
+                    free_bytes = shutil.disk_usage(destination).free
+                    remaining = max(expected_size - current_file_bytes, 0)
+                    if free_bytes < remaining:
+                        raise OSError(
+                            f"insufficient disk space during download: requires {remaining} bytes"
+                        )
+                    elapsed = 0.0
                 next_bytes = completed_bytes + min(current_file_bytes, expected_size)
                 if next_bytes > reported_bytes:
                     updated = self._registry.update_progress(job_id, next_bytes)
