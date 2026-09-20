@@ -733,8 +733,20 @@ def create_app(
         _require_running_router(supervisor)
 
         async def event_stream() -> AsyncIterator[str]:
+            events = client.model_events().__aiter__()
+            pending: asyncio.Task[RouterModelEvent] | None = None
             try:
-                async for event in client.model_events():
+                while True:
+                    if pending is None:
+                        pending = asyncio.ensure_future(events.__anext__())
+                    try:
+                        event = await asyncio.wait_for(asyncio.shield(pending), timeout=15.0)
+                    except TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    except StopAsyncIteration:
+                        break
+                    pending = None
                     yield _router_model_event_sse(event)
             except RouterAPIError as error:
                 status_code = error.status_code if 400 <= error.status_code < 500 else 502
@@ -745,6 +757,14 @@ def create_app(
                         data={"code": status_code, "message": str(error)},
                     )
                 )
+            finally:
+                if pending is not None:
+                    pending.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await pending
+                aclose = getattr(events, "aclose", None)
+                if aclose is not None:
+                    await aclose()
 
         return StreamingResponse(
             event_stream(),
