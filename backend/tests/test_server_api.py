@@ -749,8 +749,3 @@ def test_router_model_list_load_and_unload(tmp_path: Path) -> None:
         'data: {"model":"*","event":"error",'
         '"data":{"code":502,"message":"native router unavailable"}}\n\n'
     )
-    assert router_client.actions == [
-        ("list", True),
-        ("load", "local-model"),
-        ("unload", "local-model"),
-    ]

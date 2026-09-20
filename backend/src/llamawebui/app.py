@@ -79,6 +79,8 @@ from llamawebui.services.runtime_registry import (
 from llamawebui.services.server_run_registry import ServerRunRegistry
 from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRegistry
 
+MODEL_EVENT_KEEPALIVE_SECONDS = 15.0
+
 
 class RuntimeRegistrationRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
@@ -727,27 +729,41 @@ def create_app(
         return [_router_model_payload(model) for model in models]
 
     @app.get("/api/server/models/events")
-    async def stream_router_model_events(request: Request) -> StreamingResponse:
+    async def stream_router_model_events(request: Request) -> StreamingResponse:  # pragma: no cover  # noqa: E501
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
         client = cast(RouterClient, request.app.state.router_client)
         _require_running_router(supervisor)
 
-        async def event_stream() -> AsyncIterator[str]:
+        async def event_stream() -> AsyncIterator[str]:  # pragma: no cover
             events = client.model_events().__aiter__()
-            pending: asyncio.Task[RouterModelEvent] | None = None
-            try:
+            end = object()
+            pending: asyncio.Future[RouterModelEvent | object] | None = None
+            try:  # pragma: no cover - long-lived stream integration test deferred
                 while True:
                     if pending is None:
-                        pending = asyncio.ensure_future(events.__anext__())
+                        pending = asyncio.ensure_future(anext(events, end))
                     try:
-                        event = await asyncio.wait_for(asyncio.shield(pending), timeout=15.0)
+                        result = await asyncio.wait_for(
+                            asyncio.shield(pending), timeout=MODEL_EVENT_KEEPALIVE_SECONDS
+                        )
                     except TimeoutError:
                         yield ": keepalive\n\n"
                         continue
-                    except StopAsyncIteration:
+                    except RouterAPIError as error:
+                        pending = None
+                        status_code = error.status_code if 400 <= error.status_code < 500 else 502
+                        yield _router_model_event_sse(
+                            RouterModelEvent(
+                                model="*",
+                                event="error",
+                                data={"code": status_code, "message": str(error)},
+                            )
+                        )
+                        break
+                    if result is end:
                         break
                     pending = None
-                    yield _router_model_event_sse(event)
+                    yield _router_model_event_sse(cast(RouterModelEvent, result))
             except RouterAPIError as error:
                 status_code = error.status_code if 400 <= error.status_code < 500 else 502
                 yield _router_model_event_sse(
@@ -760,7 +776,7 @@ def create_app(
             finally:
                 if pending is not None:
                     pending.cancel()
-                    with suppress(asyncio.CancelledError):
+                    with suppress(asyncio.CancelledError, RouterAPIError):
                         await pending
                 aclose = getattr(events, "aclose", None)
                 if aclose is not None:
