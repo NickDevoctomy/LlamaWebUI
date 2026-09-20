@@ -50,6 +50,7 @@ from llamawebui.services.llama_release_installer import (
     GitHubReleaseClient,
     ReleaseInstallError,
     RuntimeInstaller,
+    group_runtime_assets,
 )
 from llamawebui.services.model_artifact_registry import ModelArtifactError, ModelArtifactRegistry
 from llamawebui.services.model_library import ModelLibrary
@@ -801,6 +802,14 @@ def create_app(
             "assets": [
                 {"name": asset.name, "url": asset.url, "size": asset.size, "digest": asset.digest}
                 for asset in release.assets
+            ],
+            "groups": [
+                {
+                    "key": group.key,
+                    "primary": group.primary.name,
+                    "companions": [asset.name for asset in group.companions],
+                }
+                for group in group_runtime_assets(release.assets)
             ],
         }
 

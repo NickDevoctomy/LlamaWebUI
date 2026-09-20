@@ -129,6 +129,7 @@ export interface RuntimeRelease {
   tag: string
   stable_tag: string | null
   assets: RuntimeReleaseAsset[]
+  groups: { key: string; primary: string; companions: string[] }[]
 }
 
 export interface ProfileCreate {

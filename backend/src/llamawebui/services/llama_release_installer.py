@@ -36,6 +36,17 @@ class ReleaseInfo:
     assets: tuple[ReleaseAsset, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeAssetGroup:
+    key: str
+    primary: ReleaseAsset
+    companions: tuple[ReleaseAsset, ...]
+
+    @property
+    def assets(self) -> tuple[ReleaseAsset, ...]:
+        return (self.primary, *self.companions)
+
+
 class GitHubReleaseClient:
     def __init__(
         self,
@@ -100,23 +111,33 @@ class RuntimeInstaller:
 
     async def install(self, *, tag: str, asset_name: str, backend: str | None = None) -> Path:
         release = await self.releases.release(tag)
-        asset = next((item for item in release.assets if item.name == asset_name), None)
-        if asset is None:
+        group = next(
+            (
+                item
+                for item in group_runtime_assets(release.assets, backend=backend)
+                if item.primary.name == asset_name
+            ),
+            None,
+        )
+        if group is None:
             raise ReleaseInstallError(f"release asset not found: {asset_name}")
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         staging = Path(tempfile.mkdtemp(prefix=".install-", dir=self.runtime_dir))
         try:
-            archive = staging / asset.name
-            async with httpx.AsyncClient(timeout=None) as client:
-                response = await client.get(asset.url, follow_redirects=True)
-                response.raise_for_status()
-                content = response.content
-            if asset.digest and not _digest_matches(content, asset.digest):
-                raise ReleaseInstallError("release asset digest verification failed")
-            archive.write_bytes(content)
             extracted = staging / "payload"
             extracted.mkdir()
-            _extract_archive(archive, extracted)
+            async with httpx.AsyncClient(timeout=None) as client:
+                for asset in group.assets:
+                    archive = staging / asset.name
+                    response = await client.get(asset.url, follow_redirects=True)
+                    response.raise_for_status()
+                    content = response.content
+                    if asset.digest and not _digest_matches(content, asset.digest):
+                        raise ReleaseInstallError(
+                            f"release asset digest verification failed: {asset.name}"
+                        )
+                    archive.write_bytes(content)
+                    _extract_archive(archive, extracted)
             executable = _find_executable(extracted)
             probe = await self.prober(executable)
             if probe.errors or not probe.capabilities.options:
@@ -146,6 +167,58 @@ def _parse_assets(raw: Any) -> tuple[ReleaseAsset, ...]:
         digest = item.get("digest") if isinstance(item.get("digest"), str) else None
         result.append(ReleaseAsset(item["name"], item["browser_download_url"], size, digest))
     return tuple(result)
+
+
+def group_runtime_assets(
+    assets: tuple[ReleaseAsset, ...], *, backend: str | None = None
+) -> tuple[RuntimeAssetGroup, ...]:
+    """Group a primary llama archive with published backend companion archives."""
+
+    archives = tuple(asset for asset in assets if _is_archive(asset.name))
+    selected = tuple(asset for asset in archives if _matches_backend(asset.name, backend))
+    primaries = tuple(asset for asset in selected if _looks_like_primary(asset.name))
+    companions = tuple(asset for asset in selected if asset not in primaries)
+    result: list[RuntimeAssetGroup] = []
+    for primary in primaries:
+        key = _runtime_group_key(primary.name)
+        related = tuple(
+            asset
+            for asset in companions
+            if _runtime_group_key(asset.name) == key
+            or (backend == "cuda" and _is_cuda_companion(asset.name))
+        )
+        result.append(RuntimeAssetGroup(key, primary, related))
+    return tuple(result)
+
+
+def _is_archive(name: str) -> bool:
+    return name.lower().endswith((".zip", ".tar.gz", ".tgz", ".tar.xz", ".tar.bz2"))
+
+
+def _matches_backend(name: str, backend: str | None) -> bool:
+    if not backend or backend == "cpu":
+        return not any(
+            token in name.lower() for token in ("cuda", "vulkan", "rocm", "sycl", "metal")
+        )
+    normalized = name.lower()
+    return backend.lower() in normalized or _looks_like_primary(name)
+
+
+def _looks_like_primary(name: str) -> bool:
+    normalized = name.lower()
+    return "cudart" not in normalized and "runtime" not in normalized
+
+
+def _is_cuda_companion(name: str) -> bool:
+    normalized = name.lower()
+    return "cuda" in normalized or "cudart" in normalized
+
+
+def _runtime_group_key(name: str) -> str:
+    normalized = name.lower()
+    for token in ("-cuda", "_cuda", "-vulkan", "_vulkan", "-cpu", "_cpu"):
+        normalized = normalized.replace(token, "")
+    return normalized
 
 
 def _digest_matches(content: bytes, digest: str) -> bool:

@@ -326,6 +326,63 @@ def test_server_restart_uses_previous_runtime_and_creates_new_run(tmp_path: Path
     assert {run["runtime_id"] for run in runs} == {runtime_id}
 
 
+def test_server_restart_can_switch_to_explicit_runtime(tmp_path: Path) -> None:
+    executable_one = tmp_path / "llama-one.exe"
+    executable_two = tmp_path / "llama-two.exe"
+    model = tmp_path / "model.gguf"
+    executable_one.touch()
+    executable_two.touch()
+    model.touch()
+    processes = iter((FakeProcess(1001), FakeProcess(1002)))
+    launches: list[tuple[str, ...]] = []
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build=path.stem, commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "models-preset"}), raw_help="help"
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        launches.append(tuple(arguments))
+        return next(processes)
+
+    app = create_app(
+        Settings(data_dir=tmp_path / "data"),
+        runtime_prober=fake_probe,
+        router_supervisor=RouterSupervisor(launcher, available_port),
+        router_port_probe=available_port,
+    )
+    with TestClient(app) as client:
+        first = client.post(
+            "/api/runtimes", json={"name": "One", "executable_path": str(executable_one)}
+        ).json()
+        second = client.post(
+            "/api/runtimes", json={"name": "Two", "executable_path": str(executable_two)}
+        ).json()
+        client.post(
+            "/api/profiles",
+            json={"alias": "local-model", "runtime_id": first["id"], "model_path": str(model)},
+        )
+        client.post(
+            "/api/profiles",
+            json={"alias": "local-model-two", "runtime_id": second["id"], "model_path": str(model)},
+        )
+        client.post("/api/server/start", json={"runtime_id": first["id"]})
+        restarted = client.post(
+            "/api/server/restart", json={"runtime_id": second["id"]}
+        )
+        runtimes = client.get("/api/runtimes").json()
+
+    assert restarted.status_code == 200
+    assert len(launches) == 2
+    assert runtimes[0]["id"] in {first["id"], second["id"]}
+
+
 def test_server_start_records_occupied_port_without_launching(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     model = tmp_path / "model.gguf"
