@@ -135,7 +135,7 @@ export function RuntimePanel({ runtimes }: { runtimes: Runtime[] }) {
             <div className="record-copy"><strong>{runtime.name}</strong><span>{runtime.executable_path}</span></div>
             <div className="record-meta"><small>Build</small><span>{runtime.build ?? 'Unknown'}</span></div>
             <div className="record-meta"><small>Backend</small><span>{runtime.backend?.toUpperCase() ?? 'AUTO'}</span></div>
-            <span className={`state-pill ${runtime.usable ? 'ready' : 'error'}`}>{runtime.usable ? 'Ready' : 'Probe failed'}</span><button aria-label={`Remove runtime ${runtime.name}`} className="icon-button small danger-icon" onClick={() => setDeletingRuntime(runtime)} title="Remove runtime" type="button"><Trash2 size={16} /></button>
+            <div className="row-actions"><span className={`state-pill ${runtime.usable ? 'ready' : 'error'}`}>{runtime.usable ? 'Ready' : 'Probe failed'}</span><button aria-label={`Remove runtime ${runtime.name}`} className="icon-button small danger-icon" onClick={() => setDeletingRuntime(runtime)} title="Remove runtime" type="button"><Trash2 size={16} /></button></div>
           </article>
         ))}</div> : <div className="empty"><Cpu size={28} /><strong>No runtime registered</strong><span>Point Llama Control at an existing llama-server executable to begin.</span><button className="button primary" onClick={() => setOpen(true)} type="button"><Plus size={15} /> Register runtime</button></div>}
       </section>

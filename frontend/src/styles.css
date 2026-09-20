@@ -114,6 +114,7 @@ tbody tr:hover { background: #f4f4ee; }
 .collection-row div span { overflow: hidden; color: var(--muted); font: 10px 'IBM Plex Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
 .record-list { padding: 0 19px; }
 .record-row { min-height: 76px; border-bottom: 1px solid #e2e2da; display: grid; grid-template-columns: 38px minmax(220px, 1fr) 110px 100px auto; align-items: center; gap: 14px; }
+.record-row > .row-actions { min-width: max-content; }
 .record-row:last-child { border-bottom: 0; }
 .record-icon { width: 36px; height: 36px; border: 1px solid var(--line); border-radius: 4px; display: grid; place-items: center; color: #62645d; background: #efefe9; }
 .record-copy { min-width: 0; display: grid; gap: 5px; }
