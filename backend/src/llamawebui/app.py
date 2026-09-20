@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import shutil
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -240,6 +241,15 @@ def _server_payload(supervisor: RouterSupervisor, settings: Settings) -> dict[st
         "endpoint": f"http://{settings.router_host}:{settings.router_port}",
         "logs": supervisor.logs,
         "timing": supervisor.timing,
+        "system": _system_metrics(settings.data_dir),
+    }
+
+
+def _system_metrics(data_dir: Path) -> dict[str, object]:
+    usage = shutil.disk_usage(data_dir)
+    return {
+        "disk_free_bytes": usage.free,
+        "disk_total_bytes": usage.total,
     }
 
 
