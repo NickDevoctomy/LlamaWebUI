@@ -27,6 +27,14 @@ class LibraryModel:
     total_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class LibraryReconcileResult:
+    managed_jobs: int
+    valid_models: int
+    invalid_jobs: int
+    stray_gguf_files: int
+
+
 class ModelLibrary:
     def __init__(self, downloads: DownloadRegistry, model_root: Path) -> None:
         self._downloads = downloads
@@ -40,6 +48,35 @@ class ModelLibrary:
             if (model := self._project(job)) is not None
         )
         return tuple(models)
+
+    def reconcile(self) -> LibraryReconcileResult:
+        jobs = self._downloads.list(include_hidden=True)
+        valid = sum(
+            1
+            for job in jobs
+            if DownloadState(job.state) is DownloadState.COMPLETED
+            and self._project(job) is not None
+        )
+        completed = sum(1 for job in jobs if DownloadState(job.state) is DownloadState.COMPLETED)
+        referenced = {
+            path.resolve()
+            for job in jobs
+            if DownloadState(job.state) is DownloadState.COMPLETED
+            for raw in job.files
+            if isinstance(raw.get("path"), str)
+            for path in [Path(job.destination) / str(raw["path"])]
+        }
+        stray = sum(
+            1
+            for path in self._model_root.rglob("*.gguf")
+            if path.is_file() and path.resolve() not in referenced
+        )
+        return LibraryReconcileResult(
+            managed_jobs=len(jobs),
+            valid_models=valid,
+            invalid_jobs=completed - valid,
+            stray_gguf_files=stray,
+        )
 
     def _project(self, job: DownloadJobRecord) -> LibraryModel | None:
         destination = Path(job.destination).resolve()

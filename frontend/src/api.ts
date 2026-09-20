@@ -184,6 +184,7 @@ export const api = {
   tokens: () => request<AccessToken[]>('/api/tokens'),
   downloads: () => request<DownloadJob[]>('/api/downloads'),
   library: () => request<LibraryModel[]>('/api/library'),
+  reconcileLibrary: () => request<{ managed_jobs: number; valid_models: number; invalid_jobs: number; stray_gguf_files: number }>('/api/library/reconcile', { method: 'POST' }),
   models: () => request<RouterModel[]>('/api/server/models'),
   searchModels: (query: string, sort = 'downloads') => {
     const parameters = new URLSearchParams({ q: query, sort })

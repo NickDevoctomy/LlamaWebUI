@@ -142,6 +142,42 @@ def test_library_endpoint_returns_primary_profile_path(tmp_path: Path) -> None:
     ]
 
 
+def test_library_reconcile_reports_invalid_and_stray_files(tmp_path: Path) -> None:
+    database = tmp_path / "app.db"
+    model_root = tmp_path / "models"
+    upgrade_database(database)
+    registry = DownloadRegistry(create_database_engine(database), model_root)
+    manifest = RepositoryManifest(
+        repo_id="owner/model-GGUF",
+        revision="e" * 40,
+        groups=(
+            GgufGroup(
+                key="model-Q4",
+                quantization="Q4",
+                files=(HubFile("model-Q4.gguf", 4),),
+                total_size=4,
+                complete=True,
+            ),
+        ),
+    )
+    job = registry.create(manifest, "model-Q4")
+    destination = Path(job.destination)
+    destination.mkdir(parents=True)
+    destination.joinpath("model-Q4.gguf").write_bytes(b"good")
+    registry.transition(job.id, DownloadState.DOWNLOADING)
+    registry.update_progress(job.id, 4)
+    registry.transition(job.id, DownloadState.COMPLETED)
+    (model_root / "stray.gguf").parent.mkdir(parents=True, exist_ok=True)
+    (model_root / "stray.gguf").write_bytes(b"stray")
+
+    result = ModelLibrary(registry, model_root).reconcile()
+
+    assert result.managed_jobs == 1
+    assert result.valid_models == 1
+    assert result.invalid_jobs == 0
+    assert result.stray_gguf_files == 1
+
+
 def test_library_delete_preserves_profile_and_exposes_redownload(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()

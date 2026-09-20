@@ -291,6 +291,8 @@ function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh, run
   running: boolean
 }) {
   const [deleting, setDeleting] = useState<LibraryModel>()
+  const [reconciling, setReconciling] = useState(false)
+  const [reconcileResult, setReconcileResult] = useState<string>()
   const queryClient = useQueryClient()
   const removal = useMutation({
     mutationFn: (downloadId: string) => api.deleteLibraryModel(downloadId),
@@ -302,15 +304,26 @@ function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh, run
       ])
     },
   })
+  async function reconcile() {
+    setReconciling(true)
+    try {
+      const result = await api.reconcileLibrary()
+      setReconcileResult(`${result.valid_models} valid model(s), ${result.invalid_jobs} invalid job(s), ${result.stray_gguf_files} stray GGUF file(s).`)
+      await queryClient.invalidateQueries({ queryKey: ['library'] })
+    } finally {
+      setReconciling(false)
+    }
+  }
   return (
     <><section className="data-panel">
       <div className="panel-heading">
         <div><h2>Downloaded models</h2><p>Validated GGUF models in the application-managed library.</p></div>
         <div className="panel-heading-actions">
-          <button className="button secondary compact" onClick={onRefresh} type="button"><RefreshCw size={14} /> Refresh models</button>
+          <button className="button secondary compact" disabled={reconciling} onClick={() => void reconcile()} type="button"><RefreshCw size={14} /> {reconciling ? 'Reconciling…' : 'Reconcile library'}</button><button className="button secondary compact" onClick={onRefresh} type="button"><RefreshCw size={14} /> Refresh models</button>
           <button className="button secondary compact" onClick={onDiscover} type="button"><Search size={15} /> Discover models</button>
         </div>
       </div>
+      {reconcileResult && <div className="panel-footer"><span>{reconcileResult}</span></div>}
       <div className="table-wrap">
         <table className="models-table">
           <thead><tr><th>Model</th><th>Group</th><th>Size</th><th>Files</th><th>Revision</th><th><span className="sr-only">Actions</span></th></tr></thead>

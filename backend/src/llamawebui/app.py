@@ -1259,6 +1259,17 @@ def create_app(
             for model in library.list()
         ]
 
+    @app.post("/api/library/reconcile")
+    async def reconcile_library(request: Request) -> dict[str, int]:
+        library = cast(ModelLibrary, request.app.state.model_library)
+        result = library.reconcile()
+        return {
+            "managed_jobs": result.managed_jobs,
+            "valid_models": result.valid_models,
+            "invalid_jobs": result.invalid_jobs,
+            "stray_gguf_files": result.stray_gguf_files,
+        }
+
     @app.delete("/api/library/{download_id}")
     async def delete_library_model(download_id: str, request: Request) -> dict[str, object]:
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
