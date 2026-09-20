@@ -84,7 +84,12 @@ class DownloadWorker:
                 if not isinstance(expected_size, int):
                     raise OSError(f"download file size is invalid: {filename}")
                 downloaded = staging / filename
-                if not downloaded.is_file() or downloaded.stat().st_size != expected_size:
+                expected_etag = file_data.get("etag")
+                if (
+                    not downloaded.is_file()
+                    or downloaded.stat().st_size != expected_size
+                    or not _matches_etag(downloaded, expected_etag)
+                ):
                     downloaded = await self._download_with_progress(
                         job_id=job_id,
                         repo_id=job.repo_id,
@@ -224,3 +229,19 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _matches_etag(path: Path, etag: object) -> bool:
+    if not isinstance(etag, str) or not etag.strip('"').strip():
+        return True
+    normalized = etag.strip('"').strip().lower()
+    if len(normalized) == 32:
+        digest = hashlib.md5(usedforsecurity=False)
+    elif len(normalized) == 64:
+        digest = hashlib.sha256()
+    else:
+        return True
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest() == normalized

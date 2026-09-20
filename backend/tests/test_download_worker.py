@@ -222,6 +222,32 @@ async def test_worker_resumes_verified_staged_files(tmp_path: Path) -> None:
     assert registry.get(job_id).state == DownloadState.COMPLETED
 
 
+async def test_worker_redownloads_staged_file_when_etag_does_not_match(
+    tmp_path: Path,
+) -> None:
+    registry, job_id = create_registry(tmp_path, (2,))
+    job = registry.get(job_id)
+    job.files[0]["etag"] = hashlib.md5(b"xx").hexdigest()
+    staging = Path(job.destination).parent / f".{Path(job.destination).name}.{job.id}.partial"
+    staging.mkdir(parents=True)
+    (staging / "model-0.gguf").write_bytes(b"stale")
+    calls: list[str] = []
+
+    class Transfer:
+        async def download(
+            self, *, repo_id: str, filename: str, revision: str, destination: Path
+        ) -> Path:
+            calls.append(filename)
+            target = destination / filename
+            target.write_bytes(b"xx")
+            return target
+
+    await DownloadWorker(registry, Transfer()).run(job_id)
+
+    assert calls == ["model-0.gguf"]
+    assert registry.get(job_id).state == DownloadState.COMPLETED
+
+
 async def test_worker_rejects_transfer_path_outside_staging(tmp_path: Path) -> None:
     registry, job_id = create_registry(tmp_path, (1,))
 
