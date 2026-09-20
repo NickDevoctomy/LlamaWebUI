@@ -11,12 +11,15 @@ def collect_system_metrics(data_dir: Path) -> dict[str, object]:
     disk = psutil.disk_usage(str(data_dir))
     memory = psutil.virtual_memory()
     network = psutil.net_io_counters()
+    disk_io = psutil.disk_io_counters()
     return {
         "cpu_percent": psutil.cpu_percent(interval=None),
         "ram_used_bytes": memory.used,
         "ram_total_bytes": memory.total,
         "network_sent_bytes": network.bytes_sent,
         "network_received_bytes": network.bytes_recv,
+        "disk_read_bytes": disk_io.read_bytes if disk_io else None,
+        "disk_write_bytes": disk_io.write_bytes if disk_io else None,
         "disk_free_bytes": disk.free,
         "disk_total_bytes": disk.total,
         "gpu": None,
