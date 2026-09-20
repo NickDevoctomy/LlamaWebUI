@@ -101,7 +101,7 @@ Frontend foundation validation:
 - Rollback history ignores prior crashed/error runs and rejects candidates without router support, enabled profiles, or valid model artifacts before stopping the current server
 - Deterministic rollback API coverage confirms successful return to a previous runtime; a live native `/models/sse` request reached the expected event-stream endpoint but PowerShell's buffered request timed out before receiving a frame, so bounded streaming capture remains required
 - Bounded SSE collection is now covered by deterministic transport tests and safely stops after a frame limit or timeout without leaking the upstream stream; live curl acceptance reached the native event endpoint but received no frame within five seconds
-- Control-plane `/api/server/models/events` now emits `: keepalive` comments during idle native streams and cleans up pending reads on disconnect, so clients can distinguish a healthy idle stream from a stalled connection
+- Control-plane `/api/server/models/events` now emits `: keepalive` comments during idle native streams and cleans up pending reads on disconnect, so clients can distinguish a healthy idle stream from a stalled connection; deterministic endpoint coverage remains green, while live curl buffering did not expose the comment within 17 seconds
 - Desktop and mobile layouts use stable metrics, table reduction, and fixed navigation without content overlap
 
 ## Important Constraints
@@ -131,7 +131,7 @@ Frontend foundation validation:
 
 ## Next Implementation Slice
 
-Use the keepalive-enabled control-plane stream for live model-event acceptance. Do not use the 93.7 GB target for routine acceptance.
+Use a streaming-capable client for live model-event acceptance; the endpoint and deterministic keepalive behavior are implemented, but PowerShell/curl buffering still prevents live frame observation. Do not use the 93.7 GB target for routine acceptance.
 
 Manual acceptance for transfer interruption:
 
