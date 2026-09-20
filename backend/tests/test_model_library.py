@@ -178,6 +178,26 @@ def test_library_reconcile_reports_invalid_and_stray_files(tmp_path: Path) -> No
     assert result.stray_gguf_files == 1
 
 
+def test_library_discover_finds_complete_external_shards(tmp_path: Path) -> None:
+    model_root = tmp_path / "models"
+    model_root.mkdir()
+    model_dir = model_root / "owner" / "model"
+    model_dir.mkdir(parents=True)
+    first = model_dir / "model-Q4-00001-of-00002.gguf"
+    second = model_dir / "model-Q4-00002-of-00002.gguf"
+    first.write_bytes(b"one")
+    second.write_bytes(b"two-two")
+    (model_dir / "incomplete-00001-of-00002.gguf").write_bytes(b"x")
+    registry = DownloadRegistry(create_database_engine(tmp_path / "app.db"), model_root)
+
+    discovered = ModelLibrary(registry, model_root).discover()
+
+    assert len(discovered) == 1
+    assert discovered[0].primary_path == first
+    assert discovered[0].files == (first, second)
+    assert discovered[0].total_bytes == 10
+
+
 def test_library_delete_preserves_profile_and_exposes_redownload(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()

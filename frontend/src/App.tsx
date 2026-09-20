@@ -293,6 +293,7 @@ function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh, run
   const [deleting, setDeleting] = useState<LibraryModel>()
   const [reconciling, setReconciling] = useState(false)
   const [reconcileResult, setReconcileResult] = useState<string>()
+  const [discovered, setDiscovered] = useState<{ primary_path: string; files: string[]; total_bytes: number }[]>([])
   const queryClient = useQueryClient()
   const removal = useMutation({
     mutationFn: (downloadId: string) => api.deleteLibraryModel(downloadId),
@@ -314,16 +315,21 @@ function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh, run
       setReconciling(false)
     }
   }
+  async function discover() {
+    const result = await api.discoverLibrary()
+    setDiscovered(result)
+  }
   return (
     <><section className="data-panel">
       <div className="panel-heading">
         <div><h2>Downloaded models</h2><p>Validated GGUF models in the application-managed library.</p></div>
         <div className="panel-heading-actions">
-          <button className="button secondary compact" disabled={reconciling} onClick={() => void reconcile()} type="button"><RefreshCw size={14} /> {reconciling ? 'Reconciling…' : 'Reconcile library'}</button><button className="button secondary compact" onClick={onRefresh} type="button"><RefreshCw size={14} /> Refresh models</button>
+          <button className="button secondary compact" disabled={reconciling} onClick={() => void reconcile()} type="button"><RefreshCw size={14} /> {reconciling ? 'Reconciling…' : 'Reconcile library'}</button><button className="button secondary compact" onClick={() => void discover()} type="button"><Search size={15} /> Discover local files</button><button className="button secondary compact" onClick={onRefresh} type="button"><RefreshCw size={14} /> Refresh models</button>
           <button className="button secondary compact" onClick={onDiscover} type="button"><Search size={15} /> Discover models</button>
         </div>
       </div>
       {reconcileResult && <div className="panel-footer"><span>{reconcileResult}</span></div>}
+      {discovered.length > 0 && <div className="panel-footer"><span>Found {discovered.length} complete external model set(s).</span>{discovered.map((model) => <span className="mono" key={model.primary_path}>{model.primary_path}</span>)}</div>}
       <div className="table-wrap">
         <table className="models-table">
           <thead><tr><th>Model</th><th>Group</th><th>Size</th><th>Files</th><th>Revision</th><th><span className="sr-only">Actions</span></th></tr></thead>

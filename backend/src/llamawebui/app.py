@@ -1278,6 +1278,18 @@ def create_app(
             "stray_gguf_files": result.stray_gguf_files,
         }
 
+    @app.get("/api/library/discover")
+    async def discover_library_models(request: Request) -> list[dict[str, object]]:
+        library = cast(ModelLibrary, request.app.state.model_library)
+        return [
+            {
+                "primary_path": str(model.primary_path),
+                "files": [str(path) for path in model.files],
+                "total_bytes": model.total_bytes,
+            }
+            for model in library.discover()
+        ]
+
     @app.delete("/api/library/{download_id}")
     async def delete_library_model(download_id: str, request: Request) -> dict[str, object]:
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)

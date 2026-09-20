@@ -127,6 +127,12 @@ export interface LibraryModel {
   total_bytes: number
 }
 
+export interface DiscoveredModel {
+  primary_path: string
+  files: string[]
+  total_bytes: number
+}
+
 export interface RuntimeRegistration {
   name: string
   executable_path: string
@@ -185,6 +191,7 @@ export const api = {
   downloads: () => request<DownloadJob[]>('/api/downloads'),
   library: () => request<LibraryModel[]>('/api/library'),
   reconcileLibrary: () => request<{ managed_jobs: number; valid_models: number; invalid_jobs: number; stray_gguf_files: number }>('/api/library/reconcile', { method: 'POST' }),
+  discoverLibrary: () => request<DiscoveredModel[]>('/api/library/discover'),
   models: () => request<RouterModel[]>('/api/server/models'),
   searchModels: (query: string, sort = 'downloads') => {
     const parameters = new URLSearchParams({ q: query, sort })

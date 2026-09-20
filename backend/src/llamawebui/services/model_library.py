@@ -35,6 +35,13 @@ class LibraryReconcileResult:
     stray_gguf_files: int
 
 
+@dataclass(frozen=True, slots=True)
+class DiscoveredModel:
+    primary_path: Path
+    files: tuple[Path, ...]
+    total_bytes: int
+
+
 class ModelLibrary:
     def __init__(self, downloads: DownloadRegistry, model_root: Path) -> None:
         self._downloads = downloads
@@ -77,6 +84,39 @@ class ModelLibrary:
             invalid_jobs=completed - valid,
             stray_gguf_files=stray,
         )
+
+    def discover(self) -> tuple[DiscoveredModel, ...]:
+        candidates: dict[str, list[Path]] = {}
+        for path in self._model_root.rglob("*.gguf"):
+            if not path.is_file() or path.is_symlink():
+                continue
+            match = _SHARD_PATTERN.match(path.name)
+            key = match.group("prefix") if match else path.stem
+            candidates.setdefault(key, []).append(path)
+        discovered: list[DiscoveredModel] = []
+        for paths in candidates.values():
+            paths.sort()
+            primary = next(
+                (path for path in paths if _is_primary(path.name)),
+                None,
+            )
+            if primary is None:
+                continue
+            match = _SHARD_PATTERN.match(primary.name)
+            if match is not None:
+                count = int(match.group("count"))
+                expected = {
+                    primary.with_name(
+                        f"{match.group('prefix')}-{index:05d}-of-{count:05d}.gguf"
+                    ).resolve()
+                    for index in range(1, count + 1)
+                }
+                if {path.resolve() for path in paths} != expected:
+                    continue
+            discovered.append(
+                DiscoveredModel(primary, tuple(paths), sum(path.stat().st_size for path in paths))
+            )
+        return tuple(discovered)
 
     def _project(self, job: DownloadJobRecord) -> LibraryModel | None:
         destination = Path(job.destination).resolve()
@@ -134,3 +174,8 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _is_primary(name: str) -> bool:
+    match = _SHARD_PATTERN.match(name)
+    return match is None or match.group("index") == "00001"
