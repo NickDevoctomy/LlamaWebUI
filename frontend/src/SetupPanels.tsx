@@ -193,6 +193,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
   const [flashAttention, setFlashAttention] = useState('')
   const [preserveReasoning, setPreserveReasoning] = useState(true)
   const [deleting, setDeleting] = useState<Profile>()
+  const [editing, setEditing] = useState<Profile>()
   const [repairing, setRepairing] = useState<Profile>()
   const queryClient = useQueryClient()
   const runtime = runtimes.find((item) => item.id === runtimeId)
@@ -241,6 +242,33 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
       setSelectedLibraryModel(undefined)
     },
   })
+  const update = useMutation({
+    mutationFn: () => api.updateProfile(editing!.id, {
+      alias,
+      runtime_id: runtimeId,
+      model_path: modelPath,
+      enabled: editing!.enabled,
+      no_reasoning_preserve: !preserveReasoning,
+      ctx_size: supports('ctx-size') ? optionalNumber(contextSize) : undefined,
+      n_gpu_layers: supports('n-gpu-layers') ? optionalNumber(gpuLayers) : undefined,
+      threads: supports('threads') ? optionalNumber(threads) : undefined,
+      batch_size: supports('batch-size') ? optionalNumber(batchSize) : undefined,
+      flash_attn: supports('flash-attn') && flashAttention ? flashAttention : undefined,
+    }),
+    onSuccess: async () => {
+      setEditing(undefined)
+      setOpen(false)
+      await queryClient.invalidateQueries({ queryKey: ['profiles'] })
+    },
+  })
+
+  function editProfile(profile: Profile) {
+    setEditing(profile)
+    setAlias(profile.alias)
+    setModelPath(profile.model_path)
+    setRuntimeId(profile.runtime_id)
+    setOpen(true)
+  }
   const deletion = useMutation({
     mutationFn: (profileId: string) => api.deleteProfile(profileId),
     onSuccess: async () => {
@@ -274,14 +302,14 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
         {profiles.length ? <div className="record-list">{profiles.map((profile) => (
           <article className="record-row" key={profile.id}>
             <span className="record-icon"><FileCog size={18} /></span>
-            <div className="record-copy"><strong>{profile.alias}</strong><span>{profile.model_path}</span></div>
+            <div className="record-copy"><button className="record-link" onClick={() => editProfile(profile)} type="button"><strong>{profile.alias}</strong></button><span>{profile.model_path}</span></div>
             <div className="record-meta wide"><small>Runtime</small><span>{runtimes.find((item) => item.id === profile.runtime_id)?.name ?? 'Missing runtime'}</span></div>
             {profile.validation_state === 'broken' ? <button className="state-pill error" disabled={running || !profile.source_download} onClick={() => setRepairing(profile)} title={profile.source_download ? 'Repair missing model' : 'Model file is missing'} type="button">Broken</button> : <span className={`state-pill ${profile.enabled ? 'ready' : ''}`}>{profile.enabled ? 'Enabled' : 'Disabled'}</span>}
             <button aria-label={`Delete profile ${profile.alias}`} className="icon-button small danger-icon" disabled={running} onClick={() => setDeleting(profile)} title="Delete profile" type="button"><Trash2 size={16} /></button>
           </article>
         ))}</div> : <div className="empty"><FileCog size={28} /><strong>No profiles configured</strong><span>{runtimes.length ? 'Create a profile for a local GGUF model.' : 'Register a runtime before creating a model profile.'}</span>{runtimes.length > 0 && <button className="button primary" onClick={() => setOpen(true)} type="button"><Plus size={15} /> Create profile</button>}</div>}
       </section>
-      {open && <Dialog title="Create model profile" description="Basic identity and capability-aware llama.cpp launch settings." onClose={() => setOpen(false)}>
+      {open && <Dialog title={editing ? 'Edit model profile' : 'Create model profile'} description="Basic identity and capability-aware llama.cpp launch settings." onClose={() => setOpen(false)}>
         <form onSubmit={submit}>
           <div className="segmented" role="tablist" aria-label="Profile settings"><button aria-selected={tab === 'basic'} onClick={() => setTab('basic')} role="tab" type="button">Basic</button><button aria-selected={tab === 'advanced'} onClick={() => setTab('advanced')} role="tab" type="button">Advanced</button></div>
           <div className="form-body">
@@ -311,7 +339,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
             </>}
             {creation.error && <div className="form-error"><AlertCircle size={15} /> {creation.error.message}</div>}
           </div>
-          <footer className="dialog-actions"><button className="button secondary" onClick={() => setOpen(false)} type="button">Cancel</button><button className="button primary" disabled={creation.isPending || !aliasValid || !runtimeId || !modelPath.trim()} type="submit">{creation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Create profile</button></footer>
+          <footer className="dialog-actions"><button className="button secondary" onClick={() => setOpen(false)} type="button">Cancel</button><button className="button primary" disabled={creation.isPending || update.isPending || !aliasValid || !runtimeId || !modelPath.trim()} onClick={editing ? (event) => { event.preventDefault(); update.mutate() } : undefined} type="submit">{creation.isPending || update.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {editing ? 'Save profile' : 'Create profile'}</button></footer>
         </form>
       </Dialog>}
       {deleting && <Dialog title="Delete model profile?" description="This removes only the profile. Downloaded model files are not affected." onClose={() => setDeleting(undefined)}><div className="confirm-body"><Trash2 size={24} /><p>Profile <strong>{deleting.alias}</strong> will be permanently removed.</p>{deletion.error && <div className="form-error"><AlertCircle size={15} /> {deletion.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep profile</button><button className="button danger" disabled={deletion.isPending} onClick={() => deletion.mutate(deleting.id)} type="button">{deletion.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete profile</button></footer></Dialog>}

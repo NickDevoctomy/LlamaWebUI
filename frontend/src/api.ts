@@ -215,6 +215,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(profile),
     }),
+  updateProfile: (profileId: string, profile: ProfileCreate) =>
+    request<Profile>(`/api/profiles/${profileId}`, { method: 'PUT', body: JSON.stringify(profile) }),
   deleteProfile: (profileId: string) =>
     request<void>(`/api/profiles/${profileId}`, { method: 'DELETE' }),
   createToken: (name: string, expiryNote?: string) =>

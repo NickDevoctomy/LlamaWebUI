@@ -80,3 +80,33 @@ class ProfileRegistry:
                 raise ProfileNotFoundError(f"model profile not found: {profile_id}")
             session.delete(record)
             session.commit()
+
+    def update(
+        self, profile_id: str, *, profile: ModelProfile, runtime_id: str, enabled: bool
+    ) -> ModelProfileRecord:
+        with self._sessions() as session:
+            record = session.get(ModelProfileRecord, profile_id)
+            if record is None:
+                raise ProfileNotFoundError(f"model profile not found: {profile_id}")
+            runtime = session.get(RuntimeRecord, runtime_id)
+            if runtime is None:
+                raise RuntimeNotFoundError(f"runtime not found: {runtime_id}")
+            duplicate = session.scalar(
+                select(ModelProfileRecord.id).where(
+                    ModelProfileRecord.alias == profile.alias,
+                    ModelProfileRecord.id != profile_id,
+                )
+            )
+            if duplicate is not None:
+                raise ProfileAliasExistsError(f"model alias is already registered: {profile.alias}")
+            capabilities = RuntimeCapabilities(options=frozenset(runtime.options), raw_help="")
+            record.alias = profile.alias
+            record.runtime_id = runtime_id
+            record.model_path = str(profile.model_path.resolve())
+            record.configuration = asdict(profile)
+            record.configuration["model_path"] = record.model_path
+            record.configuration["advanced"] = [asdict(option) for option in profile.advanced]
+            record.preset = render_preset(profile, capabilities)
+            record.enabled = enabled
+            session.commit()
+            return record

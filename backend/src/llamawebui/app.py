@@ -1032,6 +1032,33 @@ def create_app(
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
         return _profile_payload(profile, artifacts)
 
+    @app.put("/api/profiles/{profile_id}")
+    async def update_profile(
+        profile_id: str, profile_request: ProfileCreateRequest, request: Request
+    ) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="stop the router before editing a profile",
+            )
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        try:
+            profile = registry.update(
+                profile_id,
+                profile=profile_request.to_domain(),
+                runtime_id=profile_request.runtime_id,
+                enabled=profile_request.enabled,
+            )
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileAliasExistsError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(profile, artifacts)
+
     @app.delete("/api/profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def remove_profile(profile_id: str, request: Request) -> None:
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)

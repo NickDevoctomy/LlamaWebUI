@@ -282,7 +282,7 @@ The main dashboard is an operational workspace, not a landing page. It includes:
 - Server monitoring shows current and peak tokens per second, prompt-processing throughput, decode throughput, active task number, current-task elapsed time, and context usage when those values are available from llama.cpp timing/status output.
 - Server log presentation is newest-first with a bounded tail; users should not need to scroll through the entire retained log to see the latest output. Raw chronological logs remain available for diagnostics/export.
 - Timing lines such as `prompt processing`, `n_gen`, `tg`, `tg_3s`, and task identifiers are parsed into structured monitoring samples instead of being displayed only as unstructured text.
-- Profile editor with Basic and Advanced tabs, inline capability validation, and an unsaved-change guard.
+- Profile editor with Basic and Advanced tabs, inline capability validation, saved-profile inspection/editing, and an unsaved-change guard.
 - Download drawer that remains visible across navigation.
 - Responsive layouts usable on a laptop and phone without hiding critical state or actions.
 

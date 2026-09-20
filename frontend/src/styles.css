@@ -146,6 +146,7 @@ tbody tr:hover { background: #f4f4ee; }
 .record-icon { width: 36px; height: 36px; border: 1px solid var(--line); border-radius: 4px; display: grid; place-items: center; color: #62645d; background: #efefe9; }
 .record-copy { min-width: 0; display: grid; gap: 5px; }
 .record-copy strong { font-size: 12px; }
+.record-link { padding: 0; border: 0; color: inherit; background: transparent; text-align: left; }
 .record-copy span { overflow: hidden; color: var(--muted); font: 10px 'IBM Plex Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
 .record-meta { min-width: 0; display: grid; gap: 4px; }
 .record-meta small { color: #898b83; font: 9px 'IBM Plex Mono', monospace; text-transform: uppercase; }
