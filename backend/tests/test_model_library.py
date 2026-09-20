@@ -232,6 +232,45 @@ def test_library_discover_finds_complete_external_shards(tmp_path: Path) -> None
     assert discovered[0].primary_path == first
     assert discovered[0].files == (first, second)
     assert discovered[0].total_bytes == 10
+    assert discovered[0].model_name == "model"
+
+
+def test_library_import_creates_disabled_profile_for_discovered_model(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model_root = tmp_path / "data" / "models"
+    model_dir = model_root / "external"
+    model_dir.mkdir(parents=True)
+    model = model_dir / "external-Q4.gguf"
+    model.write_bytes(b"gguf")
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(options=frozenset({"model"}), raw_help="help"),
+            devices_output=None,
+            errors=(),
+        )
+
+    app = create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
+    with TestClient(app) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        discovered = client.get("/api/library/discover").json()[0]
+        imported = client.post(
+            "/api/library/import",
+            json={
+                "primary_path": discovered["primary_path"],
+                "runtime_id": runtime_id,
+                "alias": "external-model",
+            },
+        )
+
+    assert imported.status_code == 201
+    assert imported.json()["enabled"] is False
+    assert imported.json()["model_path"] == str(model)
 
 
 def test_library_delete_preserves_profile_and_exposes_redownload(tmp_path: Path) -> None:

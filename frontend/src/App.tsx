@@ -293,7 +293,17 @@ function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh, run
   const [deleting, setDeleting] = useState<LibraryModel>()
   const [reconciling, setReconciling] = useState(false)
   const [reconcileResult, setReconcileResult] = useState<string>()
-  const [discovered, setDiscovered] = useState<{ primary_path: string; files: string[]; total_bytes: number }[]>([])
+  const [discovered, setDiscovered] = useState<{ primary_path: string; files: string[]; total_bytes: number; model_name: string }[]>([])
+  const [importing, setImporting] = useState<{ primary_path: string; model_name: string }>()
+  const [importAlias, setImportAlias] = useState('')
+  const importExternal = useMutation({
+    mutationFn: () => api.importExternalModel(importing!.primary_path, profiles[0]?.runtime_id ?? '', importAlias),
+    onSuccess: async () => {
+      setImporting(undefined)
+      setImportAlias('')
+      await queryClient.invalidateQueries({ queryKey: ['profiles'] })
+    },
+  })
   const queryClient = useQueryClient()
   const removal = useMutation({
     mutationFn: (downloadId: string) => api.deleteLibraryModel(downloadId),
@@ -329,7 +339,7 @@ function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh, run
         </div>
       </div>
       {reconcileResult && <div className="panel-footer"><span>{reconcileResult}</span></div>}
-      {discovered.length > 0 && <div className="panel-footer"><span>Found {discovered.length} complete external model set(s).</span>{discovered.map((model) => <span className="mono" key={model.primary_path}>{model.primary_path}</span>)}</div>}
+      {discovered.length > 0 && <div className="panel-footer"><span>Found {discovered.length} complete external model set(s).</span>{discovered.map((model) => <span className="mono" key={model.primary_path}>{model.primary_path} <button className="button row-button" onClick={() => { setImporting(model); setImportAlias(model.model_name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-')) }} type="button">Import as profile</button></span>)}</div>}
       <div className="table-wrap">
         <table className="models-table">
           <thead><tr><th>Model</th><th>Group</th><th>Size</th><th>Files</th><th>Revision</th><th><span className="sr-only">Actions</span></th></tr></thead>
@@ -353,7 +363,7 @@ function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh, run
         {!models.length && <div className="empty"><Library size={28} /><strong>No downloaded models</strong><span>Use Discover to download a complete GGUF model.</span></div>}
       </div>
       <div className="panel-footer"><span>{models.length} downloaded models</span><span><ShieldCheck size={14} /> Validated files only</span></div>
-    </section>{deleting && <Dialog title="Delete downloaded model?" description="The downloaded files will be removed, but associated profiles will be preserved as broken." onClose={() => setDeleting(undefined)}><div className="confirm-body"><Trash2 size={24} /><p><strong>{deleting.repo_id}</strong> · <span className="mono">{deleting.group_key}</span> at revision <span className="mono">{deleting.revision.slice(0, 9)}</span> will be deleted. Re-downloading this exact artifact will repair its profiles.</p>{removal.error && <div className="form-error"><AlertCircle size={15} /> {removal.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep model</button><button className="button danger" disabled={removal.isPending} onClick={() => removal.mutate(deleting.download_id)} type="button">{removal.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete model</button></footer></Dialog>}</>
+    </section>{importing && <Dialog title="Import external model" description="Create a disabled profile for this complete model set." onClose={() => setImporting(undefined)}><div className="form-body"><label className="field"><span>Profile alias</span><input autoFocus value={importAlias} onChange={(event) => setImportAlias(event.target.value.toLowerCase().replace(/\s+/g, '-'))} required /></label>{importExternal.error && <div className="form-error"><AlertCircle size={15} /> {importExternal.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setImporting(undefined)} type="button">Cancel</button><button className="button primary" disabled={importExternal.isPending || !profiles[0]?.runtime_id || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(importAlias)} onClick={() => importExternal.mutate()} type="button">{importExternal.isPending ? <LoaderCircle className="spin" size={15} /> : <FolderCog size={15} />} Import profile</button></footer></Dialog>}{deleting && <Dialog title="Delete downloaded model?" description="The downloaded files will be removed, but associated profiles will be preserved as broken." onClose={() => setDeleting(undefined)}><div className="confirm-body"><Trash2 size={24} /><p><strong>{deleting.repo_id}</strong> · <span className="mono">{deleting.group_key}</span> at revision <span className="mono">{deleting.revision.slice(0, 9)}</span> will be deleted. Re-downloading this exact artifact will repair its profiles.</p>{removal.error && <div className="form-error"><AlertCircle size={15} /> {removal.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep model</button><button className="button danger" disabled={removal.isPending} onClick={() => removal.mutate(deleting.download_id)} type="button">{removal.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete model</button></footer></Dialog>}</>
   )
 }
 

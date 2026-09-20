@@ -131,6 +131,7 @@ export interface DiscoveredModel {
   primary_path: string
   files: string[]
   total_bytes: number
+  model_name: string
 }
 
 export interface RuntimeRegistration {
@@ -192,6 +193,8 @@ export const api = {
   library: () => request<LibraryModel[]>('/api/library'),
   reconcileLibrary: () => request<{ managed_jobs: number; valid_models: number; invalid_jobs: number; stray_gguf_files: number }>('/api/library/reconcile', { method: 'POST' }),
   discoverLibrary: () => request<DiscoveredModel[]>('/api/library/discover'),
+  importExternalModel: (primaryPath: string, runtimeId: string, alias: string) =>
+    request<Profile>('/api/library/import', { method: 'POST', body: JSON.stringify({ primary_path: primaryPath, runtime_id: runtimeId, alias }) }),
   models: () => request<RouterModel[]>('/api/server/models'),
   searchModels: (query: string, sort = 'downloads') => {
     const parameters = new URLSearchParams({ q: query, sort })

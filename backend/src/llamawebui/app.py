@@ -150,6 +150,12 @@ class ProfileImportRequest(BaseModel):
     alias: str | None = Field(default=None, min_length=1, max_length=64)
 
 
+class ExternalModelImportRequest(BaseModel):
+    primary_path: str
+    runtime_id: str
+    alias: str
+
+
 class DownloadCreateRequest(BaseModel):
     repo_id: str = Field(min_length=3, max_length=400)
     group_key: str = Field(min_length=1)
@@ -1315,9 +1321,45 @@ def create_app(
                 "primary_path": str(model.primary_path),
                 "files": [str(path) for path in model.files],
                 "total_bytes": model.total_bytes,
+                "model_name": model.model_name,
             }
             for model in library.discover()
         ]
+
+    @app.post("/api/library/import", status_code=status.HTTP_201_CREATED)
+    async def import_external_model(
+        import_request: ExternalModelImportRequest, request: Request
+    ) -> dict[str, object]:
+        library = cast(ModelLibrary, request.app.state.model_library)
+        candidate = next(
+            (
+                item
+                for item in library.discover()
+                if str(item.primary_path) == import_request.primary_path
+            ),
+            None,
+        )
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="complete external model was not found")
+        profile = ProfileCreateRequest(
+            alias=import_request.alias,
+            runtime_id=import_request.runtime_id,
+            model_path=str(candidate.primary_path),
+            enabled=False,
+        )
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        try:
+            created = registry.create(
+                profile=profile.to_domain(), runtime_id=profile.runtime_id, enabled=False
+            )
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileAliasExistsError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ProfileValidationError as error:
+            raise HTTPException(status_code=422, detail=list(error.errors)) from error
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(created, artifacts)
 
     @app.delete("/api/library/{download_id}")
     async def delete_library_model(download_id: str, request: Request) -> dict[str, object]:

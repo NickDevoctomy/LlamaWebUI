@@ -40,6 +40,7 @@ class DiscoveredModel:
     primary_path: Path
     files: tuple[Path, ...]
     total_bytes: int
+    model_name: str
 
 
 class ModelLibrary:
@@ -115,7 +116,12 @@ class ModelLibrary:
                 if {path.resolve() for path in paths} != expected:
                     continue
             discovered.append(
-                DiscoveredModel(primary, tuple(paths), sum(path.stat().st_size for path in paths))
+                DiscoveredModel(
+                    primary,
+                    tuple(paths),
+                    sum(path.stat().st_size for path in paths),
+                    primary.parent.name or primary.stem,
+                )
             )
         return tuple(discovered)
 
