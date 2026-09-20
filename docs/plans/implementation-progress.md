@@ -132,7 +132,7 @@ Frontend foundation validation:
 
 ## Next Implementation Slice
 
-Next: ETag-aware transfer/cache validation and general library reconciliation. Download events now cover started, resumed, paused, cancelled, completed, and failed transitions. Projector downloads are explicit via `include_projector`; they are never silently added. SSE endpoint-level testing remains deferred in `docs/tech-debt/`; do not use the 93.7 GB target for routine acceptance.
+Next: ETag-aware transfer/cache validation and general library reconciliation. Download events now cover started, resumed, paused, cancelled, completed, and failed transitions, including durable state and byte totals for UI updates. Projector downloads are explicit via `include_projector`; they are never silently added. SSE endpoint-level testing remains deferred in `docs/tech-debt/`; do not use the 93.7 GB target for routine acceptance.
 
 Manual acceptance for transfer interruption:
 

@@ -48,7 +48,16 @@ class DownloadCoordinator:
 
     def _publish(self, job_id: str, action: str) -> None:
         if self._event_broker is not None:
-            self._event_broker.publish("download." + action, {"job_id": job_id})
+            job = self._registry.get(job_id)
+            self._event_broker.publish(
+                "download." + action,
+                {
+                    "job_id": job_id,
+                    "state": job.state,
+                    "completed_bytes": job.completed_bytes,
+                    "total_bytes": job.total_bytes,
+                },
+            )
 
     def _task_finished(self, job_id: str) -> None:
         self._tasks.pop(job_id, None)

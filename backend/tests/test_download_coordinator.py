@@ -9,6 +9,7 @@ from llamawebui.domain.model_manifest import GgufGroup, HubFile
 from llamawebui.services.download_coordinator import DownloadCoordinator
 from llamawebui.services.download_registry import DownloadRegistry
 from llamawebui.services.download_worker import DownloadWorker
+from llamawebui.services.event_broker import EventBroker
 from llamawebui.services.huggingface_catalog import RepositoryManifest
 
 pytestmark = pytest.mark.asyncio
@@ -77,4 +78,26 @@ async def test_startup_reconciles_interrupted_job(tmp_path: Path) -> None:
     coordinator.start_pending()
 
     assert registry.get(job_id).state == DownloadState.PAUSED
+    await coordinator.shutdown()
+
+
+async def test_coordinator_events_include_durable_progress(tmp_path: Path) -> None:
+    _, registry, job_id = create_coordinator(tmp_path)
+    broker = EventBroker()
+    class BlockingTransfer:
+        async def download(
+            self, *, repo_id: str, filename: str, revision: str, destination: Path
+        ) -> Path:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    coordinator = DownloadCoordinator(
+        registry, DownloadWorker(registry, BlockingTransfer()), event_broker=broker
+    )
+
+    coordinator.start(job_id)
+    event = await anext(broker.subscribe(0))
+    assert event.type == "download.started"
+    assert event.data["job_id"] == job_id
+    assert event.data["total_bytes"] == registry.get(job_id).total_bytes
     await coordinator.shutdown()
