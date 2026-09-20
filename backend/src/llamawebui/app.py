@@ -367,12 +367,14 @@ def create_app(
         app.state.model_artifact_registry = ModelArtifactRegistry(
             app.state.download_registry, app_settings.data_dir / "models"
         )
+        app.state.event_broker = EventBroker(app_settings.event_history_capacity)
         token = app_settings.hf_token.get_secret_value() if app_settings.hf_token else None
         app.state.huggingface_catalog = catalog or HuggingFaceCatalog(token)
         transfer = file_transfer or HuggingFaceFileTransfer(token)
         app.state.download_coordinator = DownloadCoordinator(
             app.state.download_registry,
             DownloadWorker(app.state.download_registry, transfer),
+            event_broker=app.state.event_broker,
         )
         app.state.download_coordinator.start_pending()
         app.state.router_supervisor = router_supervisor or RouterSupervisor(
@@ -388,7 +390,6 @@ def create_app(
             app_settings.router_port,
             api_key_provider=app.state.token_registry.control_token,
         )
-        app.state.event_broker = EventBroker(app_settings.event_history_capacity)
         app.state.router_event_synchronizer = RouterEventSynchronizer(
             app.state.router_client, app.state.event_broker
         )

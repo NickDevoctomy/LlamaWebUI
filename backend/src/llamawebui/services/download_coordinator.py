@@ -8,12 +8,20 @@ from llamawebui.domain.download_job import DownloadState
 from llamawebui.models import DownloadJobRecord
 from llamawebui.services.download_registry import DownloadRegistry
 from llamawebui.services.download_worker import DownloadWorker
+from llamawebui.services.event_broker import EventBroker
 
 
 class DownloadCoordinator:
-    def __init__(self, registry: DownloadRegistry, worker: DownloadWorker) -> None:
+    def __init__(
+        self,
+        registry: DownloadRegistry,
+        worker: DownloadWorker,
+        *,
+        event_broker: EventBroker | None = None,
+    ) -> None:
         self._registry = registry
         self._worker = worker
+        self._event_broker = event_broker
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
     def start_pending(self) -> None:
@@ -28,17 +36,24 @@ class DownloadCoordinator:
             return
         task = asyncio.create_task(self._worker.run(job_id))
         self._tasks[job_id] = task
+        self._publish(job_id, "started")
         task.add_done_callback(lambda _: self._tasks.pop(job_id, None))
 
     async def cancel(self, job_id: str) -> DownloadJobRecord:
         record = self._registry.transition(job_id, DownloadState.CANCELLED)
         await self._stop_active(job_id)
         self._worker.discard_partial(job_id)
+        self._publish(job_id, "cancelled")
         return record
+
+    def _publish(self, job_id: str, action: str) -> None:
+        if self._event_broker is not None:
+            self._event_broker.publish("download." + action, {"job_id": job_id})
 
     async def pause(self, job_id: str) -> DownloadJobRecord:
         record = self._registry.transition(job_id, DownloadState.PAUSED)
         await self._stop_active(job_id)
+        self._publish(job_id, "paused")
         return record
 
     def resume(self, job_id: str) -> DownloadJobRecord:
