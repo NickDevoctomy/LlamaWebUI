@@ -1088,6 +1088,10 @@ def create_app(
                         }
                         for file in group.files
                     ],
+                    "projectors": [
+                        {"path": file.path, "size": file.size}
+                        for file in group.projector_files
+                    ],
                 }
                 for group in manifest.groups
             ],

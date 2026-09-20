@@ -25,6 +25,7 @@ class GgufGroup:
     files: tuple[HubFile, ...]
     total_size: int | None
     complete: bool
+    projector_files: tuple[HubFile, ...] = ()
 
 
 def group_gguf_files(files: tuple[HubFile, ...]) -> tuple[GgufGroup, ...]:
@@ -42,6 +43,10 @@ def group_gguf_files(files: tuple[HubFile, ...]) -> tuple[GgufGroup, ...]:
                 (int(match.group("index")), int(match.group("count")), file)
             )
 
+    projectors = tuple(
+        file for file in files
+        if file.path.lower().endswith(".gguf") and "mmproj" in file.path.lower()
+    )
     results: list[GgufGroup] = []
     for key, entries in sorted(grouped.items()):
         entries.sort(key=lambda entry: entry[0])
@@ -52,6 +57,12 @@ def group_gguf_files(files: tuple[HubFile, ...]) -> tuple[GgufGroup, ...]:
         )
         sizes = [file.size for _, _, file in entries]
         quant_match = _QUANT_PATTERN.search(key)
+        matching_projectors = tuple(
+            projector
+            for projector in projectors
+            if len(grouped) == 1
+            or key.lower() in projector.path.lower()
+        )
         results.append(
             GgufGroup(
                 key=key,
@@ -61,6 +72,7 @@ def group_gguf_files(files: tuple[HubFile, ...]) -> tuple[GgufGroup, ...]:
                 if all(size is not None for size in sizes)
                 else None,
                 complete=complete,
+                projector_files=matching_projectors,
             )
         )
     return tuple(results)

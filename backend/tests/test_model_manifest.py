@@ -38,3 +38,14 @@ def test_group_gguf_files_keeps_unsharded_models_separate() -> None:
 
     assert [group.quantization for group in groups] == ["Q4_K_M", "Q5_K_M"]
     assert all(group.complete for group in groups)
+
+
+def test_group_gguf_files_associates_unambiguous_projector() -> None:
+    groups = group_gguf_files(
+        (
+            HubFile("model-Q4_K_M.gguf", 42),
+            HubFile("mmproj-model-f16.gguf", 12),
+        )
+    )
+
+    assert groups[0].projector_files == (HubFile("mmproj-model-f16.gguf", 12),)
