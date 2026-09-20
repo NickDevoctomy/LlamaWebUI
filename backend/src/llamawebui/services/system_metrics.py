@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
-import psutil
+import psutil  # type: ignore[import-untyped]
 
 
 def collect_system_metrics(data_dir: Path) -> dict[str, object]:
-    disk = psutil.disk_usage(data_dir)
+    disk = psutil.disk_usage(str(data_dir))
     memory = psutil.virtual_memory()
     network = psutil.net_io_counters()
     return {
