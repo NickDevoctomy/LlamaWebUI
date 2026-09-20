@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Download, FileArchive, FileCog, Heart, LoaderCircle, Pause, Play, Search, X } from 'lucide-react'
+import { AlertCircle, Download, FileArchive, FileCog, Heart, LoaderCircle, Pause, Play, Search, Trash2, X } from 'lucide-react'
 import { FormEvent, useState } from 'react'
 import { api, type DownloadJob, type LibraryModel, type ModelSearchResult } from './api'
 
@@ -105,11 +105,16 @@ export function DownloadsPanel({ jobs, library, onCreateProfile }: {
       operation === 'pause' ? api.pauseDownload(job.id) : operation === 'resume' ? api.resumeDownload(job.id) : api.cancelDownload(job.id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['downloads'] }),
   })
+  const clear = useMutation({
+    mutationFn: api.clearTerminalDownloads,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['downloads'] }),
+  })
+  const terminalCount = jobs.filter((job) => ['completed', 'cancelled'].includes(job.state)).length
 
   return (
     <section className="data-panel">
-      <div className="panel-heading"><div><h2>Download jobs</h2><p>Revision-pinned transfers publish only after every shard is validated.</p></div><span className="profile-tag">{jobs.filter((job) => ['queued', 'downloading'].includes(job.state)).length} active</span></div>
-      {action.error && <div className="form-error"><AlertCircle size={15} /> {action.error.message}</div>}
+      <div className="panel-heading"><div><h2>Download jobs</h2><p>Revision-pinned transfers publish only after every shard is validated.</p></div><div className="panel-heading-actions"><span className="profile-tag">{jobs.filter((job) => ['queued', 'downloading'].includes(job.state)).length} active</span><button className="button secondary compact" disabled={!terminalCount || clear.isPending} onClick={() => clear.mutate()} type="button"><Trash2 size={14} /> Clear finished</button></div></div>
+      {(action.error || clear.error) && <div className="form-error"><AlertCircle size={15} /> {(action.error ?? clear.error)?.message}</div>}
       {jobs.length ? <div className="download-list">{jobs.map((job) => {
         const percent = job.total_bytes ? Math.min(100, Math.round(job.completed_bytes / job.total_bytes * 100)) : 0
         const pending = action.isPending && action.variables?.job.id === job.id

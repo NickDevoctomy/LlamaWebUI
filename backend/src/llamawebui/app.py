@@ -862,6 +862,11 @@ def create_app(
         registry = cast(DownloadRegistry, request.app.state.download_registry)
         return [_download_payload(job) for job in registry.list()]
 
+    @app.delete("/api/downloads/terminal")
+    async def clear_terminal_downloads(request: Request) -> dict[str, int]:
+        registry = cast(DownloadRegistry, request.app.state.download_registry)
+        return {"cleared": registry.clear_terminal()}
+
     @app.get("/api/library")
     async def list_library_models(request: Request) -> list[dict[str, object]]:
         library = cast(ModelLibrary, request.app.state.model_library)

@@ -50,6 +50,10 @@ def test_library_projects_only_complete_valid_downloads(tmp_path: Path) -> None:
     assert models[0].file_count == 2
     assert models[0].total_bytes == 7
 
+    assert registry.clear_terminal() == 1
+    assert registry.list() == []
+    assert len(ModelLibrary(registry, model_root).list()) == 1
+
     destination.joinpath("Q4/model-00002-of-00002.gguf").unlink()
     assert ModelLibrary(registry, model_root).list() == ()
 

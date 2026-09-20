@@ -163,6 +163,8 @@ export const api = {
     request<DownloadJob>(`/api/downloads/${jobId}/resume`, { method: 'POST' }),
   cancelDownload: (jobId: string) =>
     request<DownloadJob>(`/api/downloads/${jobId}/cancel`, { method: 'POST' }),
+  clearTerminalDownloads: () =>
+    request<{ cleared: number }>('/api/downloads/terminal', { method: 'DELETE' }),
   registerRuntime: (runtime: RuntimeRegistration) =>
     request<Runtime>('/api/runtimes', {
       method: 'POST',

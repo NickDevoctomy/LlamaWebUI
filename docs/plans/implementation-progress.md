@@ -18,7 +18,7 @@ The delivery plan has eight numbered phases (`0` through `7`). Work has intentio
 | 2. Runtime manager | Partial | Register/list/get/reprobe/remove; option/device capability parsing; in-use deletion guard | GitHub release discovery/install, stable-to-build resolution, digest verification, switching/rollback |
 | 3. Local library and profiles | In progress | Profile persistence, typed Qwen options, capability validation, shard completeness, deterministic atomic single/combined preset writing, validated completed-download projection, profile prefill | General directory scanning, GGUF metadata, durable logical model records, command import/export |
 | 4. Server lifecycle | In progress | Router state machine, validated argument vector, process-group launch, single-process supervisor, HTTP readiness polling, bounded log tail, crash observation, owned process-tree graceful/forced shutdown, serialized status/start/stop/restart API, durable run and restart-attempt history, safe port preflight, bounded crash recovery with rapid-failure suppression, native model list/load/unload/SSE APIs, lifecycle/model event publication through unified replayable `/api/events` | Real-runtime SSE acceptance |
-| 5. Hugging Face and downloads | Advanced partial | Search, repository manifests, quant/shard grouping, revision-pinned durable jobs, staging, size verification, atomic publication, pause/resume/cancel coordination, startup reconciliation, responsive Discover and Downloads workflows | In-file progress, retry/backoff, periodic disk checks, checksum/ETag verification, event streaming, projector association, safe deletion, library reconciliation |
+| 5. Hugging Face and downloads | Advanced partial | Search, repository manifests, quant/shard grouping, revision-pinned durable jobs, staging, size verification, atomic publication, pause/resume/cancel coordination, startup reconciliation, terminal-job clearing, responsive Discover and Downloads workflows | In-file progress, retry/backoff, periodic disk checks, checksum/ETag verification, event streaming, projector association, artifact deletion, library reconciliation |
 | 6. Tokens and onboarding | Advanced partial | Show-once token creation, HMAC metadata, last-four/name/expiry-note listing, permanent revocation, atomic restricted native key file, authenticated router launch/control calls, live-model OpenCode generation, Access frontend workflow | End-to-end authenticated connection tests remain blocked on an available model/profile |
 | 7. Hardening and release | Not started | Unit quality gate established | Packaging, CI/platform matrix, accessibility, backup/restore, offline behavior, operator docs |
 
@@ -34,10 +34,10 @@ From `backend/` using `..\.venv\Scripts\python.exe`:
 ..\.venv\Scripts\python.exe -m mypy src/llamawebui
 ```
 
-Backend baseline before the current frontend-only slice:
+Current validation:
 
 - 143 tests passed.
-- 94.09% total coverage; configured floor is 90% with branch coverage enabled.
+- 94.14% total coverage; configured floor is 90% with branch coverage enabled.
 - Ruff passed.
 - Strict mypy passed for 35 source files.
 - Two dependency deprecation warnings remain: Starlette/httpx and AnyIO `BlockingPortal`.
@@ -45,7 +45,7 @@ Backend baseline before the current frontend-only slice:
 Frontend foundation validation:
 
 - Vite production build passed; JavaScript bundle is 308.81 kB.
-- Vitest/Testing Library passed: 9 component integration tests.
+- Vitest/Testing Library passed: 10 component integration tests.
 - Desktop 1440x1000 and mobile 390x844 browser checks passed without horizontal overflow.
 - Live FastAPI queries and responsive navigation were verified in the browser.
 - Runtime registration was accepted end to end against local llama.cpp b11053 and displayed build `0.4.1-dev` as ready.
@@ -53,7 +53,7 @@ Frontend foundation validation:
 ## Implemented Backend Surfaces
 
 - Configuration and startup: `backend/src/llamawebui/config.py`, `app.py`, `__main__.py`
-- Persistence: `database.py`, `models.py`, Alembic migrations `0001` through `0005`
+- Persistence: `database.py`, `models.py`, Alembic migrations `0001` through `0006`
 - Runtime capability and registry: `domain/runtime_capabilities.py`, `services/runtime_probe.py`, `services/runtime_registry.py`
 - Profiles/presets: `domain/model_profile.py`, `services/profile_registry.py`
 - Hugging Face discovery: `domain/model_manifest.py`, `services/huggingface_catalog.py`
@@ -81,6 +81,7 @@ Frontend foundation validation:
 - OpenCode configuration panel generated from live router model IDs with an environment-variable key placeholder
 - Hugging Face catalog search with sorting, repository selection, exact quantization sizes, shard completeness, and explicit download creation
 - Durable download workspace with progress, active-job count, pause/resume/cancel controls, errors, and active-state polling
+- Clear finished hides completed and cancelled jobs while preserving completed records for the local library
 - Completed validated downloads expose a Configure action that opens profile creation with the local model, alias, and runtime prefilled
 - Desktop and mobile layouts use stable metrics, table reduction, and fixed navigation without content overlap
 
@@ -112,11 +113,18 @@ Frontend foundation validation:
 
 Run real-model acceptance on this 4090 machine: register a CUDA llama.cpp runtime, download the recommended 5.29 GiB Q4_K_M model through the UI, configure its profile from the completed job, start the router, and verify model listing/load, inference streaming, and generated OpenCode configuration. Do not use the 93.7 GB target for this acceptance pass.
 
+Manual acceptance for terminal-job clearing:
+
+1. Open Downloads and confirm completed or cancelled jobs are visible.
+2. Select **Clear finished** beside the active count.
+3. Confirm completed and cancelled rows disappear while failed, paused, queued, and downloading rows remain.
+4. Confirm any downloaded model from a cleared completed job remains available when creating a profile.
+
 ## Resume State
 
 - Commit `69c4fd5` is the checked-in Discover/Downloads baseline on `alpha` and `origin/alpha`.
 - Root `data/` is ignored because it contains local runtime/application state. Commit `1f8eca6` removed `data/llamawebui.db` from Git tracking only; the local file remains intact and must not be deleted or reset.
-- 143 backend and nine frontend tests pass; Ruff, strict mypy, production build, editor diagnostics, and `git diff --check` pass.
+- 143 backend and 10 frontend tests pass; Ruff, strict mypy, production build, and editor diagnostics pass.
 - Live public-catalog acceptance returned 25 results and 27 complete groups for the selected repository; desktop and 390x844 layouts had no horizontal overflow. No download job was created.
 - At handoff, the backend is healthy on `http://127.0.0.1:18080/api/health` and Vite is serving `http://127.0.0.1:5173/`.
 - First action next session: register/probe a CUDA runtime and begin the 5.29 GiB real-model acceptance flow.

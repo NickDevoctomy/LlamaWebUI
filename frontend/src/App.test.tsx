@@ -205,6 +205,17 @@ describe('App', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/download-1/resume', { method: 'POST' }))
   })
 
+  it('clears completed and cancelled download jobs', async () => {
+    const job = { id: 'download-1', repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), group_key: 'model-Q4_K_M', files: [], destination: 'E:\\models', total_bytes: 1000, completed_bytes: 400, state: 'cancelled', error: null }
+    const fetchMock = renderApp({ downloadList: [job] })
+    fireEvent.click(screen.getByRole('button', { name: 'Downloads' }))
+    const clearButton = await screen.findByRole('button', { name: 'Clear finished' })
+    await waitFor(() => expect(clearButton).toBeEnabled())
+    fireEvent.click(clearButton)
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/terminal', { method: 'DELETE' }))
+  })
+
   it('prefills a profile from a validated completed download', async () => {
     const runtime = { id: 'runtime-1', name: 'Local CUDA', executable_path: 'E:\\llama-server.exe', build: 'b11053', backend: 'cuda', devices: ['CUDA0'], options: ['model', 'models-preset', 'ctx-size'], usable: true }
     const job = { id: 'download-1', repo_id: 'owner/Qwen-Test-GGUF', revision: 'a'.repeat(40), group_key: 'Q4/model-Q4', files: [], destination: 'E:\\models', total_bytes: 1000, completed_bytes: 1000, state: 'completed', error: null }

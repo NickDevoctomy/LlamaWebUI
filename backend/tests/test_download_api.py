@@ -60,6 +60,8 @@ def test_create_list_and_cancel_download(tmp_path: Path) -> None:
         cancelled = client.post(f"/api/downloads/{created.json()['id']}/cancel")
         recancelled = client.post(f"/api/downloads/{created.json()['id']}/cancel")
         missing = client.post("/api/downloads/missing/cancel")
+        cleared = client.delete("/api/downloads/terminal")
+        remaining = client.get("/api/downloads")
 
     assert created.status_code == 201
     assert created.json()["revision"] == "a" * 40
@@ -70,6 +72,8 @@ def test_create_list_and_cancel_download(tmp_path: Path) -> None:
     assert cancelled.json()["state"] == "cancelled"
     assert recancelled.status_code == 409
     assert missing.status_code == 404
+    assert cleared.json() == {"cleared": 1}
+    assert remaining.json() == []
 
 
 def test_create_download_reports_invalid_group(tmp_path: Path) -> None:

@@ -72,6 +72,7 @@ h1 { margin: 0; color: var(--ink); font-size: 34px; line-height: 1; letter-spaci
 .panel-heading { min-height: 76px; padding: 16px 19px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .panel-heading h2 { margin: 0 0 4px; color: var(--ink); font-size: 15px; }
 .panel-heading p { margin: 0; color: var(--muted); font-size: 11px; }
+.panel-heading-actions { display: flex; align-items: center; gap: 9px; }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th { height: 38px; padding: 0 16px; color: #85877f; background: #f1f1ec; text-align: left; font: 500 9px 'IBM Plex Mono', monospace; text-transform: uppercase; letter-spacing: .06em; }
@@ -257,6 +258,7 @@ tbody tr:hover { background: #f4f4ee; }
   .access-grid { grid-template-columns: 1fr; }
   .discover-layout { grid-template-columns: 1fr; }
   .catalog-search { grid-template-columns: 1fr; }
+  .panel-heading-actions { align-items: flex-end; flex-direction: column; }
   .catalog-row { grid-template-columns: 38px minmax(0, 1fr) 64px; }
   .catalog-stat:last-child { display: none; }
   .download-row { grid-template-columns: 38px minmax(0, 1fr) auto; padding: 12px 0; }

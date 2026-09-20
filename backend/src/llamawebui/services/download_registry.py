@@ -31,10 +31,26 @@ class DownloadRegistry:
         self._sessions = sessionmaker(engine, expire_on_commit=False)
         self._model_root = model_root.resolve()
 
-    def list(self) -> list[DownloadJobRecord]:
+    def list(self, *, include_hidden: bool = False) -> list[DownloadJobRecord]:
         with self._sessions() as session:
             statement = select(DownloadJobRecord).order_by(DownloadJobRecord.created_at)
+            if not include_hidden:
+                statement = statement.where(DownloadJobRecord.hidden.is_(False))
             return list(session.scalars(statement))
+
+    def clear_terminal(self) -> int:
+        with self._sessions() as session:
+            statement = select(DownloadJobRecord).where(
+                DownloadJobRecord.hidden.is_(False),
+                DownloadJobRecord.state.in_(
+                    (DownloadState.COMPLETED, DownloadState.CANCELLED)
+                ),
+            )
+            records = tuple(session.scalars(statement))
+            for record in records:
+                record.hidden = True
+            session.commit()
+            return len(records)
 
     def get(self, job_id: str) -> DownloadJobRecord:
         with self._sessions() as session:
@@ -94,6 +110,7 @@ class DownloadRegistry:
             completed_bytes=0,
             state=DownloadState.QUEUED,
             error=None,
+            hidden=False,
         )
         with self._sessions() as session:
             session.add(record)

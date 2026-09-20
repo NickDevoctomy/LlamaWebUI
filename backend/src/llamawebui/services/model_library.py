@@ -35,7 +35,7 @@ class ModelLibrary:
     def list(self) -> tuple[LibraryModel, ...]:
         models = (
             model
-            for job in self._downloads.list()
+            for job in self._downloads.list(include_hidden=True)
             if DownloadState(job.state) is DownloadState.COMPLETED
             if (model := self._project(job)) is not None
         )
