@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from llamawebui.domain.model_manifest import GgufGroup, HubFile
 from llamawebui.services.download_registry import DownloadRegistry
 from llamawebui.services.download_worker import DownloadWorker, HuggingFaceFileTransfer
 from llamawebui.services.huggingface_catalog import RepositoryManifest
+from llamawebui.services.huggingface_transfer_process import execute_transfer
 
 pytestmark = pytest.mark.asyncio
 
@@ -170,7 +172,7 @@ async def test_worker_rejects_transfer_path_outside_staging(tmp_path: Path) -> N
     assert not Path(job.destination).exists()
 
 
-async def test_huggingface_transfer_forwards_pinned_arguments(
+async def test_huggingface_transfer_process_forwards_pinned_arguments(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     captured: dict[str, object] = {}
@@ -181,16 +183,21 @@ async def test_huggingface_transfer_forwards_pinned_arguments(
         target.touch()
         return str(target)
 
-    monkeypatch.setattr("llamawebui.services.download_worker.hf_hub_download", fake_download)
-
-    result = await HuggingFaceFileTransfer("hf_secret").download(
-        repo_id="owner/model",
-        filename="model.gguf",
-        revision="a" * 40,
-        destination=tmp_path,
+    monkeypatch.setattr(
+        "llamawebui.services.huggingface_transfer_process.hf_hub_download", fake_download
     )
 
-    assert result == tmp_path / "model.gguf"
+    result = execute_transfer(
+        {
+            "repo_id": "owner/model",
+            "filename": "model.gguf",
+            "revision": "a" * 40,
+            "destination": str(tmp_path),
+            "token": "hf_secret",
+        }
+    )
+
+    assert result == {"path": str(tmp_path / "model.gguf")}
     assert captured == {
         "repo_id": "owner/model",
         "filename": "model.gguf",
@@ -198,3 +205,73 @@ async def test_huggingface_transfer_forwards_pinned_arguments(
         "local_dir": tmp_path,
         "token": "hf_secret",
     }
+
+
+async def test_huggingface_transfer_process_redacts_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fake_download(**kwargs: object) -> str:
+        raise RuntimeError(f"request rejected for {kwargs['token']}")
+
+    monkeypatch.setattr(
+        "llamawebui.services.huggingface_transfer_process.hf_hub_download", fake_download
+    )
+
+    result = execute_transfer(
+        {
+            "repo_id": "owner/model",
+            "filename": "model.gguf",
+            "revision": "a" * 40,
+            "destination": str(tmp_path),
+            "token": "hf_secret",
+        }
+    )
+
+    assert result == {"error": "request rejected for [redacted]"}
+
+
+async def test_huggingface_transfer_kills_child_when_cancelled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    communicate_started = asyncio.Event()
+
+    class Process:
+        returncode = None
+        killed = False
+        waited = False
+
+        async def communicate(self, input: bytes) -> tuple[bytes, bytes]:
+            assert json.loads(input)["revision"] == "a" * 40
+            communicate_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        def kill(self) -> None:
+            self.killed = True
+
+        async def wait(self) -> int:
+            self.waited = True
+            self.returncode = -9
+            return self.returncode
+
+    process = Process()
+
+    async def fake_subprocess(*args: object, **kwargs: object) -> Process:
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+    task = asyncio.create_task(
+        HuggingFaceFileTransfer().download(
+            repo_id="owner/model",
+            filename="model.gguf",
+            revision="a" * 40,
+            destination=tmp_path,
+        )
+    )
+    await communicate_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert process.killed
+    assert process.waited

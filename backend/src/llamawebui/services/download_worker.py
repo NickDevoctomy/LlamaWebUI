@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
+import sys
 from pathlib import Path
 from typing import Protocol
-
-from huggingface_hub import hf_hub_download
 
 from llamawebui.domain.download_job import DownloadState
 from llamawebui.services.download_registry import DownloadRegistry
@@ -28,15 +28,37 @@ class HuggingFaceFileTransfer:
     async def download(
         self, *, repo_id: str, filename: str, revision: str, destination: Path
     ) -> Path:
-        downloaded = await asyncio.to_thread(
-            hf_hub_download,
-            repo_id=repo_id,
-            filename=filename,
-            revision=revision,
-            local_dir=destination,
-            token=self._token,
+        request = json.dumps(
+            {
+                "repo_id": repo_id,
+                "filename": filename,
+                "revision": revision,
+                "destination": str(destination),
+                "token": self._token,
+            }
         )
-        return Path(downloaded)
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "llamawebui.services.huggingface_transfer_process",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            stdout, _ = await process.communicate(request.encode())
+        except asyncio.CancelledError:
+            process.kill()
+            await process.wait()
+            raise
+        try:
+            response = json.loads(stdout)
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise OSError("Hugging Face transfer returned an invalid response") from error
+        if process.returncode != 0 or not isinstance(response.get("path"), str):
+            message = response.get("error")
+            raise OSError(message if isinstance(message, str) else "Hugging Face transfer failed")
+        return Path(response["path"])
 
 
 class DownloadWorker:
@@ -47,7 +69,7 @@ class DownloadWorker:
     async def run(self, job_id: str) -> None:
         job = self._registry.transition(job_id, DownloadState.DOWNLOADING)
         destination = Path(job.destination)
-        staging = destination.parent / f".{destination.name}.{job.id}.partial"
+        staging = self.staging_path(job_id)
         completed_bytes = 0
         try:
             for file_data in job.files:
@@ -93,9 +115,19 @@ class DownloadWorker:
                 staging.replace(destination)
                 self._registry.transition(job_id, DownloadState.COMPLETED)
         except asyncio.CancelledError:
+            if DownloadState(self._registry.get(job_id).state) is DownloadState.CANCELLED:
+                shutil.rmtree(staging, ignore_errors=True)
             raise
         except Exception as error:
             self._registry.fail(job_id, str(error))
+
+    def staging_path(self, job_id: str) -> Path:
+        job = self._registry.get(job_id)
+        destination = Path(job.destination)
+        return destination.parent / f".{destination.name}.{job.id}.partial"
+
+    def discard_partial(self, job_id: str) -> None:
+        shutil.rmtree(self.staging_path(job_id), ignore_errors=True)
 
     async def _download_with_progress(
         self,
@@ -142,3 +174,4 @@ class DownloadWorker:
         finally:
             if not transfer.done():
                 transfer.cancel()
+                await asyncio.gather(transfer, return_exceptions=True)

@@ -40,13 +40,15 @@ async def test_coordinator_pauses_and_resumes_active_job(tmp_path: Path) -> None
     coordinator, registry, job_id = create_coordinator(tmp_path)
     coordinator.start(job_id)
     await asyncio.sleep(0)
+    job = registry.get(job_id)
+    staging = Path(job.destination).parent / f".{Path(job.destination).name}.{job.id}.partial"
+    staging.mkdir()
+    partial = staging / "model.gguf.incomplete"
+    partial.write_bytes(b"partial")
 
-    assert coordinator.pause(job_id).state == DownloadState.PAUSED
-    with pytest.raises(ValueError, match="active transfer stops"):
-        coordinator.resume(job_id)
-
-    await coordinator.shutdown()
+    assert (await coordinator.pause(job_id)).state == DownloadState.PAUSED
     assert registry.get(job_id).state == DownloadState.PAUSED
+    assert partial.read_bytes() == b"partial"
 
     assert coordinator.resume(job_id).state == DownloadState.QUEUED
     await asyncio.sleep(0)
@@ -57,10 +59,15 @@ async def test_coordinator_pauses_and_resumes_active_job(tmp_path: Path) -> None
 async def test_coordinator_cancels_queued_job(tmp_path: Path) -> None:
     coordinator, registry, job_id = create_coordinator(tmp_path)
     coordinator.start(job_id)
+    job = registry.get(job_id)
+    staging = Path(job.destination).parent / f".{Path(job.destination).name}.{job.id}.partial"
+    staging.mkdir()
+    (staging / "model.gguf.incomplete").write_bytes(b"partial")
 
-    assert coordinator.cancel(job_id).state == DownloadState.CANCELLED
+    assert (await coordinator.cancel(job_id)).state == DownloadState.CANCELLED
     await coordinator.shutdown()
     assert registry.get(job_id).state == DownloadState.CANCELLED
+    assert not staging.exists()
 
 
 async def test_startup_reconciles_interrupted_job(tmp_path: Path) -> None:

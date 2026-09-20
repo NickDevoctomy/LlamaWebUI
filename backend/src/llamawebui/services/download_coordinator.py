@@ -30,16 +30,16 @@ class DownloadCoordinator:
         self._tasks[job_id] = task
         task.add_done_callback(lambda _: self._tasks.pop(job_id, None))
 
-    def cancel(self, job_id: str) -> DownloadJobRecord:
-        current = DownloadState(self._registry.get(job_id).state)
+    async def cancel(self, job_id: str) -> DownloadJobRecord:
         record = self._registry.transition(job_id, DownloadState.CANCELLED)
-        task = self._tasks.get(job_id)
-        if current is DownloadState.QUEUED and task is not None:
-            task.cancel()
+        await self._stop_active(job_id)
+        self._worker.discard_partial(job_id)
         return record
 
-    def pause(self, job_id: str) -> DownloadJobRecord:
-        return self._registry.transition(job_id, DownloadState.PAUSED)
+    async def pause(self, job_id: str) -> DownloadJobRecord:
+        record = self._registry.transition(job_id, DownloadState.PAUSED)
+        await self._stop_active(job_id)
+        return record
 
     def resume(self, job_id: str) -> DownloadJobRecord:
         current = self._tasks.get(job_id)
@@ -59,3 +59,10 @@ class DownloadCoordinator:
                 task.cancel()
         if tasks:
             await asyncio.gather(*(task for _, task in tasks), return_exceptions=True)
+
+    async def _stop_active(self, job_id: str) -> None:
+        task = self._tasks.get(job_id)
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

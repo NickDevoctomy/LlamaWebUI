@@ -234,7 +234,7 @@ function App() {
           ) : section === 'Access' ? (
             <AccessPanel running={running} tokens={tokens.data ?? []} />
           ) : section === 'Discover' ? (
-            <DiscoverPanel onQueued={() => setSection('Downloads')} />
+            <DiscoverPanel jobs={downloads.data ?? []} library={library.data ?? []} onQueued={() => setSection('Downloads')} />
           ) : section === 'Downloads' ? (
             <DownloadsPanel jobs={downloads.data ?? []} library={library.data ?? []} onCreateProfile={(model) => { setProfileSeed(model); setSection('Profiles') }} />
           ) : (

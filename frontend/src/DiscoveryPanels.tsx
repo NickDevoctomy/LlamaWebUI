@@ -14,7 +14,11 @@ function formatCount(value: number) {
   return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 }
 
-export function DiscoverPanel({ onQueued }: { onQueued: () => void }) {
+export function DiscoverPanel({ jobs, library, onQueued }: {
+  jobs: DownloadJob[]
+  library: LibraryModel[]
+  onQueued: () => void
+}) {
   const queryClient = useQueryClient()
   const [input, setInput] = useState('')
   const [query, setQuery] = useState('')
@@ -81,13 +85,20 @@ export function DiscoverPanel({ onQueued }: { onQueued: () => void }) {
         {!selected ? <div className="empty catalog-empty"><FileArchive size={28} /><strong>No repository selected</strong><span>Choose a search result to inspect complete GGUF groups and exact sizes.</span></div>
           : manifest.isLoading ? <div className="empty catalog-empty"><LoaderCircle className="spin" size={28} /><strong>Reading repository manifest</strong></div>
             : manifest.error ? <div className="integration-empty error-state"><AlertCircle size={25} /><strong>Manifest unavailable</strong><span>{manifest.error.message}</span></div>
-              : <div className="quant-list">{manifest.data?.groups.map((group) => (
-                <article className="quant-row" key={group.key}>
+              : <div className="quant-list">{manifest.data?.groups.map((group) => {
+                const matches = (item: { repo_id: string; revision: string; group_key: string }) =>
+                  item.repo_id === manifest.data!.repo_id
+                  && item.revision === manifest.data!.revision
+                  && item.group_key === group.key
+                const downloaded = library.some(matches)
+                const activeJob = jobs.find((job) => matches(job) && ['queued', 'downloading', 'paused'].includes(job.state))
+                const actionLabel = downloaded ? 'Downloaded' : activeJob ? stateLabel(activeJob.state) : 'Download'
+                return <article className="quant-row" key={group.key}>
                   <div><strong>{group.quantization}</strong><span>{group.files.length} {group.files.length === 1 ? 'file' : 'files'} · {formatBytes(group.total_size)}</span></div>
-                  <span className={`state-pill ${group.complete ? 'ready' : 'error'}`}>{group.complete ? 'Complete' : 'Incomplete'}</span>
-                  <button className="button secondary compact" disabled={!group.complete || create.isPending} onClick={() => create.mutate({ groupKey: group.key, revision: manifest.data!.revision })} type="button"><Download size={14} /> Download</button>
+                  <span className={`state-pill ${group.complete ? 'ready' : 'error'}`}>{group.complete ? 'All shards available' : 'Missing shards'}</span>
+                  <button className="button secondary compact" disabled={!group.complete || downloaded || Boolean(activeJob) || create.isPending} onClick={() => create.mutate({ groupKey: group.key, revision: manifest.data!.revision })} type="button"><Download size={14} /> {actionLabel}</button>
                 </article>
-              ))}{!manifest.data?.groups.length && <div className="empty catalog-empty"><FileArchive size={28} /><strong>No GGUF groups found</strong></div>}</div>}
+              })}{!manifest.data?.groups.length && <div className="empty catalog-empty"><FileArchive size={28} /><strong>No GGUF groups found</strong></div>}</div>}
         {create.error && <div className="form-error"><AlertCircle size={15} /> {create.error.message}</div>}
       </section>
     </div>
@@ -135,4 +146,8 @@ export function DownloadsPanel({ jobs, library, onCreateProfile }: {
       <div className="panel-footer"><span>{jobs.length} jobs</span><span>Validated publication</span></div>
     </section>
   )
+}
+
+function stateLabel(state: DownloadJob['state']) {
+  return state.charAt(0).toUpperCase() + state.slice(1)
 }

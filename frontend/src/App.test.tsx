@@ -247,6 +247,7 @@ describe('App', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /owner\/model-GGUF/ }))
     expect(await screen.findByText('Q4_K_M')).toBeInTheDocument()
+    expect(screen.getByText('All shards available')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Download' }))
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads', expect.objectContaining({
@@ -254,6 +255,30 @@ describe('App', () => {
       body: JSON.stringify({ repo_id: 'owner/model-GGUF', group_key: 'model-Q4_K_M', revision: 'a'.repeat(40) }),
     })))
     expect(await screen.findByRole('heading', { name: 'Download jobs' })).toBeInTheDocument()
+  })
+
+  it('marks a validated matching quantization as downloaded', async () => {
+    const model = { download_id: 'download-1', repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), group_key: 'model-Q4_K_M', primary_path: 'E:\\models\\model.gguf', file_count: 1, total_bytes: 4_200_000_000 }
+    renderApp({ libraryList: [model] })
+    fireEvent.click(screen.getByRole('button', { name: 'Discover' }))
+    fireEvent.change(screen.getByLabelText('Search models'), { target: { value: 'qwen' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    fireEvent.click(await screen.findByRole('button', { name: /owner\/model-GGUF/ }))
+
+    const downloaded = await screen.findByRole('button', { name: 'Downloaded' })
+    expect(downloaded).toBeDisabled()
+    expect(screen.getByText('All shards available')).toBeInTheDocument()
+  })
+
+  it('shows an active matching quantization without offering a duplicate download', async () => {
+    const job = { id: 'download-1', repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), group_key: 'model-Q4_K_M', files: [], destination: 'E:\\models', total_bytes: 1000, completed_bytes: 400, state: 'downloading', error: null }
+    renderApp({ downloadList: [job] })
+    fireEvent.click(screen.getByRole('button', { name: 'Discover' }))
+    fireEvent.change(screen.getByLabelText('Search models'), { target: { value: 'qwen' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    fireEvent.click(await screen.findByRole('button', { name: /owner\/model-GGUF/ }))
+
+    expect(await screen.findByRole('button', { name: 'Downloading' })).toBeDisabled()
   })
 
   it('resumes a paused durable download', async () => {

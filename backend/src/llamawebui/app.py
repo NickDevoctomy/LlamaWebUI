@@ -907,7 +907,7 @@ def create_app(
     async def cancel_download(job_id: str, request: Request) -> dict[str, object]:
         coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
         try:
-            return _download_payload(coordinator.cancel(job_id))
+            return _download_payload(await coordinator.cancel(job_id))
         except DownloadJobNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         except ValueError as error:
@@ -917,7 +917,7 @@ def create_app(
     async def pause_download(job_id: str, request: Request) -> dict[str, object]:
         coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
         try:
-            return _download_payload(coordinator.pause(job_id))
+            return _download_payload(await coordinator.pause(job_id))
         except DownloadJobNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         except ValueError as error:
