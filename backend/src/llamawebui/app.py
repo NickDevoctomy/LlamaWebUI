@@ -730,8 +730,16 @@ def create_app(
                 await supervisor.stop()
                 return await start_router(previous_runtime_id, request)
             except HTTPException as error:
-                with suppress(HTTPException):
+                try:
                     await start_router(current_runtime_id, request)
+                except HTTPException as restore_error:
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=(
+                            f"rollback failed: {error.detail}; "
+                            f"restoring current runtime failed: {restore_error.detail}"
+                        ),
+                    ) from restore_error
                 raise error
 
     @app.get("/api/server/models")
