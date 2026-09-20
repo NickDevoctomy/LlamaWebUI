@@ -99,6 +99,7 @@ Frontend foundation validation:
 - Server status exposes parsed prompt throughput, decode throughput, recent decode peak, and active task ID from llama.cpp timing lines
 - Server/Dashboard telemetry also exposes parsed context-token usage when reported by llama.cpp
 - Dashboard is now the default workspace with router, runtime, model, profile, activity, and timing summaries
+- Added root `README.md` with setup, backend/frontend start, router startup, hello-world inference, OpenCode, API, and validation instructions
 - Server exposes an expandable effective launch-arguments view with the exact validated vector persisted at startup; secrets remain represented only by the key-file path
 - Server shows enabled profiles and model paths associated with the selected runtime
 - CUDA/backend runtime asset groups include the primary archive plus published companion archives; all group members are downloaded, digest-checked, extracted into one staging payload, probed, and promoted together
