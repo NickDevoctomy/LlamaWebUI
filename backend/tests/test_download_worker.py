@@ -52,6 +52,29 @@ async def test_worker_downloads_verifies_and_completes(tmp_path: Path) -> None:
     assert not list(Path(job.destination).parent.glob("*.partial"))
 
 
+async def test_worker_retries_transient_transfer_failure(tmp_path: Path) -> None:
+    registry, job_id = create_registry(tmp_path, (2,))
+    attempts = 0
+
+    class Transfer:
+        async def download(
+            self, *, repo_id: str, filename: str, revision: str, destination: Path
+        ) -> Path:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise OSError("temporary transfer failure")
+            target = destination / filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"xx")
+            return target
+
+    await DownloadWorker(registry, Transfer()).run(job_id)
+
+    assert attempts == 3
+    assert registry.get(job_id).state == DownloadState.COMPLETED
+
+
 async def test_worker_tracks_progress_inside_a_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

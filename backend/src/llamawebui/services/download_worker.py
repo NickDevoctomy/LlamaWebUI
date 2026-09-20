@@ -13,6 +13,8 @@ from llamawebui.domain.download_job import DownloadState
 from llamawebui.services.download_registry import DownloadRegistry
 
 _PROGRESS_INTERVAL_SECONDS = 0.25
+_TRANSFER_RETRY_LIMIT = 3
+_TRANSFER_RETRY_DELAYS = (0.1, 0.25)
 
 
 class FileTransfer(Protocol):
@@ -141,7 +143,7 @@ class DownloadWorker:
         expected_size: int,
     ) -> Path:
         transfer = asyncio.create_task(
-            self._transfer.download(
+            self._download_with_retries(
                 repo_id=repo_id,
                 filename=filename,
                 revision=revision,
@@ -175,3 +177,25 @@ class DownloadWorker:
             if not transfer.done():
                 transfer.cancel()
                 await asyncio.gather(transfer, return_exceptions=True)
+
+    async def _download_with_retries(
+        self, *, repo_id: str, filename: str, revision: str, destination: Path
+    ) -> Path:
+        last_error: Exception | None = None
+        for attempt in range(_TRANSFER_RETRY_LIMIT):
+            try:
+                return await self._transfer.download(
+                    repo_id=repo_id,
+                    filename=filename,
+                    revision=revision,
+                    destination=destination,
+                )
+            except asyncio.CancelledError:
+                raise
+            except (OSError, TimeoutError) as error:
+                last_error = error
+                if attempt + 1 == _TRANSFER_RETRY_LIMIT:
+                    raise
+                await asyncio.sleep(_TRANSFER_RETRY_DELAYS[attempt])
+        assert last_error is not None
+        raise last_error
