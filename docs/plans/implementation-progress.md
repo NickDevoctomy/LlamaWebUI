@@ -121,7 +121,7 @@ Frontend foundation validation:
 
 ## Next Implementation Slice
 
-Run real-model acceptance on this 4090 machine: first prove pause/resume and cancel cleanup against a real transfer, then register a CUDA llama.cpp runtime, download the recommended 5.29 GiB Q4_K_M model through the UI, configure its profile from the completed job, start the router, and verify model listing/load, inference streaming, and generated OpenCode configuration. Do not use the 93.7 GB target for this acceptance pass.
+Finish authenticated connection acceptance with visible non-streaming output, visible streaming content, and a simple parseable tool call using the registered b11060 CUDA runtime and existing `qwen3.8-27b-cuda` profile. Then implement official llama.cpp release discovery/install, including stable-to-build resolution, CUDA companion assets, digest verification, staging, probing, and atomic promotion. Do not use the 93.7 GB target for routine acceptance.
 
 Manual acceptance for transfer interruption:
 
@@ -166,7 +166,7 @@ Measured real-transfer acceptance on 2026-09-20:
 - The authorized repository `unsloth/Qwen3-Coder-Next-GGUF` at revision `ce09c67b53bc8739eef83fe67b2f5d293c270632` exposed 35 complete groups. The smallest was `Qwen3-Coder-Next-UD-TQ1_0`, one file totaling 18,941,835,296 bytes (17.6 GiB), and it was started through the Discover UI.
 - For job `3d7b3d27-c9a9-4ced-8d8d-43ef7847e4b2`, active bytes were written to `data/models/unsloth/Qwen3-Coder-Next-GGUF/.ce09c67b53bc8739eef83fe67b2f5d293c270632.3d7b3d27-c9a9-4ced-8d8d-43ef7847e4b2.partial/.cache/huggingface/download/b7exlr1Rr7qLDLwcAZdupd92-vQ=.352049921f1dc861bf33fd03f5d2c25a08f248ee808179fe63ce16307357551c.incomplete`.
 - Four pre-completion API/filesystem samples matched and increased from 1,583,349,760 to 1,646,264,320 to 1,740,636,160 to 1,782,579,200 bytes. The Downloads UI showed 2.4 GiB / 17.6 GiB (13%), then 3.0 GiB (17%), and 3.6 GiB (21%) before cancellation.
-- The job was cancelled after proof, at a persisted 3,911,188,480 bytes. No destination was published. `huggingface_hub` cannot stop mid-file, so the hidden partial remains until the transfer call returns; this is existing cancellation behavior and must be addressed in the later cancellation/retry slice.
+- The job was cancelled after proof, at a persisted 3,911,188,480 bytes. No destination was published. This observation preceded the child-process transfer implementation; the later measured interruption acceptance above supersedes the old file-boundary cancellation behavior.
 - Full backend validation passed: 146 tests, 93.29% coverage, Ruff, and strict mypy for 38 source files. Frontend files were unchanged, so frontend tests/build and responsive re-acceptance were not required.
 
 ## Resume State
