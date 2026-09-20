@@ -102,3 +102,55 @@ def test_profile_rejects_unknown_runtime_and_invalid_options(tmp_path: Path) -> 
     assert unknown.status_code == 404
     assert invalid.status_code == 422
     assert invalid.json()["detail"] == ["runtime does not support --ctx-size"]
+
+
+def test_profile_clone_copies_configuration_but_stays_disabled(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model = tmp_path / "model.gguf"
+    model.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "ctx-size", "no-reasoning-preserve"}),
+                raw_help="help",
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    settings = Settings(data_dir=tmp_path / "data")
+    with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        source = client.post(
+            "/api/profiles",
+            json={
+                **_profile_payload(runtime_id, model),
+                "alias": "source-model",
+                "ctx_size": 4096,
+            },
+        )
+        cloned = client.post(
+            f"/api/profiles/{source.json()['id']}/clone", json={"alias": "copy-model"}
+        )
+        duplicate = client.post(
+            f"/api/profiles/{source.json()['id']}/clone", json={"alias": "copy-model"}
+        )
+        padded = client.post(
+            f"/api/profiles/{source.json()['id']}/clone", json={"alias": " copy-model-2 "}
+        )
+
+    assert source.status_code == 201
+    assert cloned.status_code == 201
+    assert cloned.json()["alias"] == "copy-model"
+    assert cloned.json()["runtime_id"] == runtime_id
+    assert cloned.json()["model_path"] == str(model.resolve())
+    assert cloned.json()["configuration"] == source.json()["configuration"]
+    assert cloned.json()["enabled"] is False
+    assert duplicate.status_code == 409
+    assert padded.status_code == 422

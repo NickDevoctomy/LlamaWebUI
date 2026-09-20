@@ -116,6 +116,8 @@ class ProfileRegistry:
             source = session.get(ModelProfileRecord, profile_id)
             if source is None:
                 raise ProfileNotFoundError(f"model profile not found: {profile_id}")
+            if not alias or alias != alias.strip():
+                raise ValueError("profile alias must not be empty or padded")
             if session.scalar(
                 select(ModelProfileRecord.id).where(ModelProfileRecord.alias == alias)
             ):
