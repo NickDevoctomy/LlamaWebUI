@@ -12,11 +12,42 @@ The application manages runtimes, model profiles, downloads, access keys, router
 - A registered or installed `llama-server` runtime
 - A validated GGUF model and enabled model profile for inference
 
-The repository's development environment uses `.venv` at the repository root.
+The repository's development environment uses `.venv` at the repository root. The backend dependency list is also available at `backend/requirements.txt` for machines that do not use the project metadata workflow.
+
+## Set up a fresh Windows machine
+
+Install the prerequisites first:
+
+- Git
+- Python 3.12 or newer, with **Add Python to PATH** enabled
+- Node.js LTS, which includes npm
+- The official `llama-server.exe` runtime build appropriate for the machine. CUDA builds also require a compatible NVIDIA driver and CUDA runtime support.
+
+Clone the repository and create the Python virtual environment from the repository root:
+
+```powershell
+git clone YOUR_REPOSITORY_URL LlamaWebUI
+Set-Location .\LlamaWebUI
+py -3.12 -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install --upgrade pip
+& .\.venv\Scripts\python.exe -m pip install -r .\backend\requirements.txt
+```
+
+If the `py` launcher is unavailable, use `python -m venv .venv` instead. Do not select a different interpreter for backend commands: use `.venv\Scripts\python.exe` explicitly.
+
+Install frontend dependencies:
+
+```powershell
+Set-Location .\frontend
+npm install
+Set-Location ..
+```
+
+The first application start creates the SQLite database and required data directories. No Python activation script or PowerShell execution-policy change is required when using the explicit interpreter path above.
 
 ## Start the backend
 
-From the repository root:
+From the repository root, after completing the fresh-machine setup:
 
 ```powershell
 Set-Location E:\Source\Misc\LlamaWebUI\backend

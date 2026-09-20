@@ -207,6 +207,7 @@ Measured real-transfer acceptance on 2026-09-20:
 - Discovered GGUF files now expose bounded scalar header metadata such as model name and context length without loading tensor data. Nine focused model-library tests, strict mypy, and the production build pass in 5.07 seconds.
 - Added the durable `logical_models` schema and typed `LogicalModelRegistry` foundation for canonical-path keyed library records. Ruff and strict mypy pass for 43 source files; wiring discovery reconciliation into these records remains the next library slice.
 - Discovery reconciliation now persists canonical-path keyed logical models and exposes them through `GET /api/library/logical`. Repeated reconciliation preserves stable IDs; ten focused model-library tests and strict mypy pass in 2.23 seconds.
+- Added `backend/requirements.txt` and expanded `README.md` with fresh-machine Windows setup, Python 3.12 virtual-environment creation, backend package installation, frontend `npm install`, runtime prerequisites, and explicit-interpreter startup guidance.
 
 - Commit `69c4fd5` is the checked-in Discover/Downloads baseline on `alpha` and `origin/alpha`.
 - Root `data/` is ignored because it contains local runtime/application state. Commit `1f8eca6` removed `data/llamawebui.db` from Git tracking only; the local file remains intact and must not be deleted or reset.
