@@ -8,15 +8,34 @@ import {
   Gauge,
   LoaderCircle,
   Plus,
+  Search as SearchIcon,
   ShieldAlert,
   Trash2,
   X,
 } from 'lucide-react'
 import { type FormEvent, useEffect, useState } from 'react'
-import { api, type LibraryModel, type Profile, type ProfileCreate, type Runtime } from './api'
+import { api, type LibraryModel, type Profile, type ProfileCreate, type Runtime, type RuntimeRelease } from './api'
 
 function optionalNumber(value: string) {
   return value === '' ? undefined : Number(value)
+}
+
+function isRuntimeArchive(name: string) {
+  return /\.(?:zip|tar\.gz|tgz|tar\.xz|tar\.bz2)$/i.test(name)
+}
+
+function suggestedRuntimeAsset(name: string, backend: string) {
+  const normalized = name.toLowerCase()
+  if (backend === 'cpu') {
+    return !/(cuda|vulkan|metal|sycl|rocm)/.test(normalized)
+  }
+  return normalized.includes(backend.toLowerCase())
+}
+
+function formatAssetSize(size: number) {
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KiB`
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MiB`
+  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GiB`
 }
 
 export function Field({ label, hint, children }: {
@@ -56,9 +75,13 @@ export function Dialog({ title, description, onClose, children }: {
 
 export function RuntimePanel({ runtimes }: { runtimes: Runtime[] }) {
   const [open, setOpen] = useState(false)
+  const [installOpen, setInstallOpen] = useState(false)
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
   const [backend, setBackend] = useState('cpu')
+  const [releaseTag, setReleaseTag] = useState('latest')
+  const [release, setRelease] = useState<RuntimeRelease>()
+  const [assetName, setAssetName] = useState('')
   const queryClient = useQueryClient()
   const registration = useMutation({
     mutationFn: () => api.registerRuntime({ name, executable_path: path, backend }),
@@ -67,6 +90,22 @@ export function RuntimePanel({ runtimes }: { runtimes: Runtime[] }) {
       setOpen(false)
       setName('')
       setPath('')
+    },
+  })
+  const discovery = useMutation({
+    mutationFn: () => api.runtimeRelease(releaseTag.trim()),
+    onSuccess: (value) => {
+      setRelease(value)
+      setAssetName(value.assets.find((asset) => suggestedRuntimeAsset(asset.name, backend))?.name ?? '')
+    },
+  })
+  const installation = useMutation({
+    mutationFn: () => api.installRuntime(releaseTag.trim(), assetName, backend),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['runtimes'] })
+      setInstallOpen(false)
+      setRelease(undefined)
+      setAssetName('')
     },
   })
 
@@ -80,7 +119,7 @@ export function RuntimePanel({ runtimes }: { runtimes: Runtime[] }) {
       <section className="data-panel">
         <div className="panel-heading">
           <div><h2>Installed runtimes</h2><p>Local llama.cpp executables available to this control plane.</p></div>
-          <button className="button primary compact" onClick={() => setOpen(true)} type="button"><Plus size={15} /> Register runtime</button>
+          <div className="panel-heading-actions"><button className="button secondary compact" onClick={() => setInstallOpen(true)} type="button"><Download size={15} /> Install official build</button><button className="button primary compact" onClick={() => setOpen(true)} type="button"><Plus size={15} /> Register runtime</button></div>
         </div>
         {runtimes.length ? <div className="record-list">{runtimes.map((runtime) => (
           <article className="record-row" key={runtime.id}>
@@ -92,6 +131,18 @@ export function RuntimePanel({ runtimes }: { runtimes: Runtime[] }) {
           </article>
         ))}</div> : <div className="empty"><Cpu size={28} /><strong>No runtime registered</strong><span>Point Llama Control at an existing llama-server executable to begin.</span><button className="button primary" onClick={() => setOpen(true)} type="button"><Plus size={15} /> Register runtime</button></div>}
       </section>
+      {installOpen && <Dialog title="Install official llama.cpp build" description="Choose a published asset. The download is staged, verified, probed, and promoted only after validation." onClose={() => setInstallOpen(false)}>
+        <form onSubmit={(event) => { event.preventDefault(); installation.mutate() }}>
+          <div className="form-body">
+            <div className="form-grid"><Field label="Release tag" hint="Use a stable tag such as v0.4.1 or a build tag such as b11060."><input autoFocus value={releaseTag} onChange={(event) => setReleaseTag(event.target.value)} placeholder="v0.4.1" required /></Field><Field label="Backend"><select value={backend} onChange={(event) => { setBackend(event.target.value); setRelease(undefined); setAssetName('') }}><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="vulkan">Vulkan</option><option value="metal">Metal</option><option value="sycl">SYCL</option></select></Field></div>
+            <button className="button secondary" disabled={discovery.isPending || !releaseTag.trim()} onClick={() => discovery.mutate()} type="button">{discovery.isPending ? <LoaderCircle className="spin" size={15} /> : <SearchIcon size={15} />} Discover published assets</button>
+            {release && <Field label={`Published assets${release.stable_tag ? ` · ${release.stable_tag} → ${release.tag}` : ''}`} hint="CUDA companion libraries are shown when published by the release."><select value={assetName} onChange={(event) => setAssetName(event.target.value)} required><option value="">Select an asset</option>{release.assets.filter((asset) => isRuntimeArchive(asset.name)).map((asset) => <option key={asset.name} value={asset.name}>{asset.name} · {formatAssetSize(asset.size)}{asset.digest ? ' · SHA-256' : ''}</option>)}</select></Field>}
+            {release && !release.assets.some((asset) => isRuntimeArchive(asset.name)) && <div className="form-error"><AlertCircle size={15} /> No compatible runtime archive was published for this release.</div>}
+            {(discovery.error || installation.error) && <div className="form-error"><AlertCircle size={15} /> {(discovery.error || installation.error)?.message}</div>}
+          </div>
+          <footer className="dialog-actions"><button className="button secondary" onClick={() => setInstallOpen(false)} type="button">Cancel</button><button className="button primary" disabled={installation.isPending || !assetName} type="submit">{installation.isPending ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />} Download & install</button></footer>
+        </form>
+      </Dialog>}
       {open && <Dialog title="Register runtime" description="The executable is probed immediately for its build, devices, and supported options." onClose={() => setOpen(false)}>
         <form onSubmit={submit}>
           <div className="form-body">

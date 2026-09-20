@@ -118,6 +118,19 @@ export interface RuntimeRegistration {
   backend?: string
 }
 
+export interface RuntimeReleaseAsset {
+  name: string
+  url: string
+  size: number
+  digest: string | null
+}
+
+export interface RuntimeRelease {
+  tag: string
+  stable_tag: string | null
+  assets: RuntimeReleaseAsset[]
+}
+
 export interface ProfileCreate {
   alias: string
   runtime_id: string
@@ -183,6 +196,13 @@ export const api = {
     request<Runtime>('/api/runtimes', {
       method: 'POST',
       body: JSON.stringify(runtime),
+    }),
+  runtimeRelease: (tag: string) =>
+    request<RuntimeRelease>(`/api/runtimes/releases/${encodeURIComponent(tag)}`),
+  installRuntime: (tag: string, assetName: string, backend?: string) =>
+    request<Runtime>('/api/runtimes/install', {
+      method: 'POST',
+      body: JSON.stringify({ tag, asset_name: assetName, backend: backend || null }),
     }),
   createProfile: (profile: ProfileCreate) =>
     request<Profile>('/api/profiles', {
