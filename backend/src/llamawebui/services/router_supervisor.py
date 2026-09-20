@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import signal
 import subprocess
 from collections import deque
@@ -165,6 +166,13 @@ class RouterSupervisor:
         self._restart_task: asyncio.Task[None] | None = None
         self._restart_enabled = False
         self._launch: RouterLaunch | None = None
+        self._timing: dict[str, float | int | None] = {
+            "prompt_tokens_per_second": None,
+            "decode_tokens_per_second": None,
+            "decode_tokens_per_second_peak": None,
+            "task_id": None,
+            "task_elapsed_seconds": None,
+        }
 
     @property
     def state(self) -> RouterState:
@@ -181,6 +189,10 @@ class RouterSupervisor:
     @property
     def logs(self) -> tuple[str, ...]:
         return tuple(self._logs)
+
+    @property
+    def timing(self) -> dict[str, float | int | None]:
+        return dict(self._timing)
 
     def set_state_observer(self, observer: RouterStateObserver | None) -> None:
         self._state_observer = observer
@@ -352,7 +364,28 @@ class RouterSupervisor:
 
     async def _capture_logs(self, output: RouterOutput) -> None:
         while line := await output.readline():
-            self._logs.append(line.decode(errors="replace").rstrip("\r\n"))
+            text = line.decode(errors="replace").rstrip("\r\n")
+            self._logs.append(text)
+            self._parse_timing(text)
+
+    def _parse_timing(self, text: str) -> None:
+        prompt = re.search(
+            r"prompt processing, n_tokens\s*=\s*\d+.*?t\s*=\s*([\d.]+)"
+            r"\s*s\s*/\s*([\d.]+) tokens per second",
+            text,
+        )
+        generation = re.search(
+            r"task\s+(\d+).*?n_gen\s*=.*?tg\s*=\s*([\d.]+) t/s"
+            r"(?:, tg_3s\s*=\s*([\d.]+))?",
+            text,
+        )
+        if prompt:
+            self._timing["prompt_tokens_per_second"] = float(prompt.group(2))
+        if generation:
+            self._timing["task_id"] = int(generation.group(1))
+            self._timing["decode_tokens_per_second"] = float(generation.group(2))
+            if generation.group(3):
+                self._timing["decode_tokens_per_second_peak"] = float(generation.group(3))
 
     def _set_state(self, state: RouterState) -> None:
         self._state = state

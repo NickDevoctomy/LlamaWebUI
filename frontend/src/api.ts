@@ -12,6 +12,7 @@ export interface ServerStatus {
   last_exit_code: number | null
   endpoint: string
   logs: string[]
+  timing: Record<string, number | string | null>
 }
 
 export interface Runtime {

@@ -239,6 +239,7 @@ def _server_payload(supervisor: RouterSupervisor, settings: Settings) -> dict[st
         "last_exit_code": supervisor.last_exit_code,
         "endpoint": f"http://{settings.router_host}:{settings.router_port}",
         "logs": supervisor.logs,
+        "timing": supervisor.timing,
     }
 
 

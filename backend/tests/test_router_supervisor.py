@@ -97,6 +97,27 @@ async def test_supervisor_starts_marks_ready_and_stops(tmp_path: Path) -> None:
     assert supervisor.last_exit_code == 0
 
 
+async def test_supervisor_parses_prompt_and_decode_timing() -> None:
+    supervisor = RouterSupervisor()
+
+    supervisor._parse_timing(
+        "slot print_timing: id 3 | task 0 | prompt processing, n_tokens = 577, "
+        "progress = 0.98, t = 6.93 s / 83.24 tokens per second"
+    )
+    supervisor._parse_timing(
+        "slot print_timing: id 2 | task 125 | n_gen = 7289, tg = 14.81 t/s, "
+        "tg_3s = 16.65 t/s"
+    )
+
+    assert supervisor.timing == {
+        "prompt_tokens_per_second": 83.24,
+        "decode_tokens_per_second": 14.81,
+        "decode_tokens_per_second_peak": 16.65,
+        "task_id": 125,
+        "task_elapsed_seconds": None,
+    }
+
+
 async def test_supervisor_waits_for_health_and_captures_bounded_logs(tmp_path: Path) -> None:
     output = asyncio.StreamReader()
     process = FakeProcess(stdout=output)
