@@ -1,6 +1,6 @@
 # LlamaWebUI Implementation Progress
 
-**Updated:** 2026-09-19
+**Updated:** 2026-09-20
 **Branch:** `alpha`
 **Baseline commit:** `1f8eca6` (`feat: add access and OpenCode workflows`)
 **Active phase:** Frontend implementation
@@ -18,7 +18,7 @@ The delivery plan has eight numbered phases (`0` through `7`). Work has intentio
 | 2. Runtime manager | Partial | Register/list/get/reprobe/remove; option/device capability parsing; in-use deletion guard | GitHub release discovery/install, stable-to-build resolution, digest verification, switching/rollback |
 | 3. Local library and profiles | Partial | Profile persistence, typed Qwen options, capability validation, shard completeness, deterministic atomic single/combined preset writing | Directory scanning, GGUF metadata, logical model records, command import/export |
 | 4. Server lifecycle | In progress | Router state machine, validated argument vector, process-group launch, single-process supervisor, HTTP readiness polling, bounded log tail, crash observation, owned process-tree graceful/forced shutdown, serialized status/start/stop/restart API, durable run and restart-attempt history, safe port preflight, bounded crash recovery with rapid-failure suppression, native model list/load/unload/SSE APIs, lifecycle/model event publication through unified replayable `/api/events` | Real-runtime SSE acceptance |
-| 5. Hugging Face and downloads | Advanced partial | Search, repository manifests, quant/shard grouping, revision-pinned durable jobs, staging, size verification, atomic publication, pause/resume/cancel coordination, startup reconciliation | In-file progress, retry/backoff, periodic disk checks, checksum/ETag verification, event streaming, projector association, safe deletion, library reconciliation |
+| 5. Hugging Face and downloads | Advanced partial | Search, repository manifests, quant/shard grouping, revision-pinned durable jobs, staging, size verification, atomic publication, pause/resume/cancel coordination, startup reconciliation, responsive Discover and Downloads workflows | In-file progress, retry/backoff, periodic disk checks, checksum/ETag verification, event streaming, projector association, safe deletion, library reconciliation |
 | 6. Tokens and onboarding | Advanced partial | Show-once token creation, HMAC metadata, last-four/name/expiry-note listing, permanent revocation, atomic restricted native key file, authenticated router launch/control calls, live-model OpenCode generation, Access frontend workflow | End-to-end authenticated connection tests remain blocked on an available model/profile |
 | 7. Hardening and release | Not started | Unit quality gate established | Packaging, CI/platform matrix, accessibility, backup/restore, offline behavior, operator docs |
 
@@ -44,8 +44,8 @@ Backend baseline before the current frontend-only slice:
 
 Frontend foundation validation:
 
-- Vite production build passed; JavaScript bundle is 299.34 kB (91.45 kB gzip).
-- Vitest/Testing Library passed: 6 component integration tests.
+- Vite production build passed; JavaScript bundle is 308.81 kB.
+- Vitest/Testing Library passed: 8 component integration tests.
 - Desktop 1440x1000 and mobile 390x844 browser checks passed without horizontal overflow.
 - Live FastAPI queries and responsive navigation were verified in the browser.
 - Runtime registration was accepted end to end against local llama.cpp b11053 and displayed build `0.4.1-dev` as ready.
@@ -78,6 +78,8 @@ Frontend foundation validation:
 - Basic/Advanced model profile editor with alias normalization, first-shard guidance, runtime selection, and capability-aware controls
 - Access workspace with show-once in-memory key reveal, clipboard feedback, metadata-only listing, and confirmed revocation
 - OpenCode configuration panel generated from live router model IDs with an environment-variable key placeholder
+- Hugging Face catalog search with sorting, repository selection, exact quantization sizes, shard completeness, and explicit download creation
+- Durable download workspace with progress, active-job count, pause/resume/cancel controls, errors, and active-state polling
 - Desktop and mobile layouts use stable metrics, table reduction, and fixed navigation without content overlap
 
 ## Important Constraints
@@ -87,6 +89,7 @@ Frontend foundation validation:
 - Do not invoke executables through a shell; use argument vectors.
 - The control plane supervises native `llama-server`; it does not proxy or reimplement inference.
 - Non-loopback router binding requires an API key file.
+- llama.cpp requires raw keys in `--api-key-file`; the current generated file is permission-restricted and Git-ignored but remains plaintext at rest. Move authoritative secrets to the OS credential store and materialize the file only for router launches during hardening.
 - Downloaded groups remain in a hidden staging directory until all required files pass size validation, then publish through a same-filesystem atomic rename.
 - `huggingface_hub.hf_hub_download` has no cancellation/progress callback. Active cancellation is durable immediately, but the current SDK call can stop only at a file boundary.
 - Keep unit tests deterministic and free of live network, fixed ports, installed llama.cpp, and large model dependencies.
@@ -102,19 +105,18 @@ Frontend foundation validation:
 
 ## Next Implementation Slice
 
-Build the Discover and Downloads workflow: Hugging Face search, repository/quantization selection, durable download creation, and visible job controls.
+Build the local-library bridge: reconcile completed downloads into logical local models, expose their validated first-shard paths in the UI, and prefill profile creation from a selected artifact. This closes the remaining fresh-install gap between downloading a model and starting the router.
 
-This is also the current acceptance blocker. A runtime can be registered and a profile can be created from a manually entered local GGUF path, but the UI cannot yet acquire or browse to a model. Consequently, the router cannot be started from a fresh installation and the live-model OpenCode flow cannot be tested end to end. Do not describe the Access slice as fully accepted until that dependency is available.
-
-For development acceptance, use a tiny test GGUF or a mocked download/catalog path; do not download the 93.7 GB target model. Once a model is available, create its profile, start the router, verify the live model ID, then verify generated OpenCode configuration and authenticated access.
+For development acceptance, use a tiny test GGUF or a mocked completed download; do not download the 93.7 GB target model. Once a model is available, create its profile, start the router, verify the live model ID, then verify generated OpenCode configuration and authenticated access.
 
 ## Resume State
 
 - Commit `1f8eca6` is the checked-in Access/OpenCode baseline on `alpha` and `origin/alpha`.
 - The Access/OpenCode frontend slice and root `data/` ignore rule are committed.
 - Root `data/` is ignored because it contains local runtime/application state. Commit `1f8eca6` removed `data/llamawebui.db` from Git tracking only; the local file remains intact and must not be deleted or reset.
-- Six frontend tests pass, the production build passes, editor diagnostics are clean, and `git diff --check` passes.
+- Eight frontend tests pass, the production build passes, editor diagnostics are clean, and `git diff --check` passes.
+- Live public-catalog acceptance returned 25 results and 27 complete groups for the selected repository; desktop and 390x844 layouts had no horizontal overflow. No download job was created.
 - At handoff, the backend is healthy on `http://127.0.0.1:18080/api/health` and Vite is serving `http://127.0.0.1:5173/`.
-- First action next session: implement the Discover/Downloads frontend against the existing backend APIs.
+- First action next session: implement the local-library/profile bridge for completed downloads.
 
 Deferred backend work includes real-runtime SSE/inference acceptance, local library scanning, release installation, broader event publication, and authenticated connection tests.

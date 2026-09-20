@@ -54,6 +54,45 @@ export interface CreatedAccessToken extends AccessToken {
   token: string
 }
 
+export interface ModelSearchResult {
+  repo_id: string
+  downloads: number
+  likes: number
+  last_modified: string | null
+  gated: boolean
+  private: boolean
+  tags: string[]
+}
+
+export interface GgufGroup {
+  key: string
+  quantization: string
+  total_size: number
+  complete: boolean
+  files: { path: string; size: number }[]
+}
+
+export interface RepositoryManifest {
+  repo_id: string
+  revision: string
+  groups: GgufGroup[]
+}
+
+export type DownloadState = 'queued' | 'downloading' | 'paused' | 'completed' | 'failed' | 'cancelled'
+
+export interface DownloadJob {
+  id: string
+  repo_id: string
+  revision: string
+  group_key: string
+  files: { path: string; size: number }[]
+  destination: string
+  total_bytes: number
+  completed_bytes: number
+  state: DownloadState
+  error: string | null
+}
+
 export interface RuntimeRegistration {
   name: string
   executable_path: string
@@ -94,7 +133,25 @@ export const api = {
   runtimes: () => request<Runtime[]>('/api/runtimes'),
   profiles: () => request<Profile[]>('/api/profiles'),
   tokens: () => request<AccessToken[]>('/api/tokens'),
+  downloads: () => request<DownloadJob[]>('/api/downloads'),
   models: () => request<RouterModel[]>('/api/server/models'),
+  searchModels: (query: string, sort = 'downloads') => {
+    const parameters = new URLSearchParams({ q: query, sort })
+    return request<ModelSearchResult[]>(`/api/huggingface/models?${parameters}`)
+  },
+  repository: (repoId: string) =>
+    request<RepositoryManifest>(`/api/huggingface/repositories/${repoId}`),
+  createDownload: (repoId: string, groupKey: string, revision: string) =>
+    request<DownloadJob>('/api/downloads', {
+      method: 'POST',
+      body: JSON.stringify({ repo_id: repoId, group_key: groupKey, revision }),
+    }),
+  pauseDownload: (jobId: string) =>
+    request<DownloadJob>(`/api/downloads/${jobId}/pause`, { method: 'POST' }),
+  resumeDownload: (jobId: string) =>
+    request<DownloadJob>(`/api/downloads/${jobId}/resume`, { method: 'POST' }),
+  cancelDownload: (jobId: string) =>
+    request<DownloadJob>(`/api/downloads/${jobId}/cancel`, { method: 'POST' }),
   registerRuntime: (runtime: RuntimeRegistration) =>
     request<Runtime>('/api/runtimes', {
       method: 'POST',

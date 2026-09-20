@@ -24,6 +24,7 @@ import {
 import { useState } from 'react'
 import { AccessPanel } from './AccessPanel'
 import { api, type Profile, type RouterModel, type Runtime } from './api'
+import { DiscoverPanel, DownloadsPanel } from './DiscoveryPanels'
 import { ProfilePanel, RuntimePanel } from './SetupPanels'
 
 const navigation = [
@@ -59,6 +60,11 @@ function App() {
   const runtimes = useQuery({ queryKey: ['runtimes'], queryFn: api.runtimes })
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles })
   const tokens = useQuery({ queryKey: ['tokens'], queryFn: api.tokens })
+  const downloads = useQuery({
+    queryKey: ['downloads'],
+    queryFn: api.downloads,
+    refetchInterval: (query) => query.state.data?.some((job) => ['queued', 'downloading'].includes(job.state)) ? 2000 : false,
+  })
   const running = status.data?.state === 'ready' || status.data?.state === 'degraded'
   const models = useQuery({
     queryKey: ['models'],
@@ -108,7 +114,7 @@ function App() {
             >
               <Icon size={17} />
               <span>{label}</span>
-              {label === 'Downloads' && <span className="nav-count">0</span>}
+              {label === 'Downloads' && <span className="nav-count">{downloads.data?.filter((job) => ['queued', 'downloading'].includes(job.state)).length ?? 0}</span>}
             </button>
           ))}
         </nav>
@@ -202,6 +208,10 @@ function App() {
             <ProfilePanel profiles={profiles.data ?? []} runtimes={runtimes.data ?? []} />
           ) : section === 'Access' ? (
             <AccessPanel running={running} tokens={tokens.data ?? []} />
+          ) : section === 'Discover' ? (
+            <DiscoverPanel onQueued={() => setSection('Downloads')} />
+          ) : section === 'Downloads' ? (
+            <DownloadsPanel jobs={downloads.data ?? []} />
           ) : (
             <CollectionPanel section={section} runtimes={runtimes.data ?? []} profiles={profiles.data ?? []} tokens={tokens.data ?? []} />
           )}

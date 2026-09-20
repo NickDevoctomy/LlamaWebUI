@@ -14,6 +14,7 @@ const responses: Record<string, unknown> = {
   '/api/runtimes': [],
   '/api/profiles': [],
   '/api/tokens': [],
+  '/api/downloads': [],
 }
 
 afterEach(() => {
@@ -24,18 +25,21 @@ afterEach(() => {
 function renderApp({
   runtimeList = [],
   tokenList = [],
+  downloadList = [],
   serverStatus = responses['/api/server/status'],
 }: {
   runtimeList?: unknown[]
   tokenList?: unknown[]
+  downloadList?: unknown[]
   serverStatus?: unknown
 } = {}) {
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
-    const path = typeof input === 'string'
+    const rawPath = typeof input === 'string'
       ? input
       : input instanceof URL
-        ? input.pathname
-        : new URL(input.url).pathname
+        ? input.toString()
+        : input.url
+    const path = new URL(rawPath, 'http://localhost').pathname
     const payload = init?.method === 'DELETE'
       ? { ...tokenList[0] as object, enabled: false }
       : init?.method === 'POST'
@@ -43,13 +47,23 @@ function renderApp({
         ? { id: 'runtime-1', name: 'Local CPU', executable_path: 'E:\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset', 'ctx-size'], usable: true }
         : path === '/api/tokens'
           ? { id: 'token-1', name: 'OpenCode', token: 'lwui_once_only', last_four: 'only', expiry_note: 'Rotate monthly', enabled: true, created_at: '2026-09-19T12:00:00' }
+        : path === '/api/downloads'
+          ? { id: 'download-1', repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), group_key: 'model-Q4_K_M', files: [{ path: 'model-Q4_K_M.gguf', size: 4_200_000_000 }], destination: 'E:\\models\\owner--model-GGUF', total_bytes: 4_200_000_000, completed_bytes: 0, state: 'queued', error: null }
+        : path.endsWith('/resume')
+          ? { ...downloadList[0] as object, state: 'queued' }
         : { id: 'profile-1', alias: 'qwen-local', runtime_id: 'runtime-1', model_path: 'E:\\models\\qwen.gguf', configuration: {}, enabled: true }
       : path === '/api/runtimes'
         ? runtimeList
         : path === '/api/tokens'
           ? tokenList
+          : path === '/api/downloads'
+            ? downloadList
           : path === '/api/server/status'
             ? serverStatus
+            : path === '/api/huggingface/models'
+              ? [{ repo_id: 'owner/model-GGUF', downloads: 1200, likes: 42, last_modified: '2026-09-19T00:00:00Z', gated: false, private: false, tags: ['gguf', 'qwen'] }]
+              : path === '/api/huggingface/repositories/owner/model-GGUF'
+                ? { repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), groups: [{ key: 'model-Q4_K_M', quantization: 'Q4_K_M', total_size: 4_200_000_000, complete: true, files: [{ path: 'model-Q4_K_M.gguf', size: 4_200_000_000 }] }] }
             : path === '/api/integrations/opencode'
               ? { provider: { 'llama-web-ui': { options: { apiKey: '{env:LLAMA_WEB_UI_API_KEY}' }, models: { 'qwen-local': { name: 'qwen-local' } } } } }
               : path === '/api/server/models'
@@ -158,5 +172,31 @@ describe('App', () => {
     expect(await screen.findByText('opencode.jsonc')).toBeInTheDocument()
     expect(screen.getByText(/LLAMA_WEB_UI_API_KEY/)).toBeInTheDocument()
     expect(screen.queryByText(/lwui_/)).not.toBeInTheDocument()
+  })
+
+  it('searches repositories and queues an inspected GGUF group', async () => {
+    const fetchMock = renderApp()
+    fireEvent.click(screen.getByRole('button', { name: 'Discover' }))
+    fireEvent.change(screen.getByLabelText('Search models'), { target: { value: 'qwen' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: /owner\/model-GGUF/ }))
+    expect(await screen.findByText('Q4_K_M')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ repo_id: 'owner/model-GGUF', group_key: 'model-Q4_K_M', revision: 'a'.repeat(40) }),
+    })))
+    expect(await screen.findByRole('heading', { name: 'Download jobs' })).toBeInTheDocument()
+  })
+
+  it('resumes a paused durable download', async () => {
+    const job = { id: 'download-1', repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), group_key: 'model-Q4_K_M', files: [], destination: 'E:\\models', total_bytes: 1000, completed_bytes: 400, state: 'paused', error: null }
+    const fetchMock = renderApp({ downloadList: [job] })
+    fireEvent.click(screen.getByRole('button', { name: 'Downloads' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume owner/model-GGUF' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/download-1/resume', { method: 'POST' }))
   })
 })
