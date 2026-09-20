@@ -122,6 +122,7 @@ async def test_supervisor_parses_prompt_and_decode_timing() -> None:
         "slot print_timing: id 2 | task 125 | n_gen = 7289, tg = 14.81 t/s, "
         "tg_3s = 16.65 t/s"
     )
+    supervisor._parse_timing("slot context n_ctx=32768")
 
     assert supervisor.timing == {
         "prompt_tokens_per_second": 83.24,
@@ -129,6 +130,7 @@ async def test_supervisor_parses_prompt_and_decode_timing() -> None:
         "decode_tokens_per_second_peak": 16.65,
         "task_id": 125,
         "task_elapsed_seconds": None,
+        "context_tokens": 32768,
     }
 
 

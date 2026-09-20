@@ -173,6 +173,7 @@ class RouterSupervisor:
             "decode_tokens_per_second_peak": None,
             "task_id": None,
             "task_elapsed_seconds": None,
+            "context_tokens": None,
         }
 
     @property
@@ -392,6 +393,13 @@ class RouterSupervisor:
             self._timing["decode_tokens_per_second"] = float(generation.group(2))
             if generation.group(3):
                 self._timing["decode_tokens_per_second_peak"] = float(generation.group(3))
+        context = re.search(
+            r"(?:context|n_ctx)\s*[=:]\s*(\d+)(?:\s*/\s*(\d+))?",
+            text,
+            re.IGNORECASE,
+        )
+        if context:
+            self._timing["context_tokens"] = int(context.group(1))
 
     def _set_state(self, state: RouterState) -> None:
         self._state = state
