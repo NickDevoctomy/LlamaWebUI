@@ -4,7 +4,11 @@ import httpx
 import pytest
 
 from llamawebui.services import router_client
-from llamawebui.services.router_client import HttpRouterClient, RouterAPIError
+from llamawebui.services.router_client import (
+    HttpRouterClient,
+    RouterAPIError,
+    collect_model_events,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -215,6 +219,28 @@ async def test_closing_model_event_iterator_closes_upstream_stream(
     await events.aclose()
 
     assert stream.closed
+
+
+async def test_collect_model_events_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    stream = ChunkedStream(
+        (b'data: {"model":"model","event":"model_status","data":{}}\n\n',)
+    )
+    install_transport(
+        monkeypatch,
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=stream,
+            )
+        ),
+    )
+    events = await collect_model_events(
+        HttpRouterClient("127.0.0.1", 1234), limit=1, timeout_seconds=1
+    )
+
+    assert len(events) == 1
+    assert events[0].event == "model_status"
 
 
 async def test_router_client_rejects_non_event_stream_response(

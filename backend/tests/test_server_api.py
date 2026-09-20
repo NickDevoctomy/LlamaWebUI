@@ -333,7 +333,7 @@ def test_server_restart_can_switch_to_explicit_runtime(tmp_path: Path) -> None:
     executable_one.touch()
     executable_two.touch()
     model.touch()
-    processes = iter((FakeProcess(1001), FakeProcess(1002)))
+    processes = iter((FakeProcess(1001), FakeProcess(1002), FakeProcess(1003)))
     launches: list[tuple[str, ...]] = []
 
     async def fake_probe(path: Path) -> RuntimeProbeResult:

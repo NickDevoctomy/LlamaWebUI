@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -29,6 +30,22 @@ class RouterModelEvent:
     model: str
     event: str
     data: dict[str, object]
+
+
+async def collect_model_events(
+    client: RouterClient, *, limit: int = 1, timeout_seconds: float = 15.0
+) -> tuple[RouterModelEvent, ...]:
+    """Collect a bounded native event sample without waiting forever for SSE."""
+    events: list[RouterModelEvent] = []
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            async for event in client.model_events():
+                events.append(event)
+                if len(events) >= limit:
+                    break
+    except TimeoutError:
+        pass
+    return tuple(events)
 
 
 class RouterClient(Protocol):
