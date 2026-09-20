@@ -78,6 +78,7 @@ from llamawebui.services.runtime_registry import (
     RuntimeRegistry,
 )
 from llamawebui.services.server_run_registry import ServerRunRegistry
+from llamawebui.services.system_metrics import collect_system_metrics
 from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRegistry
 
 MODEL_EVENT_KEEPALIVE_SECONDS = 15.0
@@ -247,11 +248,7 @@ def _server_payload(supervisor: RouterSupervisor, settings: Settings) -> dict[st
 
 
 def _system_metrics(data_dir: Path) -> dict[str, object]:
-    usage = shutil.disk_usage(data_dir)
-    return {
-        "disk_free_bytes": usage.free,
-        "disk_total_bytes": usage.total,
-    }
+    return collect_system_metrics(data_dir)
 
 
 def _server_run_payload(run: ServerRunRecord) -> dict[str, object]:
