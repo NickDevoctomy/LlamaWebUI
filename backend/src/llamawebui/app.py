@@ -1341,6 +1341,16 @@ def create_app(
             for model in registry.list()
         ]
 
+    @app.delete("/api/library/logical/{logical_model_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def remove_missing_logical_model(logical_model_id: str, request: Request) -> None:
+        registry = cast(LogicalModelRegistry, request.app.state.logical_model_registry)
+        try:
+            registry.remove_missing(logical_model_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="logical model not found") from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
     @app.post("/api/library/reconcile")
     async def reconcile_library(request: Request) -> dict[str, int]:
         library = cast(ModelLibrary, request.app.state.model_library)

@@ -48,6 +48,23 @@ class LogicalModelRegistry:
             )
             return tuple(session.scalars(statement))
 
+    def remove_missing(self, logical_model_id: str) -> None:
+        with self._sessions() as session:
+            record = session.get(LogicalModelRecord, logical_model_id)
+            if record is None:
+                raise KeyError(logical_model_id)
+            if record.validation_state != "missing":
+                raise ValueError("only missing logical models can be removed")
+            linked = session.scalar(
+                select(LogicalModelProfileRecord.profile_id).where(
+                    LogicalModelProfileRecord.logical_model_id == logical_model_id
+                )
+            )
+            if linked is not None:
+                raise ValueError("logical model is still linked to a profile")
+            session.delete(record)
+            session.commit()
+
     def reconcile_profile_links(self, profiles: tuple[ModelProfileRecord, ...]) -> None:
         with self._sessions() as session:
             records = {

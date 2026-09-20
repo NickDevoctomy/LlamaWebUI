@@ -339,6 +339,23 @@ def test_logical_model_registry_marks_unseen_models_missing(tmp_path: Path) -> N
     assert updated[0].validation_state == "missing"
 
 
+def test_logical_model_registry_removes_unlinked_missing_model(tmp_path: Path) -> None:
+    database = tmp_path / "app.db"
+    upgrade_database(database)
+    engine = create_database_engine(database)
+    registry = DownloadRegistry(engine, tmp_path)
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"gguf")
+    logical = LogicalModelRegistry(engine)
+    record = logical.reconcile_discovered(ModelLibrary(registry, tmp_path).discover())[0]
+    model.unlink()
+    logical.reconcile_discovered(())
+
+    logical.remove_missing(record.id)
+
+    assert logical.list() == ()
+
+
 def test_library_import_creates_disabled_profile_for_discovered_model(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
