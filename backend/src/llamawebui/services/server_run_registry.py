@@ -37,7 +37,13 @@ class ServerRunRegistry:
             current = self._get(session, current_run_id)
             statement = select(ServerRunRecord).order_by(ServerRunRecord.started_at.desc())
             for run in session.scalars(statement):
-                if run.id != current.id and run.runtime_id and run.runtime_id != current.runtime_id:
+                if (
+                    run.id != current.id
+                    and run.runtime_id
+                    and run.runtime_id != current.runtime_id
+                    and run.error is None
+                    and run.state in {RouterState.READY, RouterState.STOPPED}
+                ):
                     return run.runtime_id
         return None
 

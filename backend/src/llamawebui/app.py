@@ -675,6 +675,36 @@ def create_app(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="no previous runtime is available for rollback",
                 )
+            runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
+            profiles = cast(ProfileRegistry, request.app.state.profile_registry)
+            artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+            try:
+                candidate = runtimes.get(previous_runtime_id)
+            except RuntimeNotFoundError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT, detail=str(error)
+                ) from error
+            if "models-preset" not in candidate.options:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="previous runtime does not support --models-preset",
+                )
+            candidate_profiles = profiles.list_enabled(previous_runtime_id)
+            broken = tuple(
+                profile.alias
+                for profile in candidate_profiles
+                if not artifacts.profile_available(profile)
+            )
+            if not candidate_profiles:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="previous runtime has no enabled model profiles",
+                )
+            if broken:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"previous runtime profiles are broken: {', '.join(broken)}",
+                )
             try:
                 await supervisor.stop()
                 return await start_router(previous_runtime_id, request)
