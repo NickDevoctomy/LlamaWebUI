@@ -204,7 +204,7 @@ tbody tr:hover { background: #f4f4ee; }
 .quant-row strong { font: 600 11px 'IBM Plex Mono', monospace; }
 .quant-row div span { color: var(--muted); font-size: 10px; }
 .download-list { padding: 0 18px; }
-.download-row { min-height: 88px; border-bottom: 1px solid #e2e2da; display: grid; grid-template-columns: 38px minmax(220px, 1.2fr) minmax(180px, .8fr) auto 70px; align-items: center; gap: 14px; }
+.download-row { min-height: 88px; border-bottom: 1px solid #e2e2da; display: grid; grid-template-columns: 38px minmax(220px, 1.2fr) minmax(180px, .8fr) auto minmax(70px, auto); align-items: center; gap: 14px; }
 .download-copy { min-width: 0; display: grid; gap: 4px; }
 .download-copy strong, .download-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .download-copy strong { font-size: 12px; }
@@ -215,6 +215,7 @@ tbody tr:hover { background: #f4f4ee; }
 .download-progress > div span { height: 100%; display: block; background: var(--green); transition: width .2s ease; }
 .download-progress small { color: var(--muted); font: 9px 'IBM Plex Mono', monospace; }
 .download-actions { min-width: 70px; display: flex; justify-content: flex-end; gap: 3px; }
+.download-actions .button { white-space: nowrap; }
 .state-pill.downloading, .state-pill.queued { color: #7a5b00; border-color: #e1d394; background: #f5ecc4; }
 .state-pill.completed { color: #12683f; border-color: #b7daca; background: #e0f1e8; }
 .state-pill.failed, .state-pill.cancelled { color: #8f3228; border-color: #e0b8b1; background: #f4dfdb; }

@@ -23,7 +23,7 @@ import {
 } from 'lucide-react'
 import { useState } from 'react'
 import { AccessPanel } from './AccessPanel'
-import { api, type Profile, type RouterModel, type Runtime } from './api'
+import { api, type LibraryModel, type Profile, type RouterModel, type Runtime } from './api'
 import { DiscoverPanel, DownloadsPanel } from './DiscoveryPanels'
 import { ProfilePanel, RuntimePanel } from './SetupPanels'
 
@@ -55,6 +55,7 @@ function modelSize(profile: Profile) {
 function App() {
   const [section, setSection] = useState('Models')
   const [selectedRuntime, setSelectedRuntime] = useState('')
+  const [profileSeed, setProfileSeed] = useState<LibraryModel>()
   const queryClient = useQueryClient()
   const status = useQuery({ queryKey: ['server'], queryFn: api.serverStatus })
   const runtimes = useQuery({ queryKey: ['runtimes'], queryFn: api.runtimes })
@@ -65,6 +66,7 @@ function App() {
     queryFn: api.downloads,
     refetchInterval: (query) => query.state.data?.some((job) => ['queued', 'downloading'].includes(job.state)) ? 2000 : false,
   })
+  const library = useQuery({ queryKey: ['library'], queryFn: api.library, refetchInterval: 5000 })
   const running = status.data?.state === 'ready' || status.data?.state === 'degraded'
   const models = useQuery({
     queryKey: ['models'],
@@ -205,13 +207,13 @@ function App() {
           ) : section === 'Runtimes' ? (
             <RuntimePanel runtimes={runtimes.data ?? []} />
           ) : section === 'Profiles' ? (
-            <ProfilePanel profiles={profiles.data ?? []} runtimes={runtimes.data ?? []} />
+            <ProfilePanel initialModel={profileSeed} library={library.data ?? []} onInitialModelConsumed={() => setProfileSeed(undefined)} profiles={profiles.data ?? []} runtimes={runtimes.data ?? []} />
           ) : section === 'Access' ? (
             <AccessPanel running={running} tokens={tokens.data ?? []} />
           ) : section === 'Discover' ? (
             <DiscoverPanel onQueued={() => setSection('Downloads')} />
           ) : section === 'Downloads' ? (
-            <DownloadsPanel jobs={downloads.data ?? []} />
+            <DownloadsPanel jobs={downloads.data ?? []} library={library.data ?? []} onCreateProfile={(model) => { setProfileSeed(model); setSection('Profiles') }} />
           ) : (
             <CollectionPanel section={section} runtimes={runtimes.data ?? []} profiles={profiles.data ?? []} tokens={tokens.data ?? []} />
           )}

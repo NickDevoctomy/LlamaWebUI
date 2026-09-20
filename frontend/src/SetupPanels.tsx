@@ -10,7 +10,7 @@ import {
   X,
 } from 'lucide-react'
 import { type FormEvent, useEffect, useState } from 'react'
-import { api, type Profile, type ProfileCreate, type Runtime } from './api'
+import { api, type LibraryModel, type Profile, type ProfileCreate, type Runtime } from './api'
 
 function optionalNumber(value: string) {
   return value === '' ? undefined : Number(value)
@@ -104,11 +104,23 @@ export function RuntimePanel({ runtimes }: { runtimes: Runtime[] }) {
   )
 }
 
-export function ProfilePanel({ profiles, runtimes }: { profiles: Profile[]; runtimes: Runtime[] }) {
+function suggestedAlias(model: LibraryModel) {
+  const repository = model.repo_id.split('/').at(-1)?.replace(/-gguf$/i, '') ?? 'model'
+  return repository.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-|-$/g, '').slice(0, 64)
+}
+
+export function ProfilePanel({ profiles, runtimes, library, initialModel, onInitialModelConsumed }: {
+  profiles: Profile[]
+  runtimes: Runtime[]
+  library: LibraryModel[]
+  initialModel?: LibraryModel
+  onInitialModelConsumed: () => void
+}) {
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<'basic' | 'advanced'>('basic')
   const [alias, setAlias] = useState('')
   const [modelPath, setModelPath] = useState('')
+  const [selectedLibraryModel, setSelectedLibraryModel] = useState<LibraryModel>()
   const [runtimeId, setRuntimeId] = useState(runtimes.find((item) => item.usable)?.id ?? '')
   const [contextSize, setContextSize] = useState('')
   const [gpuLayers, setGpuLayers] = useState('')
@@ -120,12 +132,24 @@ export function ProfilePanel({ profiles, runtimes }: { profiles: Profile[]; runt
   const runtime = runtimes.find((item) => item.id === runtimeId)
   const supports = (option: string) => runtime?.options.includes(option) ?? false
   const aliasValid = /^[a-z0-9][a-z0-9._-]{0,63}$/.test(alias)
+  const availableLibrary = selectedLibraryModel && !library.some((item) => item.download_id === selectedLibraryModel.download_id)
+    ? [selectedLibraryModel, ...library]
+    : library
 
   useEffect(() => {
     if (!runtimeId) {
       setRuntimeId(runtimes.find((item) => item.usable)?.id ?? '')
     }
   }, [runtimeId, runtimes])
+
+  useEffect(() => {
+    if (!initialModel) return
+    setModelPath(initialModel.primary_path)
+    setAlias(suggestedAlias(initialModel))
+    setSelectedLibraryModel(initialModel)
+    setOpen(true)
+    onInitialModelConsumed()
+  }, [initialModel, onInitialModelConsumed])
 
   const creation = useMutation({
     mutationFn: () => {
@@ -148,6 +172,7 @@ export function ProfilePanel({ profiles, runtimes }: { profiles: Profile[]; runt
       setOpen(false)
       setAlias('')
       setModelPath('')
+      setSelectedLibraryModel(undefined)
     },
   })
 
@@ -182,6 +207,13 @@ export function ProfilePanel({ profiles, runtimes }: { profiles: Profile[]; runt
                 <Field label="Runtime"><select onChange={(event) => setRuntimeId(event.target.value)} required value={runtimeId}><option value="">Select runtime</option>{runtimes.filter((item) => item.usable).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.build ?? 'unknown'}</option>)}</select></Field>
               </div>
               <Field label="Primary GGUF file" hint="For sharded models, select the first 00001-of-000NN file."><input onChange={(event) => setModelPath(event.target.value)} placeholder="E:\\models\\model-00001-of-00003.gguf" required value={modelPath} /></Field>
+              {availableLibrary.length > 0 && <Field label="Downloaded model" hint="Only completed downloads whose files and sizes still validate are listed."><select onChange={(event) => {
+                const model = availableLibrary.find((item) => item.download_id === event.target.value)
+                if (!model) return
+                setModelPath(model.primary_path)
+                setSelectedLibraryModel(model)
+                if (!alias) setAlias(suggestedAlias(model))
+              }} value={selectedLibraryModel?.download_id ?? ''}><option value="">Select a validated download</option>{availableLibrary.map((model) => <option disabled={profiles.some((profile) => profile.model_path === model.primary_path)} key={model.download_id} value={model.download_id}>{model.repo_id} · {model.group_key}</option>)}</select></Field>}
               <label className="toggle-row"><span><strong>Preserve reasoning</strong><small>Keep reasoning content when the model supports it.</small></span><input checked={preserveReasoning} onChange={(event) => setPreserveReasoning(event.target.checked)} type="checkbox" /></label>
             </> : <>
               <div className="capability-note"><Gauge size={16} /><span>Fields unavailable in <strong>{runtime?.name ?? 'the selected runtime'}</strong> are disabled.</span></div>

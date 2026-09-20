@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Download, FileArchive, Heart, LoaderCircle, Pause, Play, Search, X } from 'lucide-react'
+import { AlertCircle, Download, FileArchive, FileCog, Heart, LoaderCircle, Pause, Play, Search, X } from 'lucide-react'
 import { FormEvent, useState } from 'react'
-import { api, type DownloadJob, type ModelSearchResult } from './api'
+import { api, type DownloadJob, type LibraryModel, type ModelSearchResult } from './api'
 
 function formatBytes(bytes: number) {
   if (!bytes) return '0 B'
@@ -94,7 +94,11 @@ export function DiscoverPanel({ onQueued }: { onQueued: () => void }) {
   )
 }
 
-export function DownloadsPanel({ jobs }: { jobs: DownloadJob[] }) {
+export function DownloadsPanel({ jobs, library, onCreateProfile }: {
+  jobs: DownloadJob[]
+  library: LibraryModel[]
+  onCreateProfile: (model: LibraryModel) => void
+}) {
   const queryClient = useQueryClient()
   const action = useMutation({
     mutationFn: ({ job, operation }: { job: DownloadJob; operation: 'pause' | 'resume' | 'cancel' }) =>
@@ -109,12 +113,14 @@ export function DownloadsPanel({ jobs }: { jobs: DownloadJob[] }) {
       {jobs.length ? <div className="download-list">{jobs.map((job) => {
         const percent = job.total_bytes ? Math.min(100, Math.round(job.completed_bytes / job.total_bytes * 100)) : 0
         const pending = action.isPending && action.variables?.job.id === job.id
+        const model = library.find((item) => item.download_id === job.id)
         return <article className="download-row" key={job.id}>
           <span className="record-icon"><Download size={17} /></span>
           <div className="download-copy"><strong>{job.repo_id}</strong><span>{job.group_key} · {job.revision.slice(0, 9)}</span>{job.error && <small>{job.error}</small>}</div>
           <div className="download-progress"><div><span style={{ width: `${percent}%` }} /></div><small>{formatBytes(job.completed_bytes)} / {formatBytes(job.total_bytes)} · {percent}%</small></div>
           <span className={`state-pill ${job.state}`}>{job.state}</span>
           <div className="download-actions">
+            {model && <button aria-label={`Create profile for ${job.repo_id}`} className="button secondary compact" onClick={() => onCreateProfile(model)} type="button"><FileCog size={14} /> Configure</button>}
             {job.state === 'downloading' && <button aria-label={`Pause ${job.repo_id}`} className="icon-button small" disabled={pending} onClick={() => action.mutate({ job, operation: 'pause' })} title="Pause download" type="button"><Pause size={15} /></button>}
             {['paused', 'failed'].includes(job.state) && <button aria-label={`Resume ${job.repo_id}`} className="icon-button small" disabled={pending} onClick={() => action.mutate({ job, operation: 'resume' })} title="Resume download" type="button"><Play size={15} /></button>}
             {['queued', 'downloading', 'paused'].includes(job.state) && <button aria-label={`Cancel ${job.repo_id}`} className="icon-button small danger-icon" disabled={pending} onClick={() => action.mutate({ job, operation: 'cancel' })} title="Cancel download" type="button"><X size={16} /></button>}

@@ -93,6 +93,16 @@ export interface DownloadJob {
   error: string | null
 }
 
+export interface LibraryModel {
+  download_id: string
+  repo_id: string
+  revision: string
+  group_key: string
+  primary_path: string
+  file_count: number
+  total_bytes: number
+}
+
 export interface RuntimeRegistration {
   name: string
   executable_path: string
@@ -134,6 +144,7 @@ export const api = {
   profiles: () => request<Profile[]>('/api/profiles'),
   tokens: () => request<AccessToken[]>('/api/tokens'),
   downloads: () => request<DownloadJob[]>('/api/downloads'),
+  library: () => request<LibraryModel[]>('/api/library'),
   models: () => request<RouterModel[]>('/api/server/models'),
   searchModels: (query: string, sort = 'downloads') => {
     const parameters = new URLSearchParams({ q: query, sort })

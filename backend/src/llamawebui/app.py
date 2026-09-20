@@ -45,6 +45,7 @@ from llamawebui.services.event_broker import (
     EventCursorError,
 )
 from llamawebui.services.huggingface_catalog import Catalog, HuggingFaceCatalog
+from llamawebui.services.model_library import ModelLibrary
 from llamawebui.services.profile_registry import (
     ProfileAliasExistsError,
     ProfileNotFoundError,
@@ -317,6 +318,9 @@ def create_app(
         app.state.profile_registry = ProfileRegistry(engine)
         app.state.token_registry = TokenRegistry(engine, app_settings.data_dir)
         app.state.download_registry = DownloadRegistry(engine, app_settings.data_dir / "models")
+        app.state.model_library = ModelLibrary(
+            app.state.download_registry, app_settings.data_dir / "models"
+        )
         token = app_settings.hf_token.get_secret_value() if app_settings.hf_token else None
         app.state.huggingface_catalog = catalog or HuggingFaceCatalog(token)
         transfer = file_transfer or HuggingFaceFileTransfer(token)
@@ -857,6 +861,22 @@ def create_app(
     async def list_downloads(request: Request) -> list[dict[str, object]]:
         registry = cast(DownloadRegistry, request.app.state.download_registry)
         return [_download_payload(job) for job in registry.list()]
+
+    @app.get("/api/library")
+    async def list_library_models(request: Request) -> list[dict[str, object]]:
+        library = cast(ModelLibrary, request.app.state.model_library)
+        return [
+            {
+                "download_id": model.download_id,
+                "repo_id": model.repo_id,
+                "revision": model.revision,
+                "group_key": model.group_key,
+                "primary_path": str(model.primary_path),
+                "file_count": model.file_count,
+                "total_bytes": model.total_bytes,
+            }
+            for model in library.list()
+        ]
 
     @app.post("/api/downloads", status_code=status.HTTP_201_CREATED)
     async def create_download(

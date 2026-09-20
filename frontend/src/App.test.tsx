@@ -15,6 +15,7 @@ const responses: Record<string, unknown> = {
   '/api/profiles': [],
   '/api/tokens': [],
   '/api/downloads': [],
+  '/api/library': [],
 }
 
 afterEach(() => {
@@ -26,11 +27,13 @@ function renderApp({
   runtimeList = [],
   tokenList = [],
   downloadList = [],
+  libraryList = [],
   serverStatus = responses['/api/server/status'],
 }: {
   runtimeList?: unknown[]
   tokenList?: unknown[]
   downloadList?: unknown[]
+  libraryList?: unknown[]
   serverStatus?: unknown
 } = {}) {
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -58,6 +61,8 @@ function renderApp({
           ? tokenList
           : path === '/api/downloads'
             ? downloadList
+            : path === '/api/library'
+              ? libraryList
           : path === '/api/server/status'
             ? serverStatus
             : path === '/api/huggingface/models'
@@ -198,5 +203,20 @@ describe('App', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Resume owner/model-GGUF' }))
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/download-1/resume', { method: 'POST' }))
+  })
+
+  it('prefills a profile from a validated completed download', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CUDA', executable_path: 'E:\\llama-server.exe', build: 'b11053', backend: 'cuda', devices: ['CUDA0'], options: ['model', 'models-preset', 'ctx-size'], usable: true }
+    const job = { id: 'download-1', repo_id: 'owner/Qwen-Test-GGUF', revision: 'a'.repeat(40), group_key: 'Q4/model-Q4', files: [], destination: 'E:\\models', total_bytes: 1000, completed_bytes: 1000, state: 'completed', error: null }
+    const model = { download_id: 'download-1', repo_id: 'owner/Qwen-Test-GGUF', revision: 'a'.repeat(40), group_key: 'Q4/model-Q4', primary_path: 'E:\\models\\model-00001-of-00002.gguf', file_count: 2, total_bytes: 1000 }
+    renderApp({ downloadList: [job], libraryList: [model], runtimeList: [runtime] })
+    fireEvent.click(screen.getByRole('button', { name: 'Downloads' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create profile for owner/Qwen-Test-GGUF' }))
+
+    expect(await screen.findByRole('heading', { name: 'Create model profile' })).toBeInTheDocument()
+    expect(screen.getByLabelText(/API model alias/i)).toHaveValue('qwen-test')
+    expect(screen.getByLabelText(/Primary GGUF file/i)).toHaveValue(model.primary_path)
+    expect(await screen.findByLabelText(/Downloaded model/i)).toHaveValue('download-1')
+    expect(screen.getByLabelText('Runtime')).toHaveValue('runtime-1')
   })
 })
