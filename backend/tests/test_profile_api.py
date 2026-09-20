@@ -156,6 +156,44 @@ def test_profile_clone_copies_configuration_but_stays_disabled(tmp_path: Path) -
     assert padded.status_code == 422
 
 
+def test_profile_export_returns_portable_profile_json(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model = tmp_path / "model.gguf"
+    model.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "ctx-size", "no-reasoning-preserve"}),
+                raw_help="help",
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    settings = Settings(data_dir=tmp_path / "data")
+    with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        created = client.post(
+            "/api/profiles",
+            json={**_profile_payload(runtime_id, model), "alias": "export-model"},
+        )
+        exported = client.get(f"/api/profiles/{created.json()['id']}/export")
+
+    payload = exported.json()
+    assert exported.status_code == 200
+    assert exported.headers["content-disposition"] == 'attachment; filename="export-model.json"'
+    assert payload["format"] == "llamawebui-profile-v1"
+    assert payload["alias"] == "export-model"
+    assert payload["configuration"]["ctx_size"] == 4096
+    assert "export-model" in payload["preset"]
+
+
 def test_profile_update_populates_and_persists_all_editor_settings(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()

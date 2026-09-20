@@ -231,6 +231,10 @@ export const api = {
     request<Profile>(`/api/profiles/${profileId}`, { method: 'PUT', body: JSON.stringify(profile) }),
   cloneProfile: (profileId: string, alias: string) =>
     request<Profile>(`/api/profiles/${profileId}/clone`, { method: 'POST', body: JSON.stringify({ alias }) }),
+  exportProfile: (profileId: string) => fetch(`/api/profiles/${profileId}/export`).then((response) => {
+    if (!response.ok) throw new Error(response.statusText)
+    return response.blob()
+  }),
   deleteProfile: (profileId: string) =>
     request<void>(`/api/profiles/${profileId}`, { method: 'DELETE' }),
   createToken: (name: string, expiryNote?: string) =>

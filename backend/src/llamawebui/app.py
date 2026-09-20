@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, Field, field_validator
 
@@ -1098,6 +1098,30 @@ def create_app(
             registry.remove(profile_id)
         except ProfileNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    @app.get("/api/profiles/{profile_id}/export", response_class=PlainTextResponse)
+    async def export_profile(profile_id: str, request: Request) -> PlainTextResponse:
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        profile = next((item for item in registry.list() if item.id == profile_id), None)
+        if profile is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="model profile not found"
+            )
+        payload = json.dumps(
+            {
+                "format": "llamawebui-profile-v1",
+                "alias": profile.alias,
+                "configuration": profile.configuration,
+                "preset": profile.preset,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        return PlainTextResponse(
+            payload,
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{profile.alias}.json"'},
+        )
 
     @app.get("/api/huggingface/models")
     async def search_huggingface_models(
