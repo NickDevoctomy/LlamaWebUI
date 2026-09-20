@@ -1060,6 +1060,10 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ProfileAliasExistsError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        except ProfileValidationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
+            ) from error
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
         return _profile_payload(profile, artifacts)
 

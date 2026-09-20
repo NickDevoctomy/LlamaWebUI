@@ -154,3 +154,67 @@ def test_profile_clone_copies_configuration_but_stays_disabled(tmp_path: Path) -
     assert cloned.json()["enabled"] is False
     assert duplicate.status_code == 409
     assert padded.status_code == 422
+
+
+def test_profile_update_populates_and_persists_all_editor_settings(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model = tmp_path / "model.gguf"
+    model.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset(
+                    {
+                        "model",
+                        "ctx-size",
+                        "n-gpu-layers",
+                        "threads",
+                        "batch-size",
+                        "flash-attn",
+                        "no-reasoning-preserve",
+                    }
+                ),
+                raw_help="help",
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    settings = Settings(data_dir=tmp_path / "data")
+    with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        created = client.post(
+            "/api/profiles",
+            json={**_profile_payload(runtime_id, model), "alias": "original-model"},
+        )
+        updated = client.put(
+            f"/api/profiles/{created.json()['id']}",
+            json={
+                "alias": "edited-model",
+                "runtime_id": runtime_id,
+                "model_path": str(model),
+                "enabled": False,
+                "no_reasoning_preserve": False,
+                "n_gpu_layers": 42,
+                "ctx_size": 8192,
+                "threads": 8,
+                "batch_size": 512,
+                "flash_attn": "on",
+            },
+        )
+
+    assert updated.status_code == 200
+    payload = updated.json()
+    assert payload["alias"] == "edited-model"
+    assert payload["enabled"] is False
+    assert payload["configuration"]["n_gpu_layers"] == 42
+    assert payload["configuration"]["ctx_size"] == 8192
+    assert payload["configuration"]["threads"] == 8
+    assert payload["configuration"]["batch_size"] == 512
+    assert payload["configuration"]["flash_attn"] == "on"

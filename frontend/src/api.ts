@@ -13,7 +13,19 @@ export interface ServerStatus {
   endpoint: string
   logs: string[]
   timing: Record<string, number | string | null>
-  system: { disk_free_bytes: number; disk_total_bytes: number; disk_read_bytes: number | null; disk_write_bytes: number | null; gpu: { utilization_percent: number; memory_used_bytes: number; memory_total_bytes: number } | null; gpu_supported: boolean }
+  system: {
+    cpu_percent: number
+    ram_used_bytes: number
+    ram_total_bytes: number
+    network_received_bytes: number
+    network_sent_bytes: number
+    disk_free_bytes: number
+    disk_total_bytes: number
+    disk_read_bytes: number | null
+    disk_write_bytes: number | null
+    gpu: { utilization_percent: number; memory_used_bytes: number; memory_total_bytes: number } | null
+    gpu_supported: boolean
+  }
   arguments: string[]
 }
 

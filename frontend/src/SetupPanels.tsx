@@ -205,6 +205,26 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
     ? [selectedLibraryModel, ...library]
     : library
 
+  function resetEditor() {
+    setEditing(undefined)
+    setTab('basic')
+    setAlias('')
+    setModelPath('')
+    setSelectedLibraryModel(undefined)
+    setRuntimeId(runtimes.find((item) => item.usable)?.id ?? '')
+    setContextSize('')
+    setGpuLayers('')
+    setThreads('')
+    setBatchSize('')
+    setFlashAttention('')
+    setPreserveReasoning(true)
+  }
+
+  function openCreate() {
+    resetEditor()
+    setOpen(true)
+  }
+
   useEffect(() => {
     if (!runtimeId) {
       setRuntimeId(runtimes.find((item) => item.usable)?.id ?? '')
@@ -239,13 +259,12 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['profiles'] })
       setOpen(false)
-      setAlias('')
-      setModelPath('')
-      setSelectedLibraryModel(undefined)
+      resetEditor()
     },
   })
   const update = useMutation({
     mutationFn: () => api.updateProfile(editing!.id, {
+      ...(editing!.configuration as Partial<ProfileCreate>),
       alias,
       runtime_id: runtimeId,
       model_path: modelPath,
@@ -269,6 +288,15 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
     setAlias(profile.alias)
     setModelPath(profile.model_path)
     setRuntimeId(profile.runtime_id)
+    const configuration = profile.configuration
+    setContextSize(configuration.ctx_size == null ? '' : String(configuration.ctx_size))
+    setGpuLayers(configuration.n_gpu_layers == null ? '' : String(configuration.n_gpu_layers))
+    setThreads(configuration.threads == null ? '' : String(configuration.threads))
+    setBatchSize(configuration.batch_size == null ? '' : String(configuration.batch_size))
+    setFlashAttention(typeof configuration.flash_attn === 'string' ? configuration.flash_attn : '')
+    setPreserveReasoning(configuration.no_reasoning_preserve !== true)
+    setSelectedLibraryModel(library.find((item) => item.primary_path === profile.model_path))
+    setTab('basic')
     setOpen(true)
   }
   const deletion = useMutation({
@@ -299,7 +327,8 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
 
   function submit(event: FormEvent) {
     event.preventDefault()
-    creation.mutate()
+    if (editing) update.mutate()
+    else creation.mutate()
   }
 
   return (
@@ -307,7 +336,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
       <section className="data-panel">
         <div className="panel-heading">
           <div><h2>Model profiles</h2><p>Named models and launch settings published to the router.</p></div>
-          <button className="button primary compact" disabled={!runtimes.length} onClick={() => setOpen(true)} type="button"><Plus size={15} /> Create profile</button>
+          <button className="button primary compact" disabled={!runtimes.length} onClick={openCreate} type="button"><Plus size={15} /> Create profile</button>
         </div>
         {profiles.length ? <div className="record-list">{profiles.map((profile) => (
           <article className="record-row" key={profile.id}>
@@ -315,11 +344,11 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
             <div className="record-copy"><button className="record-link" onClick={() => editProfile(profile)} type="button"><strong>{profile.alias}</strong></button><span>{profile.model_path}</span></div>
             <div className="record-meta wide"><small>Runtime</small><span>{runtimes.find((item) => item.id === profile.runtime_id)?.name ?? 'Missing runtime'}</span></div>
             {profile.validation_state === 'broken' ? <button className="state-pill error" disabled={running || !profile.source_download} onClick={() => setRepairing(profile)} title={profile.source_download ? 'Repair missing model' : 'Model file is missing'} type="button">Broken</button> : <span className={`state-pill ${profile.enabled ? 'ready' : ''}`}>{profile.enabled ? 'Enabled' : 'Disabled'}</span>}
-            <div className="row-actions"><button className="button row-button" disabled={running} onClick={() => { setCloning(profile); setCloneAlias(`${profile.alias}-copy`) }} type="button"><Plus size={13} /> Clone</button><button aria-label={`Delete profile ${profile.alias}`} className="icon-button small danger-icon" disabled={running} onClick={() => setDeleting(profile)} title="Delete profile" type="button"><Trash2 size={16} /></button></div>
+            <div className="row-actions"><button className="button row-button" disabled={running} onClick={() => editProfile(profile)} type="button">Edit</button><button className="button row-button" disabled={running} onClick={() => { setCloning(profile); setCloneAlias(`${profile.alias}-copy`) }} type="button"><Plus size={13} /> Clone</button><button aria-label={`Delete profile ${profile.alias}`} className="icon-button small danger-icon" disabled={running} onClick={() => setDeleting(profile)} title="Delete profile" type="button"><Trash2 size={16} /></button></div>
           </article>
-        ))}</div> : <div className="empty"><FileCog size={28} /><strong>No profiles configured</strong><span>{runtimes.length ? 'Create a profile for a local GGUF model.' : 'Register a runtime before creating a model profile.'}</span>{runtimes.length > 0 && <button className="button primary" onClick={() => setOpen(true)} type="button"><Plus size={15} /> Create profile</button>}</div>}
+        ))}</div> : <div className="empty"><FileCog size={28} /><strong>No profiles configured</strong><span>{runtimes.length ? 'Create a profile for a local GGUF model.' : 'Register a runtime before creating a model profile.'}</span>{runtimes.length > 0 && <button className="button primary" onClick={openCreate} type="button"><Plus size={15} /> Create profile</button>}</div>}
       </section>
-      {open && <Dialog title={editing ? 'Edit model profile' : 'Create model profile'} description="Basic identity and capability-aware llama.cpp launch settings." onClose={() => setOpen(false)}>
+      {open && <Dialog title={editing ? 'Edit model profile' : 'Create model profile'} description="Basic identity and capability-aware llama.cpp launch settings." onClose={() => { setOpen(false); resetEditor() }}>
         <form onSubmit={submit}>
           <div className="segmented" role="tablist" aria-label="Profile settings"><button aria-selected={tab === 'basic'} onClick={() => setTab('basic')} role="tab" type="button">Basic</button><button aria-selected={tab === 'advanced'} onClick={() => setTab('advanced')} role="tab" type="button">Advanced</button></div>
           <div className="form-body">
@@ -349,7 +378,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
             </>}
             {creation.error && <div className="form-error"><AlertCircle size={15} /> {creation.error.message}</div>}
           </div>
-          <footer className="dialog-actions"><button className="button secondary" onClick={() => setOpen(false)} type="button">Cancel</button><button className="button primary" disabled={creation.isPending || update.isPending || !aliasValid || !runtimeId || !modelPath.trim()} onClick={editing ? (event) => { event.preventDefault(); update.mutate() } : undefined} type="submit">{creation.isPending || update.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {editing ? 'Save profile' : 'Create profile'}</button></footer>
+          <footer className="dialog-actions"><button className="button secondary" onClick={() => { setOpen(false); resetEditor() }} type="button">Cancel</button><button className="button primary" disabled={creation.isPending || update.isPending || !aliasValid || !runtimeId || !modelPath.trim()} type="submit">{creation.isPending || update.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {editing ? 'Save profile' : 'Create profile'}</button></footer>
         </form>
       </Dialog>}
       {deleting && <Dialog title="Delete model profile?" description="This removes only the profile. Downloaded model files are not affected." onClose={() => setDeleting(undefined)}><div className="confirm-body"><Trash2 size={24} /><p>Profile <strong>{deleting.alias}</strong> will be permanently removed.</p>{deletion.error && <div className="form-error"><AlertCircle size={15} /> {deletion.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep profile</button><button className="button danger" disabled={deletion.isPending} onClick={() => deletion.mutate(deleting.id)} type="button">{deletion.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete profile</button></footer></Dialog>}
