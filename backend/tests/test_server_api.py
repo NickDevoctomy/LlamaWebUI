@@ -277,7 +277,7 @@ def test_server_restart_uses_previous_runtime_and_creates_new_run(tmp_path: Path
     model = tmp_path / "model.gguf"
     executable.touch()
     model.touch()
-    processes = iter((FakeProcess(1001), FakeProcess(1002)))
+    processes = iter((FakeProcess(1001), FakeProcess(1002), FakeProcess(1003)))
     launches: list[tuple[str, ...]] = []
 
     async def fake_probe(path: Path) -> RuntimeProbeResult:
@@ -376,10 +376,13 @@ def test_server_restart_can_switch_to_explicit_runtime(tmp_path: Path) -> None:
         restarted = client.post(
             "/api/server/restart", json={"runtime_id": second["id"]}
         )
+        rolled_back = client.post("/api/server/rollback")
         runtimes = client.get("/api/runtimes").json()
 
     assert restarted.status_code == 200
-    assert len(launches) == 2
+    assert rolled_back.status_code == 200
+    assert rolled_back.json()["pid"] == 1003
+    assert len(launches) == 3
     assert runtimes[0]["id"] in {first["id"], second["id"]}
 
 

@@ -65,3 +65,33 @@ def test_server_run_registry_records_failure_and_rejects_missing(tmp_path: Path)
     assert failed.ended_at is not None
     with pytest.raises(ServerRunNotFoundError):
         registry.update("missing", RouterState.STOPPED, pid=None, exit_code=0)
+
+
+def test_server_run_registry_previous_runtime_ignores_failed_runs(tmp_path: Path) -> None:
+    registry, first_runtime = create_registry(tmp_path)
+    second_runtime = "runtime-two"
+    with Session(registry._sessions.kw["bind"]) as session:
+        session.add(
+            RuntimeRecord(
+                id=second_runtime,
+                name="CUDA",
+                executable_path=str(tmp_path / "cuda.exe"),
+                build="2",
+                commit=None,
+                backend="cuda",
+                devices=[],
+                options=[],
+                help_sha256="1" * 64,
+                probe_error=None,
+            )
+        )
+        session.commit()
+    first = registry.create(first_runtime, "http://127.0.0.1:1234")
+    registry.update(first.id, RouterState.READY, pid=1, exit_code=None)
+    registry.update(first.id, RouterState.STOPPED, pid=None, exit_code=0)
+    second = registry.create(second_runtime, "http://127.0.0.1:1234")
+    registry.update(second.id, RouterState.CRASHED, pid=2, exit_code=1, error="failed")
+    current = registry.create(first_runtime, "http://127.0.0.1:1234")
+    registry.update(current.id, RouterState.READY, pid=3, exit_code=None)
+
+    assert registry.previous_runtime_id(current.id) is None

@@ -17,7 +17,7 @@ The delivery plan has eight numbered phases (`0` through `7`). Work has intentio
 | 1. Application foundation | Advanced partial | Python package, FastAPI, settings, SQLite, Alembic, portable data directory, unified bounded event broker with sequencing/replay/reconciliation, React/Vite operator shell | Publish remaining download/runtime/profile state changes, structured/redacted logging, single-instance lock, diagnostics, static frontend packaging |
 | 2. Runtime manager | Advanced partial | Register/list/get/reprobe/remove; option/device capability parsing; in-use deletion guard; GitHub release asset discovery, stable-to-build resolution, digest-checked staged archive extraction, archive path hardening, capability probing, atomic promotion, frontend release/asset selection, explicit runtime switching on restart, grouped companion archive installation, active-runtime removal protection, rollback restoration attempt, and candidate preflight validation | Rollback failure-path integration acceptance |
 | 3. Local library and profiles | In progress | Profile persistence/deletion, typed Qwen options, capability validation, shard completeness, deterministic atomic single/combined preset writing, validated completed-download projection, broken-profile health/provenance, profile prefill and exact re-download repair | General directory scanning, GGUF metadata, durable logical model records, command import/export |
-| 4. Server lifecycle | In progress | Router state machine, validated argument vector, process-group launch, single-process supervisor, HTTP readiness polling, bounded log tail, crash observation, owned process-tree graceful/forced shutdown, serialized status/start/stop/restart API, durable run and restart-attempt history, safe port preflight, bounded crash recovery with rapid-failure suppression, native model list/load/unload/SSE APIs, lifecycle/model event publication through unified replayable `/api/events` | Real-runtime SSE acceptance |
+| 4. Server lifecycle | In progress | Router state machine, validated argument vector, process-group launch, single-process supervisor, HTTP readiness polling, bounded log tail, crash observation, owned process-tree graceful/forced shutdown, serialized status/start/stop/restart/rollback API, durable run and restart-attempt history, safe port preflight, bounded crash recovery with rapid-failure suppression, native model list/load/unload/SSE APIs, lifecycle/model event publication through unified replayable `/api/events` | Real-runtime SSE acceptance with bounded event capture |
 | 5. Hugging Face and downloads | Advanced partial | Search, repository manifests, quant/shard grouping, revision-pinned durable jobs, in-file progress, interruptible child-process transfers, resumable pause, prompt cancel cleanup, managed artifact deletion, exact pinned re-download, staging, size verification, atomic publication, startup reconciliation, terminal-job clearing, responsive Discover and Downloads workflows | Retry/backoff, periodic disk checks, checksum/ETag verification, event streaming, projector association, general library reconciliation |
 | 6. Tokens and onboarding | Advanced partial | Show-once token creation, HMAC metadata, last-four/name/expiry-note listing, permanent revocation, atomic restricted native key file, authenticated router launch/control calls, live-model OpenCode generation, Access frontend workflow | End-to-end authenticated connection tests remain blocked on an available model/profile |
 | 7. Hardening and release | Not started | Unit quality gate established | Packaging, CI/platform matrix, accessibility, backup/restore, offline behavior, operator docs |
@@ -99,6 +99,7 @@ Frontend foundation validation:
 - Runtime removal is confirmed in the UI, preserves installed files, and rejects removal of the active router runtime while retaining profile foreign-key protection
 - Server rollback selects the most recent distinct prior runtime, validates it through the normal start path, and attempts to restore the current runtime if rollback startup fails
 - Rollback history ignores prior crashed/error runs and rejects candidates without router support, enabled profiles, or valid model artifacts before stopping the current server
+- Deterministic rollback API coverage confirms successful return to a previous runtime; a live native `/models/sse` request reached the expected event-stream endpoint but PowerShell's buffered request timed out before receiving a frame, so bounded streaming capture remains required
 - Desktop and mobile layouts use stable metrics, table reduction, and fixed navigation without content overlap
 
 ## Important Constraints
@@ -128,7 +129,7 @@ Frontend foundation validation:
 
 ## Next Implementation Slice
 
-Perform rollback failure-path integration acceptance, then move to real-runtime SSE acceptance. Do not use the 93.7 GB target for routine acceptance.
+Add bounded live SSE capture and rollback failure-path integration acceptance. Do not use the 93.7 GB target for routine acceptance.
 
 Manual acceptance for transfer interruption:
 
