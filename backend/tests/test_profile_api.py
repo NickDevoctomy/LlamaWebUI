@@ -276,6 +276,46 @@ def test_profile_validate_reports_runtime_and_file_errors_without_mutation(
     assert listed.json()[0]["alias"] == "validate-model"
 
 
+def test_profile_reset_retains_identity_and_removes_overrides(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model = tmp_path / "model.gguf"
+    model.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "ctx-size", "n-gpu-layers", "no-reasoning-preserve"}),
+                raw_help="help",
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    settings = Settings(data_dir=tmp_path / "data")
+    with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        created = client.post(
+            "/api/profiles",
+            json={
+                **_profile_payload(runtime_id, model),
+                "alias": "reset-model",
+                "n_gpu_layers": 12,
+            },
+        )
+        reset = client.post(f"/api/profiles/{created.json()['id']}/reset")
+
+    assert reset.status_code == 200
+    assert reset.json()["alias"] == "reset-model"
+    assert reset.json()["model_path"] == str(model.resolve())
+    assert reset.json()["configuration"]["advanced"] == []
+    assert "ctx-size" not in reset.json()["preset"]
+
+
 def test_profile_update_populates_and_persists_all_editor_settings(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()

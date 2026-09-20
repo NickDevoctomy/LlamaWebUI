@@ -1147,6 +1147,23 @@ def create_app(
             errors = error.errors
         return {"valid": not errors, "errors": list(errors), "preset": profile.preset}
 
+    @app.post("/api/profiles/{profile_id}/reset")
+    async def reset_profile_configuration(profile_id: str, request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=409, detail="stop the router before resetting a profile"
+            )
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        try:
+            profile = registry.reset(profile_id)
+        except ProfileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(profile, artifacts)
+
     @app.get("/api/profiles/{profile_id}/export", response_class=PlainTextResponse)
     async def export_profile(profile_id: str, request: Request) -> PlainTextResponse:
         registry = cast(ProfileRegistry, request.app.state.profile_registry)

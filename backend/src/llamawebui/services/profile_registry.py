@@ -1,6 +1,7 @@
 """Persistence operations for validated model profiles."""
 
 from dataclasses import asdict
+from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import Engine, select
@@ -108,6 +109,32 @@ class ProfileRegistry:
             record.configuration["advanced"] = [asdict(option) for option in profile.advanced]
             record.preset = render_preset(profile, capabilities)
             record.enabled = enabled
+            session.commit()
+            return record
+
+    def reset(self, profile_id: str) -> ModelProfileRecord:
+        with self._sessions() as session:
+            record = session.get(ModelProfileRecord, profile_id)
+            if record is None:
+                raise ProfileNotFoundError(f"model profile not found: {profile_id}")
+            runtime = session.get(RuntimeRecord, record.runtime_id)
+            if runtime is None:
+                raise RuntimeNotFoundError(f"runtime not found: {record.runtime_id}")
+            configuration = dict(record.configuration)
+            defaults = {
+                key: configuration[key]
+                for key in ("alias", "model_path")
+                if key in configuration
+            }
+            reset_profile = ModelProfile(
+                alias=record.alias,
+                model_path=Path(record.model_path),
+            )
+            capabilities = RuntimeCapabilities(options=frozenset(runtime.options), raw_help="")
+            record.configuration = asdict(reset_profile) | defaults
+            record.configuration["model_path"] = record.model_path
+            record.configuration["advanced"] = []
+            record.preset = render_preset(reset_profile, capabilities)
             session.commit()
             return record
 

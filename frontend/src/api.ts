@@ -242,6 +242,8 @@ export const api = {
     request<Profile>(`/api/profiles/${profileId}`, { method: 'PUT', body: JSON.stringify(profile) }),
   validateProfile: (profileId: string) =>
     request<{ valid: boolean; errors: string[]; preset: string }>(`/api/profiles/${profileId}/validate`, { method: 'POST' }),
+  resetProfile: (profileId: string) =>
+    request<Profile>(`/api/profiles/${profileId}/reset`, { method: 'POST' }),
   cloneProfile: (profileId: string, alias: string) =>
     request<Profile>(`/api/profiles/${profileId}/clone`, { method: 'POST', body: JSON.stringify({ alias }) }),
   exportProfile: (profileId: string) => fetch(`/api/profiles/${profileId}/export`).then((response) => {
