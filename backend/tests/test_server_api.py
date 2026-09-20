@@ -386,6 +386,64 @@ def test_server_restart_can_switch_to_explicit_runtime(tmp_path: Path) -> None:
     assert runtimes[0]["id"] in {first["id"], second["id"]}
 
 
+def test_server_rollback_restores_current_runtime_when_candidate_fails(
+    tmp_path: Path,
+) -> None:
+    executable_one = tmp_path / "llama-one.exe"
+    executable_two = tmp_path / "llama-two.exe"
+    model = tmp_path / "model.gguf"
+    executable_one.touch()
+    executable_two.touch()
+    model.touch()
+    processes = iter((FakeProcess(1001), FakeProcess(1002), FakeProcess(1003)))
+    launches: list[tuple[str, ...]] = []
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build=path.stem, commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "models-preset"}), raw_help="help"
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        launches.append(tuple(arguments))
+        if len(launches) == 3:
+            raise OSError("candidate runtime failed")
+        return next(processes)
+
+    app = create_app(
+        Settings(data_dir=tmp_path / "data"),
+        runtime_prober=fake_probe,
+        router_supervisor=RouterSupervisor(launcher, available_port),
+        router_port_probe=available_port,
+    )
+    with TestClient(app) as client:
+        first = client.post(
+            "/api/runtimes", json={"name": "One", "executable_path": str(executable_one)}
+        ).json()
+        second = client.post(
+            "/api/runtimes", json={"name": "Two", "executable_path": str(executable_two)}
+        ).json()
+        for alias, runtime_id in (("one", first["id"]), ("two", second["id"])):
+            client.post(
+                "/api/profiles",
+                json={"alias": alias, "runtime_id": runtime_id, "model_path": str(model)},
+            )
+        client.post("/api/server/start", json={"runtime_id": first["id"]})
+        client.post("/api/server/restart", json={"runtime_id": second["id"]})
+        response = client.post("/api/server/rollback")
+        status_response = client.get("/api/server/status")
+
+    assert response.status_code == 502
+    assert "candidate runtime failed" in response.json()["detail"]
+    assert status_response.json()["state"] == "ready"
+    assert len(launches) == 4
+
+
 def test_server_start_records_occupied_port_without_launching(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     model = tmp_path / "model.gguf"

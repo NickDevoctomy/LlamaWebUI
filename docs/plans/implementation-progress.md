@@ -100,7 +100,7 @@ Frontend foundation validation:
 - Server rollback selects the most recent distinct prior runtime, validates it through the normal start path, and attempts to restore the current runtime if rollback startup fails
 - Rollback history ignores prior crashed/error runs and rejects candidates without router support, enabled profiles, or valid model artifacts before stopping the current server
 - Deterministic rollback API coverage confirms successful return to a previous runtime; a live native `/models/sse` request reached the expected event-stream endpoint but PowerShell's buffered request timed out before receiving a frame, so bounded streaming capture remains required
-- Bounded SSE collection is now covered by deterministic transport tests and safely stops after a frame limit or timeout without leaking the upstream stream
+- Bounded SSE collection is now covered by deterministic transport tests and safely stops after a frame limit or timeout without leaking the upstream stream; live curl acceptance reached the native event endpoint but received no frame within five seconds
 - Desktop and mobile layouts use stable metrics, table reduction, and fixed navigation without content overlap
 
 ## Important Constraints
@@ -130,7 +130,7 @@ Frontend foundation validation:
 
 ## Next Implementation Slice
 
-Use the bounded collector for live SSE frame capture and add rollback failure-path integration acceptance. Do not use the 93.7 GB target for routine acceptance.
+Keep the bounded collector as the live SSE acceptance path and investigate why the idle native stream emits no immediate frame; rollback failure-path integration acceptance is now covered deterministically. Do not use the 93.7 GB target for routine acceptance.
 
 Manual acceptance for transfer interruption:
 
