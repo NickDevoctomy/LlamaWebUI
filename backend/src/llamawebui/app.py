@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -45,6 +46,11 @@ from llamawebui.services.event_broker import (
     EventCursorError,
 )
 from llamawebui.services.huggingface_catalog import Catalog, HuggingFaceCatalog
+from llamawebui.services.llama_release_installer import (
+    GitHubReleaseClient,
+    ReleaseInstallError,
+    RuntimeInstaller,
+)
 from llamawebui.services.model_artifact_registry import ModelArtifactError, ModelArtifactRegistry
 from llamawebui.services.model_library import ModelLibrary
 from llamawebui.services.profile_registry import (
@@ -76,6 +82,12 @@ from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRe
 class RuntimeRegistrationRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     executable_path: str
+    backend: str | None = Field(default=None, max_length=50)
+
+
+class RuntimeInstallRequest(BaseModel):
+    tag: str = Field(min_length=1, max_length=100)
+    asset_name: str = Field(min_length=1, max_length=300)
     backend: str | None = Field(default=None, max_length=50)
 
 
@@ -333,6 +345,12 @@ def create_app(
         upgrade_database(app_settings.database_path)
         engine = create_database_engine(app_settings.database_path)
         app.state.runtime_registry = RuntimeRegistry(engine, prober=runtime_prober)
+        app.state.release_client = GitHubReleaseClient()
+        app.state.runtime_installer = RuntimeInstaller(
+            app_settings.data_dir,
+            prober=runtime_prober,
+            releases=app.state.release_client,
+        )
         app.state.profile_registry = ProfileRegistry(engine)
         app.state.token_registry = TokenRegistry(engine, app_settings.data_dir)
         app.state.download_registry = DownloadRegistry(engine, app_settings.data_dir / "models")
@@ -760,6 +778,53 @@ def create_app(
     async def list_runtimes(request: Request) -> list[dict[str, object]]:
         registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
         return [_runtime_payload(runtime) for runtime in registry.list()]
+
+    @app.get("/api/runtimes/releases/{tag}")
+    async def get_runtime_release(tag: str, request: Request) -> dict[str, object]:
+        client = cast(GitHubReleaseClient, request.app.state.release_client)
+        try:
+            release = await client.release(tag)
+        except ReleaseInstallError as error:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)
+            ) from error
+        return {
+            "tag": release.tag,
+            "stable_tag": release.stable_tag,
+            "assets": [
+                {"name": asset.name, "url": asset.url, "size": asset.size, "digest": asset.digest}
+                for asset in release.assets
+            ],
+        }
+
+    @app.post("/api/runtimes/install", status_code=status.HTTP_201_CREATED)
+    async def install_runtime(
+        install_request: RuntimeInstallRequest, request: Request
+    ) -> dict[str, object]:
+        installer = cast(RuntimeInstaller, request.app.state.runtime_installer)
+        registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        try:
+            destination = await installer.install(
+                tag=install_request.tag,
+                asset_name=install_request.asset_name,
+                backend=install_request.backend,
+            )
+            executable_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
+            executable = next(destination.rglob(executable_name), None)
+            if executable is None:
+                raise ReleaseInstallError("installed runtime executable was not found")
+            runtime = await registry.register(
+                name=f"{install_request.tag} {install_request.backend or 'auto'}",
+                executable_path=executable,
+                backend=install_request.backend,
+            )
+        except ReleaseInstallError as error:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)
+            ) from error
+        except (FileNotFoundError, RuntimeAlreadyRegisteredError) as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return _runtime_payload(runtime)
 
     @app.get("/api/runtimes/{runtime_id}")
     async def get_runtime(runtime_id: str, request: Request) -> dict[str, object]:

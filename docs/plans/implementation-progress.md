@@ -13,9 +13,9 @@ The delivery plan has eight numbered phases (`0` through `7`). Work has intentio
 
 | Phase | Status | Implemented | Important remaining work |
 | --- | --- | --- | --- |
-| 0. Feasibility spikes | Partial | Real llama.cpp b11053 CPU and b11060 CUDA probed; required Qwen flags confirmed; generated preset accepted; authenticated `/v1/models`, real CUDA load, non-streaming request, streaming termination, and Windows parent/child process-tree shutdown verified | Tool-call test, API-key reload behavior, older-build comparison |
+| 0. Feasibility spikes | Partial | Real llama.cpp b11053 CPU and b11060 CUDA probed; required Qwen flags confirmed; generated preset accepted; authenticated non-streaming, visible streaming, parseable tool-call, and Windows parent/child process-tree shutdown verified | API-key reload behavior, older-build comparison |
 | 1. Application foundation | Advanced partial | Python package, FastAPI, settings, SQLite, Alembic, portable data directory, unified bounded event broker with sequencing/replay/reconciliation, React/Vite operator shell | Publish remaining download/runtime/profile state changes, structured/redacted logging, single-instance lock, diagnostics, static frontend packaging |
-| 2. Runtime manager | Partial | Register/list/get/reprobe/remove; option/device capability parsing; in-use deletion guard | GitHub release discovery/install, stable-to-build resolution, digest verification, switching/rollback |
+| 2. Runtime manager | Advanced partial | Register/list/get/reprobe/remove; option/device capability parsing; in-use deletion guard; GitHub release asset discovery, stable-to-build resolution, digest-checked staged archive extraction, archive path hardening, capability probing, and atomic promotion | UI asset/backend selection, CUDA companion asset grouping, switching/rollback |
 | 3. Local library and profiles | In progress | Profile persistence/deletion, typed Qwen options, capability validation, shard completeness, deterministic atomic single/combined preset writing, validated completed-download projection, broken-profile health/provenance, profile prefill and exact re-download repair | General directory scanning, GGUF metadata, durable logical model records, command import/export |
 | 4. Server lifecycle | In progress | Router state machine, validated argument vector, process-group launch, single-process supervisor, HTTP readiness polling, bounded log tail, crash observation, owned process-tree graceful/forced shutdown, serialized status/start/stop/restart API, durable run and restart-attempt history, safe port preflight, bounded crash recovery with rapid-failure suppression, native model list/load/unload/SSE APIs, lifecycle/model event publication through unified replayable `/api/events` | Real-runtime SSE acceptance |
 | 5. Hugging Face and downloads | Advanced partial | Search, repository manifests, quant/shard grouping, revision-pinned durable jobs, in-file progress, interruptible child-process transfers, resumable pause, prompt cancel cleanup, managed artifact deletion, exact pinned re-download, staging, size verification, atomic publication, startup reconciliation, terminal-job clearing, responsive Discover and Downloads workflows | Retry/backoff, periodic disk checks, checksum/ETag verification, event streaming, projector association, general library reconciliation |
@@ -72,6 +72,7 @@ Frontend foundation validation:
 - Artifact deletion is group-scoped even when multiple download jobs share one repository/revision directory; profile health evaluates every matching provenance record and prefers a valid completed artifact, preventing stale duplicate jobs from marking healthy profiles Broken
 - Download progress: active Hugging Face hashed/ETag-qualified incomplete files are discovered under each job's isolated local-dir cache, sampled every 250 ms, and persisted as monotonic byte counts while each file transfers
 - Transfer interruption: each `hf_hub_download` call runs in an argument-vector child process; pause/cancel persist state, kill and reap the active transfer before returning, pause retains the isolated staging tree for Hub range resume, and cancel removes that tree after termination
+- Runtime installation: `services/llama_release_installer.py` resolves stable release pointers through `nightly-tag.txt`, enumerates published assets, verifies SHA-256 digests, rejects unsafe archive paths, probes staged runtimes, and atomically promotes validated payloads; `/api/runtimes/releases/{tag}` and `/api/runtimes/install` expose the control-plane surface
 
 ## Implemented Frontend Surfaces
 
@@ -121,7 +122,7 @@ Frontend foundation validation:
 
 ## Next Implementation Slice
 
-Finish authenticated connection acceptance with visible non-streaming output, visible streaming content, and a simple parseable tool call using the registered b11060 CUDA runtime and existing `qwen3.8-27b-cuda` profile. Then implement official llama.cpp release discovery/install, including stable-to-build resolution, CUDA companion assets, digest verification, staging, probing, and atomic promotion. Do not use the 93.7 GB target for routine acceptance.
+Add the runtime installer UI and backend asset selection, including CUDA companion asset grouping, then implement runtime switching/rollback. Do not use the 93.7 GB target for routine acceptance.
 
 Manual acceptance for transfer interruption:
 
@@ -145,6 +146,7 @@ Measured CUDA/router acceptance on 2026-09-20:
 - The managed router reached Ready in router mode and advertised exactly one preset. Native load reached Loaded; metadata reported 27,320,697,856 parameters, 32,768 active context, and `IQ4_XS - 4.25 bpw`. The worker process was `E:\llama-cuda-b11053\llama-server.exe`.
 - A random bearer token was rejected with 401. Using the existing local key without printing it, authenticated `/v1/models` returned `qwen3.8-27b-cuda`; a non-streaming chat request completed at the protocol level, and a streaming request produced 19 SSE events plus `[DONE]` at 20.66 predicted tokens/s. The low token cap was consumed by reasoning, so exact visible response text remains to be accepted with a larger output budget or reasoning disabled.
 - Generated OpenCode configuration contained `qwen3.8-27b-cuda` and the `LLAMA_WEB_UI_API_KEY` environment placeholder, with no raw `lwui_` token. The model was unloaded and router stopped after acceptance.
+- Authenticated non-streaming chat returned visible `CONNECTION_OK`; authenticated streaming returned visible `STREAM_OK` and `[DONE]`; a function-tool request returned the parseable `get_weather` call with `{"city":"Paris"}`. The model was unloaded and router stopped after acceptance.
 
 Manual acceptance for terminal-job clearing:
 
