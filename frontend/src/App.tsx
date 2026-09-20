@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
+  AlertCircle,
   Box,
   ChevronDown,
   CircleGauge,
@@ -11,6 +12,7 @@ import {
   FolderCog,
   KeyRound,
   Library,
+  LoaderCircle,
   Play,
   RefreshCw,
   RotateCcw,
@@ -20,12 +22,13 @@ import {
   ShieldCheck,
   Square,
   TerminalSquare,
+  Trash2,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { AccessPanel } from './AccessPanel'
 import { api, type LibraryModel, type Profile, type RouterModel, type Runtime } from './api'
 import { DiscoverPanel, DownloadsPanel } from './DiscoveryPanels'
-import { ProfilePanel, RuntimePanel } from './SetupPanels'
+import { Dialog, ProfilePanel, RuntimePanel } from './SetupPanels'
 
 const navigation = [
   ['Models', Library],
@@ -224,13 +227,14 @@ function App() {
               onConfigure={(model) => { setProfileSeed(model); setSection('Profiles') }}
               onDiscover={() => setSection('Discover')}
               onRefresh={() => { void refreshModels() }}
+              running={running}
             />
           ) : section === 'Server' ? (
             <ServerPanel status={status.data} runtimes={runtimes.data ?? []} selectedRuntime={runtime?.id ?? ''} onRuntime={setSelectedRuntime} />
           ) : section === 'Runtimes' ? (
             <RuntimePanel runtimes={runtimes.data ?? []} />
           ) : section === 'Profiles' ? (
-            <ProfilePanel initialModel={profileSeed} library={library.data ?? []} onInitialModelConsumed={() => setProfileSeed(undefined)} profiles={profiles.data ?? []} runtimes={runtimes.data ?? []} />
+            <ProfilePanel initialModel={profileSeed} library={library.data ?? []} onInitialModelConsumed={() => setProfileSeed(undefined)} profiles={profiles.data ?? []} running={running} runtimes={runtimes.data ?? []} />
           ) : section === 'Access' ? (
             <AccessPanel running={running} tokens={tokens.data ?? []} />
           ) : section === 'Discover' ? (
@@ -246,15 +250,28 @@ function App() {
   )
 }
 
-function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh }: {
+function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh, running }: {
   models: LibraryModel[]
   profiles: Profile[]
   onConfigure: (model: LibraryModel) => void
   onDiscover: () => void
   onRefresh: () => void
+  running: boolean
 }) {
+  const [deleting, setDeleting] = useState<LibraryModel>()
+  const queryClient = useQueryClient()
+  const removal = useMutation({
+    mutationFn: (downloadId: string) => api.deleteLibraryModel(downloadId),
+    onSuccess: async () => {
+      setDeleting(undefined)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['library'] }),
+        queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+      ])
+    },
+  })
   return (
-    <section className="data-panel">
+    <><section className="data-panel">
       <div className="panel-heading">
         <div><h2>Downloaded models</h2><p>Validated GGUF models in the application-managed library.</p></div>
         <div className="panel-heading-actions">
@@ -276,7 +293,7 @@ function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh }: {
                   <td>{formatBytes(model.total_bytes)}</td>
                   <td>{model.file_count} {model.file_count === 1 ? 'file' : 'files'}</td>
                   <td className="mono" title={model.revision}>{model.revision.slice(0, 9)}</td>
-                  <td><div className="row-actions">{configured ? <span className="profile-tag">Configured</span> : <button className="button row-button" onClick={() => onConfigure(model)} type="button"><FolderCog size={13} /> Configure</button>}</div></td>
+                  <td><div className="row-actions">{configured ? <span className="profile-tag">Configured</span> : <button className="button row-button" onClick={() => onConfigure(model)} type="button"><FolderCog size={13} /> Configure</button>}<button aria-label={`Delete ${model.repo_id} ${model.group_key}`} className="icon-button small danger-icon" disabled={running} onClick={() => setDeleting(model)} title="Delete downloaded model" type="button"><Trash2 size={15} /></button></div></td>
                 </tr>
               )
             })}
@@ -285,7 +302,7 @@ function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh }: {
         {!models.length && <div className="empty"><Library size={28} /><strong>No downloaded models</strong><span>Use Discover to download a complete GGUF model.</span></div>}
       </div>
       <div className="panel-footer"><span>{models.length} downloaded models</span><span><ShieldCheck size={14} /> Validated files only</span></div>
-    </section>
+    </section>{deleting && <Dialog title="Delete downloaded model?" description="The downloaded files will be removed, but associated profiles will be preserved as broken." onClose={() => setDeleting(undefined)}><div className="confirm-body"><Trash2 size={24} /><p><strong>{deleting.repo_id}</strong> · <span className="mono">{deleting.group_key}</span> at revision <span className="mono">{deleting.revision.slice(0, 9)}</span> will be deleted. Re-downloading this exact artifact will repair its profiles.</p>{removal.error && <div className="form-error"><AlertCircle size={15} /> {removal.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep model</button><button className="button danger" disabled={removal.isPending} onClick={() => removal.mutate(deleting.download_id)} type="button">{removal.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete model</button></footer></Dialog>}</>
   )
 }
 

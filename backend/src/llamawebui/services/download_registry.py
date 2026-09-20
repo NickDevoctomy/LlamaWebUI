@@ -147,6 +147,18 @@ class DownloadRegistry:
             session.commit()
             return record
 
+    def reset_for_redownload(self, job_id: str) -> DownloadJobRecord:
+        with self._sessions() as session:
+            record = self._get(session, job_id)
+            if DownloadState(record.state) is not DownloadState.COMPLETED:
+                raise ValueError("only completed downloads can be re-downloaded")
+            record.state = DownloadState.QUEUED
+            record.completed_bytes = 0
+            record.error = None
+            record.hidden = False
+            session.commit()
+            return record
+
     @staticmethod
     def _get(session: Session, job_id: str) -> DownloadJobRecord:
         record = session.get(DownloadJobRecord, job_id)

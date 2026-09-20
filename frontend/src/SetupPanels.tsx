@@ -3,10 +3,13 @@ import {
   AlertCircle,
   Check,
   Cpu,
+  Download,
   FileCog,
   Gauge,
   LoaderCircle,
   Plus,
+  ShieldAlert,
+  Trash2,
   X,
 } from 'lucide-react'
 import { type FormEvent, useEffect, useState } from 'react'
@@ -109,12 +112,13 @@ function suggestedAlias(model: LibraryModel) {
   return repository.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-|-$/g, '').slice(0, 64)
 }
 
-export function ProfilePanel({ profiles, runtimes, library, initialModel, onInitialModelConsumed }: {
+export function ProfilePanel({ profiles, runtimes, library, initialModel, onInitialModelConsumed, running }: {
   profiles: Profile[]
   runtimes: Runtime[]
   library: LibraryModel[]
   initialModel?: LibraryModel
   onInitialModelConsumed: () => void
+  running: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<'basic' | 'advanced'>('basic')
@@ -128,6 +132,8 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
   const [batchSize, setBatchSize] = useState('')
   const [flashAttention, setFlashAttention] = useState('')
   const [preserveReasoning, setPreserveReasoning] = useState(true)
+  const [deleting, setDeleting] = useState<Profile>()
+  const [repairing, setRepairing] = useState<Profile>()
   const queryClient = useQueryClient()
   const runtime = runtimes.find((item) => item.id === runtimeId)
   const supports = (option: string) => runtime?.options.includes(option) ?? false
@@ -175,6 +181,23 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
       setSelectedLibraryModel(undefined)
     },
   })
+  const deletion = useMutation({
+    mutationFn: (profileId: string) => api.deleteProfile(profileId),
+    onSuccess: async () => {
+      setDeleting(undefined)
+      await queryClient.invalidateQueries({ queryKey: ['profiles'] })
+    },
+  })
+  const redownload = useMutation({
+    mutationFn: (downloadId: string) => api.redownload(downloadId),
+    onSuccess: async () => {
+      setRepairing(undefined)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+        queryClient.invalidateQueries({ queryKey: ['downloads'] }),
+      ])
+    },
+  })
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -193,7 +216,8 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
             <span className="record-icon"><FileCog size={18} /></span>
             <div className="record-copy"><strong>{profile.alias}</strong><span>{profile.model_path}</span></div>
             <div className="record-meta wide"><small>Runtime</small><span>{runtimes.find((item) => item.id === profile.runtime_id)?.name ?? 'Missing runtime'}</span></div>
-            <span className={`state-pill ${profile.enabled ? 'ready' : ''}`}>{profile.enabled ? 'Enabled' : 'Disabled'}</span>
+            {profile.validation_state === 'broken' ? <button className="state-pill error" disabled={running || !profile.source_download} onClick={() => setRepairing(profile)} title={profile.source_download ? 'Repair missing model' : 'Model file is missing'} type="button">Broken</button> : <span className={`state-pill ${profile.enabled ? 'ready' : ''}`}>{profile.enabled ? 'Enabled' : 'Disabled'}</span>}
+            <button aria-label={`Delete profile ${profile.alias}`} className="icon-button small danger-icon" disabled={running} onClick={() => setDeleting(profile)} title="Delete profile" type="button"><Trash2 size={16} /></button>
           </article>
         ))}</div> : <div className="empty"><FileCog size={28} /><strong>No profiles configured</strong><span>{runtimes.length ? 'Create a profile for a local GGUF model.' : 'Register a runtime before creating a model profile.'}</span>{runtimes.length > 0 && <button className="button primary" onClick={() => setOpen(true)} type="button"><Plus size={15} /> Create profile</button>}</div>}
       </section>
@@ -230,6 +254,8 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
           <footer className="dialog-actions"><button className="button secondary" onClick={() => setOpen(false)} type="button">Cancel</button><button className="button primary" disabled={creation.isPending || !aliasValid || !runtimeId || !modelPath.trim()} type="submit">{creation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Create profile</button></footer>
         </form>
       </Dialog>}
+      {deleting && <Dialog title="Delete model profile?" description="This removes only the profile. Downloaded model files are not affected." onClose={() => setDeleting(undefined)}><div className="confirm-body"><Trash2 size={24} /><p>Profile <strong>{deleting.alias}</strong> will be permanently removed.</p>{deletion.error && <div className="form-error"><AlertCircle size={15} /> {deletion.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep profile</button><button className="button danger" disabled={deletion.isPending} onClick={() => deletion.mutate(deleting.id)} type="button">{deletion.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete profile</button></footer></Dialog>}
+      {repairing?.source_download && <Dialog title="Re-download missing model?" description="The exact pinned model artifact will be downloaded again and repair this profile." onClose={() => setRepairing(undefined)}><div className="confirm-body"><ShieldAlert size={24} /><p><strong>{repairing.source_download.repo_id}</strong> · <span className="mono">{repairing.source_download.group_key}</span> is missing for profile <strong>{repairing.alias}</strong>. Re-download revision <span className="mono">{repairing.source_download.revision.slice(0, 9)}</span>?</p>{redownload.error && <div className="form-error"><AlertCircle size={15} /> {redownload.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setRepairing(undefined)} type="button">Not now</button><button className="button primary" disabled={redownload.isPending} onClick={() => redownload.mutate(repairing.source_download!.id)} type="button">{redownload.isPending ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />} Re-download</button></footer></Dialog>}
     </>
   )
 }

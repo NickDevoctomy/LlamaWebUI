@@ -158,6 +158,35 @@ describe('App', () => {
     expect(screen.getByLabelText(/Primary GGUF file/i)).toHaveValue(model.primary_path)
   })
 
+  it('deletes a downloaded model without deleting its profile', async () => {
+    const model = { download_id: 'download-1', repo_id: 'owner/Qwen-Test-GGUF', revision: 'a'.repeat(40), group_key: 'Q4/model-Q4', primary_path: 'E:\\models\\model.gguf', file_count: 1, total_bytes: 1000 }
+    const profile = { id: 'profile-1', alias: 'qwen-test', runtime_id: 'runtime-1', model_path: model.primary_path, configuration: {}, enabled: true, validation_state: 'available', source_download: { id: model.download_id, repo_id: model.repo_id, revision: model.revision, group_key: model.group_key, file_count: 1, total_bytes: 1000 } }
+    const fetchMock = renderApp({ libraryList: [model], profileList: [profile] })
+
+    fireEvent.click(await screen.findByRole('button', { name: `Delete ${model.repo_id} ${model.group_key}` }))
+    expect(screen.getByRole('heading', { name: 'Delete downloaded model?' })).toBeInTheDocument()
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete model' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/library/download-1', { method: 'DELETE' }))
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/profiles/profile-1', expect.anything())
+  })
+
+  it('repairs and deletes a broken profile', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CUDA', executable_path: 'E:\\llama-server.exe', build: 'b11060', backend: 'cuda', devices: [], options: ['model'], usable: true }
+    const source = { id: 'download-1', repo_id: 'owner/Qwen-Test-GGUF', revision: 'a'.repeat(40), group_key: 'Q4/model-Q4', file_count: 1, total_bytes: 1000 }
+    const profile = { id: 'profile-1', alias: 'qwen-test', runtime_id: 'runtime-1', model_path: 'E:\\models\\missing.gguf', configuration: {}, enabled: true, validation_state: 'broken', source_download: source }
+    const fetchMock = renderApp({ profileList: [profile], runtimeList: [runtime] })
+    fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Broken' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Re-download' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/download-1/redownload', { method: 'POST' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete profile qwen-test' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete profile' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/profiles/profile-1', { method: 'DELETE' }))
+  })
+
   it('registers and probes a local runtime', async () => {
     const fetchMock = renderApp()
     fireEvent.click(screen.getByRole('button', { name: 'Runtimes' }))

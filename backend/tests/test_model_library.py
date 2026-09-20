@@ -7,9 +7,11 @@ from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.domain.download_job import DownloadState
 from llamawebui.domain.model_manifest import GgufGroup, HubFile
+from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
 from llamawebui.services.download_registry import DownloadRegistry
 from llamawebui.services.huggingface_catalog import RepositoryManifest
 from llamawebui.services.model_library import ModelLibrary
+from llamawebui.services.runtime_probe import RuntimeProbeResult
 
 
 def test_library_projects_only_complete_valid_downloads(tmp_path: Path) -> None:
@@ -97,3 +99,57 @@ def test_library_endpoint_returns_primary_profile_path(tmp_path: Path) -> None:
             "total_bytes": 4,
         }
     ]
+
+
+def test_library_delete_preserves_profile_and_exposes_redownload(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path,
+            version=RuntimeVersion(build="1", commit=None, raw=""),
+            capabilities=RuntimeCapabilities(options=frozenset({"model"}), raw_help=""),
+            devices_output=None,
+            errors=(),
+        )
+
+    app = create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
+    with TestClient(app) as client:
+        registry = app.state.download_registry
+        manifest = RepositoryManifest(
+            repo_id="owner/model-GGUF",
+            revision="c" * 40,
+            groups=(
+                GgufGroup(
+                    key="model-Q4",
+                    quantization="Q4",
+                    files=(HubFile("model-Q4.gguf", 4),),
+                    total_size=4,
+                    complete=True,
+                ),
+            ),
+        )
+        job = registry.create(manifest, "model-Q4")
+        destination = Path(job.destination)
+        destination.mkdir(parents=True)
+        model = destination / "model-Q4.gguf"
+        model.write_bytes(b"gguf")
+        registry.transition(job.id, DownloadState.DOWNLOADING)
+        registry.update_progress(job.id, 4)
+        registry.transition(job.id, DownloadState.COMPLETED)
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        created = client.post(
+            "/api/profiles",
+            json={"alias": "model", "runtime_id": runtime_id, "model_path": str(model)},
+        )
+        deleted = client.delete(f"/api/library/{job.id}")
+        profiles = client.get("/api/profiles")
+
+    assert created.status_code == 201
+    assert deleted.status_code == 200
+    assert not destination.exists()
+    assert profiles.json()[0]["validation_state"] == "broken"
+    assert profiles.json()[0]["source_download"]["id"] == job.id

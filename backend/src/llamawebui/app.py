@@ -45,6 +45,7 @@ from llamawebui.services.event_broker import (
     EventCursorError,
 )
 from llamawebui.services.huggingface_catalog import Catalog, HuggingFaceCatalog
+from llamawebui.services.model_artifact_registry import ModelArtifactError, ModelArtifactRegistry
 from llamawebui.services.model_library import ModelLibrary
 from llamawebui.services.profile_registry import (
     ProfileAliasExistsError,
@@ -167,7 +168,11 @@ def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
     }
 
 
-def _profile_payload(profile: ModelProfileRecord) -> dict[str, object]:
+def _profile_payload(
+    profile: ModelProfileRecord, artifacts: ModelArtifactRegistry | None = None
+) -> dict[str, object]:
+    source = artifacts.source_for_profile(profile) if artifacts is not None else None
+    available = artifacts.profile_available(profile) if artifacts is not None else True
     return {
         "id": profile.id,
         "alias": profile.alias,
@@ -176,6 +181,19 @@ def _profile_payload(profile: ModelProfileRecord) -> dict[str, object]:
         "configuration": profile.configuration,
         "preset": profile.preset,
         "enabled": profile.enabled,
+        "validation_state": "available" if available else "broken",
+        "source_download": (
+            {
+                "id": source.download_id,
+                "repo_id": source.repo_id,
+                "revision": source.revision,
+                "group_key": source.group_key,
+                "file_count": source.file_count,
+                "total_bytes": source.total_bytes,
+            }
+            if source is not None
+            else None
+        ),
     }
 
 
@@ -321,6 +339,9 @@ def create_app(
         app.state.model_library = ModelLibrary(
             app.state.download_registry, app_settings.data_dir / "models"
         )
+        app.state.model_artifact_registry = ModelArtifactRegistry(
+            app.state.download_registry, app_settings.data_dir / "models"
+        )
         token = app_settings.hf_token.get_secret_value() if app_settings.hf_token else None
         app.state.huggingface_catalog = catalog or HuggingFaceCatalog(token)
         transfer = file_transfer or HuggingFaceFileTransfer(token)
@@ -415,6 +436,17 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="runtime has no enabled model profiles",
+            )
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        broken = tuple(
+            profile.alias
+            for profile in enabled_profiles
+            if not artifacts.profile_available(profile)
+        )
+        if broken:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"enabled model profiles are broken: {', '.join(broken)}",
             )
 
         preset_path = app_settings.data_dir / "generated" / "llama-models.ini"
@@ -775,7 +807,8 @@ def create_app(
     @app.get("/api/profiles")
     async def list_profiles(request: Request) -> list[dict[str, object]]:
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
-        return [_profile_payload(profile) for profile in registry.list()]
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return [_profile_payload(profile, artifacts) for profile in registry.list()]
 
     @app.post("/api/profiles", status_code=status.HTTP_201_CREATED)
     async def create_profile(
@@ -796,10 +829,17 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
             ) from error
-        return _profile_payload(profile)
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(profile, artifacts)
 
     @app.delete("/api/profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def remove_profile(profile_id: str, request: Request) -> None:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="stop the router before deleting a model profile",
+            )
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
         try:
             registry.remove(profile_id)
@@ -882,6 +922,38 @@ def create_app(
             }
             for model in library.list()
         ]
+
+    @app.delete("/api/library/{download_id}")
+    async def delete_library_model(download_id: str, request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="stop the router before deleting a model artifact",
+            )
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        try:
+            return _download_payload(artifacts.delete(download_id))
+        except DownloadJobNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ModelArtifactError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    @app.post("/api/downloads/{job_id}/redownload")
+    async def redownload_model(job_id: str, request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="stop the router before re-downloading a model artifact",
+            )
+        coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
+        try:
+            return _download_payload(coordinator.redownload(job_id))
+        except DownloadJobNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     @app.post("/api/downloads", status_code=status.HTTP_201_CREATED)
     async def create_download(

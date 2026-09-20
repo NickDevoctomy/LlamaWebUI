@@ -16,9 +16,9 @@ The delivery plan has eight numbered phases (`0` through `7`). Work has intentio
 | 0. Feasibility spikes | Partial | Real llama.cpp b11053 CPU and b11060 CUDA probed; required Qwen flags confirmed; generated preset accepted; authenticated `/v1/models`, real CUDA load, non-streaming request, streaming termination, and Windows parent/child process-tree shutdown verified | Tool-call test, API-key reload behavior, older-build comparison |
 | 1. Application foundation | Advanced partial | Python package, FastAPI, settings, SQLite, Alembic, portable data directory, unified bounded event broker with sequencing/replay/reconciliation, React/Vite operator shell | Publish remaining download/runtime/profile state changes, structured/redacted logging, single-instance lock, diagnostics, static frontend packaging |
 | 2. Runtime manager | Partial | Register/list/get/reprobe/remove; option/device capability parsing; in-use deletion guard | GitHub release discovery/install, stable-to-build resolution, digest verification, switching/rollback |
-| 3. Local library and profiles | In progress | Profile persistence, typed Qwen options, capability validation, shard completeness, deterministic atomic single/combined preset writing, validated completed-download projection, profile prefill | General directory scanning, GGUF metadata, durable logical model records, command import/export |
+| 3. Local library and profiles | In progress | Profile persistence/deletion, typed Qwen options, capability validation, shard completeness, deterministic atomic single/combined preset writing, validated completed-download projection, broken-profile health/provenance, profile prefill and exact re-download repair | General directory scanning, GGUF metadata, durable logical model records, command import/export |
 | 4. Server lifecycle | In progress | Router state machine, validated argument vector, process-group launch, single-process supervisor, HTTP readiness polling, bounded log tail, crash observation, owned process-tree graceful/forced shutdown, serialized status/start/stop/restart API, durable run and restart-attempt history, safe port preflight, bounded crash recovery with rapid-failure suppression, native model list/load/unload/SSE APIs, lifecycle/model event publication through unified replayable `/api/events` | Real-runtime SSE acceptance |
-| 5. Hugging Face and downloads | Advanced partial | Search, repository manifests, quant/shard grouping, revision-pinned durable jobs, in-file progress, interruptible child-process transfers, resumable pause, prompt cancel cleanup, staging, size verification, atomic publication, startup reconciliation, terminal-job clearing, responsive Discover and Downloads workflows | Retry/backoff, periodic disk checks, checksum/ETag verification, event streaming, projector association, artifact deletion, library reconciliation |
+| 5. Hugging Face and downloads | Advanced partial | Search, repository manifests, quant/shard grouping, revision-pinned durable jobs, in-file progress, interruptible child-process transfers, resumable pause, prompt cancel cleanup, managed artifact deletion, exact pinned re-download, staging, size verification, atomic publication, startup reconciliation, terminal-job clearing, responsive Discover and Downloads workflows | Retry/backoff, periodic disk checks, checksum/ETag verification, event streaming, projector association, general library reconciliation |
 | 6. Tokens and onboarding | Advanced partial | Show-once token creation, HMAC metadata, last-four/name/expiry-note listing, permanent revocation, atomic restricted native key file, authenticated router launch/control calls, live-model OpenCode generation, Access frontend workflow | End-to-end authenticated connection tests remain blocked on an available model/profile |
 | 7. Hardening and release | Not started | Unit quality gate established | Packaging, CI/platform matrix, accessibility, backup/restore, offline behavior, operator docs |
 
@@ -36,16 +36,16 @@ From `backend/` using `..\.venv\Scripts\python.exe`:
 
 Current validation:
 
-- 146 tests passed.
-- 93.29% total coverage; configured floor is 90% with branch coverage enabled.
+- 151 tests passed.
+- 91.36% total coverage; configured floor is 90% with branch coverage enabled.
 - Ruff passed.
-- Strict mypy passed for 38 source files.
+- Strict mypy passed for 39 source files.
 - Two dependency deprecation warnings remain: Starlette/httpx and AnyIO `BlockingPortal`.
 
 Frontend foundation validation:
 
-- Vite production build passed; JavaScript bundle is 311.28 kB.
-- Vitest/Testing Library passed: 16 component integration tests.
+- Vite production build passed; JavaScript bundle is 315.66 kB.
+- Vitest/Testing Library passed: 18 component integration tests.
 - Desktop 1440x1000 and mobile 390x844 browser checks passed without horizontal overflow.
 - Live FastAPI queries and responsive navigation were verified in the browser.
 - Runtime registration was accepted end to end against local llama.cpp b11053 and displayed build `0.4.1-dev` as ready.
@@ -67,6 +67,9 @@ Frontend foundation validation:
 - Access tokens: show-once cryptographic tokens, HMAC-only SQLite persistence, metadata-only listing, permanent revocation, and atomic restricted `generated/api-keys.txt` rendering while the router is stopped
 - OpenCode: generated configuration from live native model IDs with an environment-variable API-key placeholder; no direct modification of user configuration
 - Local library: read-only `/api/library` projection includes only completed downloads whose paths remain inside the managed root and whose files still match expected sizes; sharded models resolve to the first shard
+- Managed artifacts: stopped-router deletion resolves only durable download IDs inside the managed root, atomically renames before removal, preserves download provenance and profiles, and supports exact pinned re-download through the existing durable job
+- Profile health: profile responses derive Available/Broken state and source download provenance; router startup rejects broken enabled profiles before writing/launching a stale preset
+- Artifact deletion is group-scoped even when multiple download jobs share one repository/revision directory; profile health evaluates every matching provenance record and prefers a valid completed artifact, preventing stale duplicate jobs from marking healthy profiles Broken
 - Download progress: active Hugging Face hashed/ETag-qualified incomplete files are discovered under each job's isolated local-dir cache, sampled every 250 ms, and persisted as monotonic byte counts while each file transfers
 - Transfer interruption: each `hf_hub_download` call runs in an argument-vector child process; pause/cancel persist state, kill and reap the active transfer before returning, pause retains the isolated staging tree for Hub range resume, and cancel removes that tree after termination
 
@@ -85,6 +88,7 @@ Frontend foundation validation:
 - Discover distinguishes remote shard availability (`All shards available`/`Missing shards`) from local state (`Downloaded`, `Queued`, `Downloading`, or `Paused`) using exact repository, revision, and group matches; validated library entries are authoritative for Downloaded and duplicate active/downloaded jobs are disabled
 - Durable download workspace with progress, active-job count, pause/resume/cancel controls, errors, and active-state polling
 - Models lists validated downloaded GGUF artifacts from `/api/library`, with repository/group/size/file/revision details, scoped refresh, Discover navigation, and Configure handoff into Profiles; Profiles remains the launch-configuration workspace
+- Models supports confirmed artifact deletion while preserving profiles; Profiles marks missing managed models Broken, offers confirmed exact re-download repair, and supports confirmed profile-only deletion. Destructive actions require the router to be stopped
 - A download transition to Completed immediately refreshes the validated library instead of waiting for its periodic polling interval
 - Clear finished hides completed and cancelled jobs while preserving completed records for the local library
 - Completed validated downloads expose a Configure action that opens profile creation with the local model, alias, and runtime prefilled
@@ -169,7 +173,7 @@ Measured real-transfer acceptance on 2026-09-20:
 
 - Commit `69c4fd5` is the checked-in Discover/Downloads baseline on `alpha` and `origin/alpha`.
 - Root `data/` is ignored because it contains local runtime/application state. Commit `1f8eca6` removed `data/llamawebui.db` from Git tracking only; the local file remains intact and must not be deleted or reset.
-- 146 backend and 16 frontend tests pass; Ruff, strict mypy, production build, and editor diagnostics pass.
+- 151 backend and 18 frontend tests pass; Ruff, strict mypy, production build, and editor diagnostics pass.
 - Live public-catalog acceptance returned 25 results and 27 complete groups for the selected repository; desktop and 390x844 layouts had no horizontal overflow. No download job was created.
 - At handoff, the backend is healthy on `http://127.0.0.1:18080/api/health` and Vite is serving `http://127.0.0.1:5173/`.
 - Exact next slice: finish authenticated connection acceptance with visible non-streaming output, streaming content, and a simple parseable tool call; then implement official llama.cpp release discovery/install (including CUDA companion assets and digest verification). The recommended 5.29 GiB model download is no longer required to prove basic CUDA operation because an existing validated model loaded and streamed successfully.

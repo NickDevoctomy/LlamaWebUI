@@ -32,6 +32,15 @@ export interface Profile {
   model_path: string
   configuration: Record<string, unknown>
   enabled: boolean
+  validation_state: 'available' | 'broken'
+  source_download: {
+    id: string
+    repo_id: string
+    revision: string
+    group_key: string
+    file_count: number
+    total_bytes: number
+  } | null
 }
 
 export interface RouterModel {
@@ -135,6 +144,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const detail = typeof payload?.detail === 'string' ? payload.detail : response.statusText
     throw new Error(detail || 'Request failed')
   }
+  if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
 }
 
@@ -165,6 +175,10 @@ export const api = {
     request<DownloadJob>(`/api/downloads/${jobId}/cancel`, { method: 'POST' }),
   clearTerminalDownloads: () =>
     request<{ cleared: number }>('/api/downloads/terminal', { method: 'DELETE' }),
+  deleteLibraryModel: (downloadId: string) =>
+    request<DownloadJob>(`/api/library/${downloadId}`, { method: 'DELETE' }),
+  redownload: (downloadId: string) =>
+    request<DownloadJob>(`/api/downloads/${downloadId}/redownload`, { method: 'POST' }),
   registerRuntime: (runtime: RuntimeRegistration) =>
     request<Runtime>('/api/runtimes', {
       method: 'POST',
@@ -175,6 +189,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(profile),
     }),
+  deleteProfile: (profileId: string) =>
+    request<void>(`/api/profiles/${profileId}`, { method: 'DELETE' }),
   createToken: (name: string, expiryNote?: string) =>
     request<CreatedAccessToken>('/api/tokens', {
       method: 'POST',

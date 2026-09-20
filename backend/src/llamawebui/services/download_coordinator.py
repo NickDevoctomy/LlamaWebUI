@@ -49,6 +49,14 @@ class DownloadCoordinator:
         self.start(job_id)
         return record
 
+    def redownload(self, job_id: str) -> DownloadJobRecord:
+        current = self._tasks.get(job_id)
+        if current is not None and not current.done():
+            raise ValueError("download cannot restart while a transfer is active")
+        record = self._registry.reset_for_redownload(job_id)
+        self.start(job_id)
+        return record
+
     async def shutdown(self) -> None:
         tasks = tuple(self._tasks.items())
         for job_id, task in tasks:
