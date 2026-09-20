@@ -21,7 +21,7 @@ import {
   Square,
   TerminalSquare,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AccessPanel } from './AccessPanel'
 import { api, type LibraryModel, type Profile, type RouterModel, type Runtime } from './api'
 import { DiscoverPanel, DownloadsPanel } from './DiscoveryPanels'
@@ -52,6 +52,13 @@ function modelSize(profile: Profile) {
   return typeof size === 'number' ? `${(size / 1024 ** 3).toFixed(1)} GB` : 'Local'
 }
 
+function formatBytes(bytes: number) {
+  if (!bytes) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  return `${(bytes / 1024 ** index).toFixed(index > 2 ? 1 : 0)} ${units[index]}`
+}
+
 function App() {
   const [section, setSection] = useState('Models')
   const [selectedRuntime, setSelectedRuntime] = useState('')
@@ -73,8 +80,25 @@ function App() {
     queryFn: api.models,
     enabled: running,
   })
+  const previousDownloadStates = useRef<Map<string, string> | undefined>(undefined)
+
+  useEffect(() => {
+    if (!downloads.data) return
+    const currentStates = new Map(downloads.data.map((job) => [job.id, job.state]))
+    const previousStates = previousDownloadStates.current
+    previousDownloadStates.current = currentStates
+    if (!previousStates) return
+    const completed = downloads.data.some((job) =>
+      job.state === 'completed'
+      && previousStates.has(job.id)
+      && previousStates.get(job.id) !== 'completed')
+    if (completed) {
+      void queryClient.invalidateQueries({ queryKey: ['library'] })
+    }
+  }, [downloads.data, queryClient])
 
   const refresh = () => queryClient.invalidateQueries()
+  const refreshModels = () => queryClient.invalidateQueries({ queryKey: ['library'] })
   const lifecycle = useMutation({
     mutationFn: async (action: 'start' | 'stop' | 'restart') => {
       if (action === 'start') {
@@ -195,12 +219,11 @@ function App() {
 
           {section === 'Models' ? (
             <ModelsPanel
-              models={models.data ?? []}
+              models={library.data ?? []}
               profiles={profiles.data ?? []}
-              running={running}
-              pendingModel={modelAction.variables?.id}
-              onAction={(id, loaded) => modelAction.mutate({ id, loaded })}
-              onAddModel={() => setSection('Profiles')}
+              onConfigure={(model) => { setProfileSeed(model); setSection('Profiles') }}
+              onDiscover={() => setSection('Discover')}
+              onRefresh={() => { void refreshModels() }}
             />
           ) : section === 'Server' ? (
             <ServerPanel status={status.data} runtimes={runtimes.data ?? []} selectedRuntime={runtime?.id ?? ''} onRuntime={setSelectedRuntime} />
@@ -223,43 +246,45 @@ function App() {
   )
 }
 
-function ModelsPanel({ models, profiles, running, pendingModel, onAction, onAddModel }: {
-  models: RouterModel[]
+function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh }: {
+  models: LibraryModel[]
   profiles: Profile[]
-  running: boolean
-  pendingModel?: string
-  onAction: (id: string, loaded: boolean) => void
-  onAddModel: () => void
+  onConfigure: (model: LibraryModel) => void
+  onDiscover: () => void
+  onRefresh: () => void
 }) {
   return (
     <section className="data-panel">
       <div className="panel-heading">
-        <div><h2>Model inventory</h2><p>Profiles available to the managed llama.cpp router.</p></div>
-        <button className="button secondary compact" onClick={onAddModel} type="button"><Database size={15} /> Add model</button>
+        <div><h2>Downloaded models</h2><p>Validated GGUF models in the application-managed library.</p></div>
+        <div className="panel-heading-actions">
+          <button className="button secondary compact" onClick={onRefresh} type="button"><RefreshCw size={14} /> Refresh models</button>
+          <button className="button secondary compact" onClick={onDiscover} type="button"><Search size={15} /> Discover models</button>
+        </div>
       </div>
       <div className="table-wrap">
-        <table>
-          <thead><tr><th>Model</th><th>State</th><th>Storage</th><th>Profile</th><th>Runtime</th><th><span className="sr-only">Actions</span></th></tr></thead>
+        <table className="models-table">
+          <thead><tr><th>Model</th><th>Group</th><th>Size</th><th>Files</th><th>Revision</th><th><span className="sr-only">Actions</span></th></tr></thead>
           <tbody>
-            {profiles.map((profile) => {
-              const state = modelState(profile, models)
-              const loaded = state === 'loaded'
+            {models.map((model) => {
+              const configured = profiles.some((profile) => profile.model_path === model.primary_path)
+              const name = model.repo_id.split('/').at(-1) ?? model.repo_id
               return (
-                <tr key={profile.id}>
-                  <td><div className="model-name"><span className="model-glyph">{profile.alias.slice(0, 2).toUpperCase()}</span><div><strong>{profile.alias}</strong><span>{profile.model_path}</span></div></div></td>
-                  <td><span className={`state-pill ${state}`}>{state}</span></td>
-                  <td>{modelSize(profile)}</td>
-                  <td><span className="profile-tag">Default</span></td>
-                  <td className="muted">llama.cpp</td>
-                  <td><div className="row-actions"><button className="button row-button" disabled={!running || pendingModel === profile.alias || !profile.enabled} onClick={() => onAction(profile.alias, loaded)} type="button">{loaded ? <><Square size={12} fill="currentColor" /> Unload</> : <><Play size={13} fill="currentColor" /> Load</>}</button></div></td>
+                <tr key={model.download_id}>
+                  <td><div className="model-name"><span className="model-glyph">{name.slice(0, 2).toUpperCase()}</span><div><strong>{model.repo_id}</strong><span>{model.primary_path}</span></div></div></td>
+                  <td className="mono">{model.group_key}</td>
+                  <td>{formatBytes(model.total_bytes)}</td>
+                  <td>{model.file_count} {model.file_count === 1 ? 'file' : 'files'}</td>
+                  <td className="mono" title={model.revision}>{model.revision.slice(0, 9)}</td>
+                  <td><div className="row-actions">{configured ? <span className="profile-tag">Configured</span> : <button className="button row-button" onClick={() => onConfigure(model)} type="button"><FolderCog size={13} /> Configure</button>}</div></td>
                 </tr>
               )
             })}
           </tbody>
         </table>
-        {!profiles.length && <div className="empty"><Library size={28} /><strong>No model profiles yet</strong><span>Create a profile to make a local GGUF model available to the router.</span></div>}
+        {!models.length && <div className="empty"><Library size={28} /><strong>No downloaded models</strong><span>Use Discover to download a complete GGUF model.</span></div>}
       </div>
-      <div className="panel-footer"><span>{profiles.length} profiles</span><span><Activity size={14} /> Live state {running ? 'connected' : 'paused'}</span></div>
+      <div className="panel-footer"><span>{models.length} downloaded models</span><span><ShieldCheck size={14} /> Validated files only</span></div>
     </section>
   )
 }

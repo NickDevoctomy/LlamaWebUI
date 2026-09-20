@@ -276,6 +276,13 @@ tbody tr:hover { background: #f4f4ee; }
   .dialog-actions { position: sticky; bottom: 0; padding: 12px 18px; }
   .log-panel { grid-column: auto; }
   .server-actions .secondary { display: none; }
-  th:nth-child(3), td:nth-child(3), th:nth-child(4), td:nth-child(4), th:nth-child(5), td:nth-child(5) { display: none; }
+  .models-table th:nth-child(3), .models-table td:nth-child(3), .models-table th:nth-child(4), .models-table td:nth-child(4), .models-table th:nth-child(5), .models-table td:nth-child(5) { display: none; }
+  .models-table { table-layout: fixed; }
+  .models-table th:first-child, .models-table td:first-child { width: 47%; }
+  .models-table th:nth-child(2), .models-table td:nth-child(2) { width: 31%; overflow: hidden; text-overflow: ellipsis; }
+  .models-table th:last-child, .models-table td:last-child { width: 22%; padding-left: 6px; padding-right: 6px; }
+  .models-table .model-name { min-width: 0; }
+  .models-table .model-glyph { display: none; }
+  .models-table .model-name strong, .models-table .model-name span:last-child { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .model-name { min-width: 190px; }
 }

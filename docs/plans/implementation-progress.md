@@ -44,8 +44,8 @@ Current validation:
 
 Frontend foundation validation:
 
-- Vite production build passed; JavaScript bundle is 308.81 kB.
-- Vitest/Testing Library passed: 10 component integration tests.
+- Vite production build passed; JavaScript bundle is 310.90 kB.
+- Vitest/Testing Library passed: 14 component integration tests.
 - Desktop 1440x1000 and mobile 390x844 browser checks passed without horizontal overflow.
 - Live FastAPI queries and responsive navigation were verified in the browser.
 - Runtime registration was accepted end to end against local llama.cpp b11053 and displayed build `0.4.1-dev` as ready.
@@ -82,6 +82,8 @@ Frontend foundation validation:
 - OpenCode configuration panel generated from live router model IDs with an environment-variable key placeholder
 - Hugging Face catalog search with sorting, repository selection, exact quantization sizes, shard completeness, and explicit download creation
 - Durable download workspace with progress, active-job count, pause/resume/cancel controls, errors, and active-state polling
+- Models lists validated downloaded GGUF artifacts from `/api/library`, with repository/group/size/file/revision details, scoped refresh, Discover navigation, and Configure handoff into Profiles; Profiles remains the launch-configuration workspace
+- A download transition to Completed immediately refreshes the validated library instead of waiting for its periodic polling interval
 - Clear finished hides completed and cancelled jobs while preserving completed records for the local library
 - Completed validated downloads expose a Configure action that opens profile creation with the local model, alias, and runtime prefilled
 - Desktop and mobile layouts use stable metrics, table reduction, and fixed navigation without content overlap
@@ -141,7 +143,7 @@ Measured real-transfer acceptance on 2026-09-20:
 
 - Commit `69c4fd5` is the checked-in Discover/Downloads baseline on `alpha` and `origin/alpha`.
 - Root `data/` is ignored because it contains local runtime/application state. Commit `1f8eca6` removed `data/llamawebui.db` from Git tracking only; the local file remains intact and must not be deleted or reset.
-- 144 backend and 10 frontend tests pass; Ruff, strict mypy, production build, and editor diagnostics pass.
+- 144 backend and 14 frontend tests pass; Ruff, strict mypy, production build, and editor diagnostics pass.
 - Live public-catalog acceptance returned 25 results and 27 complete groups for the selected repository; desktop and 390x844 layouts had no horizontal overflow. No download job was created.
 - At handoff, the backend is healthy on `http://127.0.0.1:18080/api/health` and Vite is serving `http://127.0.0.1:5173/`.
 - Exact next slice: make active pause/cancel interrupt a Hugging Face transfer promptly while preserving its partial for resume (cancel should remove it), then register/probe a CUDA runtime and begin the recommended 5.29 GiB real-model acceptance flow.

@@ -28,12 +28,14 @@ function renderApp({
   tokenList = [],
   downloadList = [],
   libraryList = [],
+  profileList = [],
   serverStatus = responses['/api/server/status'],
 }: {
   runtimeList?: unknown[]
   tokenList?: unknown[]
-  downloadList?: unknown[]
+  downloadList?: unknown[] | (() => unknown[])
   libraryList?: unknown[]
+  profileList?: unknown[]
   serverStatus?: unknown
 } = {}) {
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -53,14 +55,16 @@ function renderApp({
         : path === '/api/downloads'
           ? { id: 'download-1', repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), group_key: 'model-Q4_K_M', files: [{ path: 'model-Q4_K_M.gguf', size: 4_200_000_000 }], destination: 'E:\\models\\owner--model-GGUF', total_bytes: 4_200_000_000, completed_bytes: 0, state: 'queued', error: null }
         : path.endsWith('/resume')
-          ? { ...downloadList[0] as object, state: 'queued' }
+          ? { ...(typeof downloadList === 'function' ? downloadList()[0] : downloadList[0]) as object, state: 'queued' }
         : { id: 'profile-1', alias: 'qwen-local', runtime_id: 'runtime-1', model_path: 'E:\\models\\qwen.gguf', configuration: {}, enabled: true }
       : path === '/api/runtimes'
         ? runtimeList
         : path === '/api/tokens'
           ? tokenList
+          : path === '/api/profiles'
+            ? profileList
           : path === '/api/downloads'
-            ? downloadList
+            ? typeof downloadList === 'function' ? downloadList() : downloadList
             : path === '/api/library'
               ? libraryList
           : path === '/api/server/status'
@@ -82,7 +86,7 @@ function renderApp({
   vi.stubGlobal('fetch', fetchMock)
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(<QueryClientProvider client={client}><App /></QueryClientProvider>)
-  return fetchMock
+  return Object.assign(fetchMock, { client })
 }
 
 describe('App', () => {
@@ -90,12 +94,68 @@ describe('App', () => {
     renderApp()
 
     expect(await screen.findByText('http://127.0.0.1:1234')).toBeInTheDocument()
-    expect(screen.getByText('No model profiles yet')).toBeInTheDocument()
+    expect(screen.getByText('No downloaded models')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Server' }))
 
     expect(screen.getByRole('heading', { name: 'Process' })).toBeInTheDocument()
     expect(screen.getByText('Waiting for router output…')).toBeInTheDocument()
+  })
+
+  it('refreshes the downloaded model library from the Models page', async () => {
+    const fetchMock = renderApp()
+    await screen.findByText('No downloaded models')
+    fetchMock.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh models' }))
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/library', expect.anything())
+    })
+  })
+
+  it('refreshes library and live models when a download completes', async () => {
+    const downloading = { id: 'download-1', repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), group_key: 'model-Q4_K_M', files: [], destination: 'E:\\models', total_bytes: 1000, completed_bytes: 400, state: 'downloading', error: null }
+    let downloadList = [downloading]
+    const fetchMock = renderApp({
+      downloadList: () => downloadList,
+      serverStatus: { ...responses['/api/server/status'] as object, state: 'ready' },
+    })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads', expect.anything()))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/server/models', expect.anything()))
+    fetchMock.mockClear()
+    downloadList = [{ ...downloading, completed_bytes: 1000, state: 'completed' }]
+
+    await fetchMock.client.invalidateQueries({ queryKey: ['downloads'] })
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/library', expect.anything())
+    })
+  })
+
+  it('lists validated downloads on Models instead of profiles', async () => {
+    const model = { download_id: 'download-1', repo_id: 'owner/Qwen-Test-GGUF', revision: 'a'.repeat(40), group_key: 'Q4/model-Q4', primary_path: 'E:\\models\\model.gguf', file_count: 2, total_bytes: 4_200_000_000 }
+    const profile = { id: 'profile-1', alias: 'profile-only', runtime_id: 'runtime-1', model_path: 'E:\\other.gguf', configuration: {}, enabled: true }
+    renderApp({ libraryList: [model], profileList: [profile] })
+
+    expect(await screen.findByText('owner/Qwen-Test-GGUF')).toBeInTheDocument()
+    expect(screen.getByText('Q4/model-Q4')).toBeInTheDocument()
+    expect(screen.getByText('3.9 GB')).toBeInTheDocument()
+    expect(screen.getByText('2 files')).toBeInTheDocument()
+    expect(screen.getByText('aaaaaaaaa')).toBeInTheDocument()
+    expect(screen.queryByText('profile-only')).not.toBeInTheDocument()
+  })
+
+  it('configures a downloaded model from Models', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CUDA', executable_path: 'E:\\llama-server.exe', build: 'b11053', backend: 'cuda', devices: ['CUDA0'], options: ['model', 'models-preset', 'ctx-size'], usable: true }
+    const model = { download_id: 'download-1', repo_id: 'owner/Qwen-Test-GGUF', revision: 'a'.repeat(40), group_key: 'Q4/model-Q4', primary_path: 'E:\\models\\model.gguf', file_count: 1, total_bytes: 1000 }
+    renderApp({ libraryList: [model], runtimeList: [runtime] })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Configure' }))
+
+    expect(await screen.findByRole('heading', { name: 'Create model profile' })).toBeInTheDocument()
+    expect(screen.getByLabelText(/API model alias/i)).toHaveValue('qwen-test')
+    expect(screen.getByLabelText(/Primary GGUF file/i)).toHaveValue(model.primary_path)
   })
 
   it('registers and probes a local runtime', async () => {
