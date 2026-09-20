@@ -11,9 +11,10 @@ import {
   Search as SearchIcon,
   ShieldAlert,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react'
-import { type FormEvent, useEffect, useState } from 'react'
+import { type ChangeEvent, type FormEvent, useEffect, useState } from 'react'
 import { api, type LibraryModel, type Profile, type ProfileCreate, type Runtime, type RuntimeRelease } from './api'
 
 function optionalNumber(value: string) {
@@ -197,6 +198,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
   const [cloneAlias, setCloneAlias] = useState('')
   const [editing, setEditing] = useState<Profile>()
   const [repairing, setRepairing] = useState<Profile>()
+  const [importError, setImportError] = useState('')
   const queryClient = useQueryClient()
   const runtime = runtimes.find((item) => item.id === runtimeId)
   const supports = (option: string) => runtime?.options.includes(option) ?? false
@@ -333,6 +335,26 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
       ])
     },
   })
+  const importing = useMutation({
+    mutationFn: (document: Record<string, unknown>) => api.importProfile(document),
+    onSuccess: async () => {
+      setImportError('')
+      await queryClient.invalidateQueries({ queryKey: ['profiles'] })
+    },
+    onError: (error: Error) => setImportError(error.message),
+  })
+
+  async function importProfile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    try {
+      const document = JSON.parse(await file.text()) as Record<string, unknown>
+      importing.mutate(document)
+    } catch {
+      setImportError('The selected file is not valid JSON.')
+    }
+  }
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -345,8 +367,9 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
       <section className="data-panel">
         <div className="panel-heading">
           <div><h2>Model profiles</h2><p>Named models and launch settings published to the router.</p></div>
-          <button className="button primary compact" disabled={!runtimes.length} onClick={openCreate} type="button"><Plus size={15} /> Create profile</button>
+          <div className="row-actions"><label className="button secondary compact" htmlFor="profile-import"><Upload size={15} /> Import profile</label><input accept="application/json,.json" id="profile-import" onChange={importProfile} style={{ display: 'none' }} type="file" /><button className="button primary compact" disabled={!runtimes.length} onClick={openCreate} type="button"><Plus size={15} /> Create profile</button></div>
         </div>
+        {importError && <div className="form-error"><AlertCircle size={15} /> {importError}</div>}
         {profiles.length ? <div className="record-list">{profiles.map((profile) => (
           <article className="record-row" key={profile.id}>
             <span className="record-icon"><FileCog size={18} /></span>

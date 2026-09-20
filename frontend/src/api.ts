@@ -235,6 +235,11 @@ export const api = {
     if (!response.ok) throw new Error(response.statusText)
     return response.blob()
   }),
+  importProfile: (document: Record<string, unknown>, alias?: string) =>
+    request<Profile>('/api/profiles/import', {
+      method: 'POST',
+      body: JSON.stringify({ document, alias: alias || null }),
+    }),
   deleteProfile: (profileId: string) =>
     request<void>(`/api/profiles/${profileId}`, { method: 'DELETE' }),
   createToken: (name: string, expiryNote?: string) =>

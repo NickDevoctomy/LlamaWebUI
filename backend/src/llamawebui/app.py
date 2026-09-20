@@ -143,6 +143,11 @@ class ProfileCreateRequest(BaseModel):
         )
 
 
+class ProfileImportRequest(BaseModel):
+    document: dict[str, object]
+    alias: str | None = Field(default=None, min_length=1, max_length=64)
+
+
 class DownloadCreateRequest(BaseModel):
     repo_id: str = Field(min_length=3, max_length=400)
     group_key: str = Field(min_length=1)
@@ -1111,6 +1116,8 @@ def create_app(
             {
                 "format": "llamawebui-profile-v1",
                 "alias": profile.alias,
+                "runtime_id": profile.runtime_id,
+                "enabled": profile.enabled,
                 "configuration": profile.configuration,
                 "preset": profile.preset,
             },
@@ -1122,6 +1129,48 @@ def create_app(
             media_type="application/json",
             headers={"Content-Disposition": f'attachment; filename="{profile.alias}.json"'},
         )
+
+    @app.post("/api/profiles/import", status_code=status.HTTP_201_CREATED)
+    async def import_profile(
+        import_request: ProfileImportRequest, request: Request
+    ) -> dict[str, object]:
+        document = import_request.document
+        if document.get("format") != "llamawebui-profile-v1":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="unsupported profile export format",
+            )
+        configuration = document.get("configuration")
+        if not isinstance(configuration, dict):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="profile export configuration is invalid",
+            )
+        runtime_id = document.get("runtime_id")
+        alias = import_request.alias or document.get("alias")
+        if not isinstance(runtime_id, str) or not isinstance(alias, str):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="profile export is missing runtime_id or alias",
+            )
+        try:
+            profile_request = ProfileCreateRequest.model_validate(
+                {**configuration, "alias": alias, "runtime_id": runtime_id, "enabled": False}
+            )
+            registry = cast(ProfileRegistry, request.app.state.profile_registry)
+            profile = registry.create(
+                profile=profile_request.to_domain(), runtime_id=runtime_id, enabled=False
+            )
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileAliasExistsError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ProfileValidationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
+            ) from error
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(profile, artifacts)
 
     @app.get("/api/huggingface/models")
     async def search_huggingface_models(

@@ -194,6 +194,52 @@ def test_profile_export_returns_portable_profile_json(tmp_path: Path) -> None:
     assert "export-model" in payload["preset"]
 
 
+def test_profile_import_recreates_export_as_disabled_profile(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model = tmp_path / "model.gguf"
+    model.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "ctx-size", "no-reasoning-preserve"}),
+                raw_help="help",
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    settings = Settings(data_dir=tmp_path / "data")
+    with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        created = client.post(
+            "/api/profiles",
+            json={**_profile_payload(runtime_id, model), "alias": "source-model"},
+        )
+        exported = client.get(f"/api/profiles/{created.json()['id']}/export").json()
+        imported = client.post("/api/profiles/import", json={"document": exported})
+        invalid = client.post(
+            "/api/profiles/import", json={"document": {"format": "unknown"}}
+        )
+
+    assert imported.status_code == 409
+    assert invalid.status_code == 422
+
+    exported["alias"] = "imported-model"
+    with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        imported = client.post("/api/profiles/import", json={"document": exported})
+
+    assert imported.status_code == 201
+    assert imported.json()["alias"] == "imported-model"
+    assert imported.json()["enabled"] is False
+    assert imported.json()["configuration"]["ctx_size"] == 4096
+
+
 def test_profile_update_populates_and_persists_all_editor_settings(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
