@@ -281,6 +281,46 @@ def test_logical_model_registry_reconciles_discovered_models(tmp_path: Path) -> 
     assert second[0].primary_path == model
 
 
+def test_logical_model_registry_links_profiles_by_canonical_path(tmp_path: Path) -> None:
+    database = tmp_path / "app.db"
+    upgrade_database(database)
+    engine = create_database_engine(database)
+    registry = DownloadRegistry(engine, tmp_path)
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"gguf")
+    discovered = ModelLibrary(registry, tmp_path).discover()
+    logical = LogicalModelRegistry(engine)
+    record = logical.reconcile_discovered(discovered)[0]
+
+    from llamawebui.models import ModelProfileRecord
+
+    profile = ModelProfileRecord(
+        id="profile-1",
+        alias="model",
+        runtime_id="runtime-1",
+        model_path=str(model),
+        configuration={},
+        preset="",
+        enabled=False,
+    )
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO runtimes (id, name, executable_path, devices, options, help_sha256) "
+            "VALUES ('runtime-1', 'CPU', 'cpu.exe', '[]', '[\"model\"]', '')"
+        )
+    from sqlalchemy.orm import Session
+
+    with Session(engine) as session:
+        session.add(profile)
+        session.commit()
+    with Session(engine) as session:
+        stored_profile = session.get(ModelProfileRecord, "profile-1")
+        assert stored_profile is not None
+        logical.reconcile_profile_links((stored_profile,))
+
+    assert logical.profile_ids(record.id) == ("profile-1",)
+
+
 def test_library_import_creates_disabled_profile_for_discovered_model(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()

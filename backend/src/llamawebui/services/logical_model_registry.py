@@ -10,7 +10,11 @@ from uuid import uuid4
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import sessionmaker
 
-from llamawebui.models import LogicalModelRecord
+from llamawebui.models import (
+    LogicalModelProfileRecord,
+    LogicalModelRecord,
+    ModelProfileRecord,
+)
 
 if TYPE_CHECKING:
     from llamawebui.services.model_library import DiscoveredModel
@@ -36,6 +40,31 @@ class LogicalModelRegistry:
                 select(LogicalModelRecord).order_by(LogicalModelRecord.primary_path)
             )
             return tuple(self._domain(record) for record in records)
+
+    def profile_ids(self, logical_model_id: str) -> tuple[str, ...]:
+        with self._sessions() as session:
+            statement = select(LogicalModelProfileRecord.profile_id).where(
+                LogicalModelProfileRecord.logical_model_id == logical_model_id
+            )
+            return tuple(session.scalars(statement))
+
+    def reconcile_profile_links(self, profiles: tuple[ModelProfileRecord, ...]) -> None:
+        with self._sessions() as session:
+            records = {
+                record.canonical_path: record
+                for record in session.scalars(select(LogicalModelRecord))
+            }
+            for profile in profiles:
+                logical = records.get(str(Path(profile.model_path).resolve()))
+                if logical is None:
+                    continue
+                session.merge(
+                    LogicalModelProfileRecord(
+                        logical_model_id=logical.id,
+                        profile_id=profile.id,
+                    )
+                )
+            session.commit()
 
     def reconcile(self, models: tuple[LogicalModel, ...]) -> tuple[LogicalModel, ...]:
         with self._sessions() as session:

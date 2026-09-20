@@ -1310,6 +1310,9 @@ def create_app(
         library = cast(ModelLibrary, request.app.state.model_library)
         logical_models = cast(LogicalModelRegistry, request.app.state.logical_model_registry)
         logical_models.reconcile_discovered(library.discover())
+        logical_models.reconcile_profile_links(
+            tuple(cast(ProfileRegistry, request.app.state.profile_registry).list())
+        )
         return [
             {
                 "download_id": model.download_id,
@@ -1333,6 +1336,7 @@ def create_app(
                 "files": [str(path) for path in model.files],
                 "metadata": model.metadata,
                 "validation_state": model.validation_state,
+                "profile_ids": registry.profile_ids(model.id),
             }
             for model in registry.list()
         ]

@@ -92,6 +92,17 @@ class LogicalModelRecord(Base):
     )
 
 
+class LogicalModelProfileRecord(Base):
+    __tablename__ = "logical_model_profiles"
+
+    logical_model_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("logical_models.id", ondelete="CASCADE"), primary_key=True
+    )
+    profile_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("model_profiles.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
 class ServerRunRecord(Base):
     __tablename__ = "server_runs"
 

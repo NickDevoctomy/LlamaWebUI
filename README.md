@@ -26,7 +26,7 @@ Install the prerequisites first:
 Clone the repository and create the Python virtual environment from the repository root:
 
 ```powershell
-git clone YOUR_REPOSITORY_URL LlamaWebUI
+git clone https://github.com/NickDevoctomy/LlamaWebUI
 Set-Location .\LlamaWebUI
 py -3.12 -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
