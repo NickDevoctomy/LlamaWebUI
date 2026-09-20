@@ -102,6 +102,14 @@ describe('App', () => {
     expect(screen.getByText('Waiting for router output…')).toBeInTheDocument()
   })
 
+  it('renders the operational dashboard by default', async () => {
+    renderApp()
+
+    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument()
+    expect(screen.getByText('Operational overview')).toBeInTheDocument()
+    expect(screen.getByText('Current work queues.')).toBeInTheDocument()
+  })
+
   it('refreshes the downloaded model library from the Models page', async () => {
     const fetchMock = renderApp()
     await screen.findByText('No downloaded models')

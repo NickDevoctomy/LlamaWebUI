@@ -26,11 +26,12 @@ import {
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { AccessPanel } from './AccessPanel'
-import { api, type LibraryModel, type Profile, type RouterModel, type Runtime } from './api'
+import { api, type DownloadJob, type LibraryModel, type Profile, type RouterModel, type Runtime } from './api'
 import { DiscoverPanel, DownloadsPanel } from './DiscoveryPanels'
 import { Dialog, ProfilePanel, RuntimePanel } from './SetupPanels'
 
 const navigation = [
+  ['Dashboard', CircleGauge],
   ['Models', Library],
   ['Discover', Search],
   ['Downloads', Download],
@@ -63,7 +64,7 @@ function formatBytes(bytes: number) {
 }
 
 function App() {
-  const [section, setSection] = useState('Models')
+  const [section, setSection] = useState('Dashboard')
   const [selectedRuntime, setSelectedRuntime] = useState('')
   const [profileSeed, setProfileSeed] = useState<LibraryModel>()
   const queryClient = useQueryClient()
@@ -224,7 +225,9 @@ function App() {
             </div>
           </section>
 
-          {section === 'Models' ? (
+          {section === 'Dashboard' ? (
+            <DashboardPanel status={status.data} runtimes={runtimes.data ?? []} profiles={profiles.data ?? []} models={models.data ?? []} downloads={downloads.data ?? []} />
+          ) : section === 'Models' ? (
             <ModelsPanel
               models={library.data ?? []}
               profiles={profiles.data ?? []}
@@ -252,6 +255,22 @@ function App() {
       </main>
     </div>
   )
+}
+
+function DashboardPanel({ status, runtimes, profiles, models, downloads }: {
+  status?: Awaited<ReturnType<typeof api.serverStatus>>
+  runtimes: Runtime[]
+  profiles: Profile[]
+  models: RouterModel[]
+  downloads: DownloadJob[]
+}) {
+  const loaded = models.filter((model) => model.status.value === 'loaded').length
+  const activeDownloads = downloads.filter((job) => ['queued', 'downloading'].includes(job.state)).length
+  return <section className="dashboard-grid">
+    <section className="data-panel dashboard-hero"><div className="panel-heading"><div><p className="eyebrow">Operational overview</p><h2>Dashboard</h2><p>Local control-plane health and active work.</p></div><CircleGauge size={24} /></div><div className="dashboard-stats"><div><small>Router</small><strong>{stateLabel(status?.state)}</strong></div><div><small>Runtime</small><strong>{runtimes.find((runtime) => runtime.usable)?.name ?? 'None'}</strong></div><div><small>Loaded models</small><strong>{loaded}</strong></div><div><small>Profiles</small><strong>{profiles.length}</strong></div></div></section>
+    <section className="data-panel"><div className="panel-heading"><div><h2>Telemetry</h2><p>Native timing samples.</p></div></div><dl className="dashboard-detail"><div><dt>Prompt processing</dt><dd>{status?.timing?.prompt_tokens_per_second ? `${status.timing.prompt_tokens_per_second} t/s` : 'Unavailable'}</dd></div><div><dt>Decode</dt><dd>{status?.timing?.decode_tokens_per_second ? `${status.timing.decode_tokens_per_second} t/s` : 'Unavailable'}</dd></div><div><dt>Peak decode</dt><dd>{status?.timing?.decode_tokens_per_second_peak ? `${status.timing.decode_tokens_per_second_peak} t/s` : 'Unavailable'}</dd></div><div><dt>Active task</dt><dd>{status?.timing?.task_id ?? 'None'}</dd></div></dl></section>
+    <section className="data-panel"><div className="panel-heading"><div><h2>Activity</h2><p>Current work queues.</p></div></div><dl className="dashboard-detail"><div><dt>Active downloads</dt><dd>{activeDownloads}</dd></div><div><dt>Endpoint</dt><dd className="mono">{status?.endpoint ?? 'Unavailable'}</dd></div><div><dt>Process ID</dt><dd>{status?.pid ?? '—'}</dd></div></dl></section>
+  </section>
 }
 
 function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh, running }: {

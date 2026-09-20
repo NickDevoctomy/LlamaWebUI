@@ -69,6 +69,16 @@ h1 { margin: 0; color: var(--ink); font-size: 34px; line-height: 1; letter-spaci
 .trend { grid-column: 2; margin-top: -9px; color: #85877f; font: 10px 'IBM Plex Mono', monospace; }
 .trend.good { color: var(--green); }
 .data-panel { border: 1px solid var(--line); background: var(--paper); }
+.dashboard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.dashboard-hero { grid-column: 1 / -1; }
+.dashboard-stats { padding: 20px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); }
+.dashboard-stats div { min-height: 78px; padding: 14px; display: grid; align-content: center; gap: 6px; background: var(--paper); }
+.dashboard-stats small { color: var(--muted); font: 9px 'IBM Plex Mono', monospace; text-transform: uppercase; }
+.dashboard-stats strong { overflow: hidden; color: var(--ink); font: 600 15px 'IBM Plex Mono', monospace; text-overflow: ellipsis; }
+.dashboard-detail { margin: 0; padding: 5px 19px 15px; }
+.dashboard-detail div { min-height: 49px; border-bottom: 1px solid #e2e2da; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.dashboard-detail dt { color: var(--muted); font-size: 11px; }
+.dashboard-detail dd { margin: 0; font-size: 12px; }
 .panel-heading { min-height: 76px; padding: 16px 19px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .panel-heading h2 { margin: 0 0 4px; color: var(--ink); font-size: 15px; }
 .panel-heading p { margin: 0; color: var(--muted); font-size: 11px; }
@@ -256,6 +266,9 @@ tbody tr:hover { background: #f4f4ee; }
   .metric-icon { width: 30px; height: 30px; }
   .metric strong { font-size: 13px; }
   .server-grid { grid-template-columns: 1fr; }
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .dashboard-hero { grid-column: auto; }
+  .dashboard-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .access-grid { grid-template-columns: 1fr; }
   .discover-layout { grid-template-columns: 1fr; }
   .catalog-search { grid-template-columns: 1fr; }
