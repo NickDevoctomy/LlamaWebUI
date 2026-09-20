@@ -4,7 +4,7 @@ import asyncio
 import json
 import sys
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Literal, cast
 
@@ -650,6 +650,38 @@ def create_app(
                     status_code=status.HTTP_409_CONFLICT, detail=str(error)
                 ) from error
             return await start_router(runtime_id, request)
+
+    @app.post("/api/server/rollback")
+    async def rollback_server(request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        run_registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
+        lock = cast(asyncio.Lock, request.app.state.router_lifecycle_lock)
+        async with lock:
+            if supervisor.state not in {RouterState.READY, RouterState.DEGRADED}:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="router must be running before rollback",
+                )
+            run_id = cast(str | None, request.app.state.active_server_run_id)
+            if run_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="router has no active runtime selection",
+                )
+            current_runtime_id = run_registry.get(run_id).runtime_id
+            previous_runtime_id = run_registry.previous_runtime_id(run_id)
+            if not current_runtime_id or not previous_runtime_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="no previous runtime is available for rollback",
+                )
+            try:
+                await supervisor.stop()
+                return await start_router(previous_runtime_id, request)
+            except HTTPException as error:
+                with suppress(HTTPException):
+                    await start_router(current_runtime_id, request)
+                raise error
 
     @app.get("/api/server/models")
     async def list_router_models(

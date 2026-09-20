@@ -118,11 +118,15 @@ function App() {
       loaded ? api.unloadModel(id) : api.loadModel(id),
     onSuccess: refresh,
   })
+  const rollback = useMutation({
+    mutationFn: api.rollback,
+    onSuccess: refresh,
+  })
 
   const runtime = runtimes.data?.find((item) => item.id === selectedRuntime)
     ?? runtimes.data?.find((item) => item.usable)
   const loadedCount = models.data?.filter((model) => model.status.value === 'loaded').length ?? 0
-  const error = lifecycle.error ?? modelAction.error ?? status.error
+  const error = lifecycle.error ?? rollback.error ?? modelAction.error ?? status.error
 
   return (
     <div className="app-shell">
@@ -230,7 +234,7 @@ function App() {
               running={running}
             />
           ) : section === 'Server' ? (
-            <ServerPanel status={status.data} runtimes={runtimes.data ?? []} selectedRuntime={runtime?.id ?? ''} onRuntime={setSelectedRuntime} onRestart={() => lifecycle.mutate('restart')} restarting={lifecycle.isPending} />
+            <ServerPanel status={status.data} runtimes={runtimes.data ?? []} selectedRuntime={runtime?.id ?? ''} onRuntime={setSelectedRuntime} onRestart={() => lifecycle.mutate('restart')} onRollback={() => rollback.mutate()} restarting={lifecycle.isPending || rollback.isPending} />
           ) : section === 'Runtimes' ? (
             <RuntimePanel runtimes={runtimes.data ?? []} />
           ) : section === 'Profiles' ? (
@@ -306,18 +310,19 @@ function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh, run
   )
 }
 
-function ServerPanel({ status, runtimes, selectedRuntime, onRuntime, onRestart, restarting }: {
+function ServerPanel({ status, runtimes, selectedRuntime, onRuntime, onRestart, onRollback, restarting }: {
   status?: Awaited<ReturnType<typeof api.serverStatus>>
   runtimes: Runtime[]
   selectedRuntime: string
   onRuntime: (id: string) => void
   onRestart: () => void
+  onRollback: () => void
   restarting: boolean
 }) {
   return (
     <div className="server-grid">
       <section className="data-panel server-detail"><div className="panel-heading"><div><h2>Process</h2><p>Managed native llama.cpp server.</p></div><TerminalSquare size={20} /></div><dl><div><dt>State</dt><dd><span className={`state-pill ${status?.state}`}>{status?.state ?? 'unknown'}</span></dd></div><div><dt>Process ID</dt><dd>{status?.pid ?? '—'}</dd></div><div><dt>Endpoint</dt><dd className="mono">{status?.endpoint ?? '—'}</dd></div><div><dt>Last exit</dt><dd>{status?.last_exit_code ?? '—'}</dd></div></dl></section>
-      <section className="data-panel server-detail"><div className="panel-heading"><div><h2>Runtime</h2><p>Binary used for the next start or restart.</p></div><Cpu size={20} /></div><label className="select-label">Selected runtime<select value={selectedRuntime} onChange={(event) => onRuntime(event.target.value)}><option value="">Select runtime</option>{runtimes.map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.name} · {runtime.build ?? 'unknown build'}</option>)}</select><ChevronDown size={16} /></label><div className="panel-footer"><span>Runtime changes are explicit</span><button className="button secondary compact" disabled={!selectedRuntime || status?.state !== 'ready' || restarting} onClick={onRestart} type="button">{restarting ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />} Apply & restart</button></div></section>
+      <section className="data-panel server-detail"><div className="panel-heading"><div><h2>Runtime</h2><p>Binary used for the next start or restart.</p></div><Cpu size={20} /></div><label className="select-label">Selected runtime<select value={selectedRuntime} onChange={(event) => onRuntime(event.target.value)}><option value="">Select runtime</option>{runtimes.map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.name} · {runtime.build ?? 'unknown build'}</option>)}</select><ChevronDown size={16} /></label><div className="panel-footer"><span>Runtime changes are explicit</span><div className="row-actions"><button className="button secondary compact" disabled={!selectedRuntime || status?.state !== 'ready' || restarting} onClick={onRestart} type="button">{restarting ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />} Apply & restart</button><button className="button secondary compact" disabled={status?.state !== 'ready' || restarting} onClick={onRollback} type="button">Rollback</button></div></div></section>
       <section className="data-panel log-panel"><div className="panel-heading"><div><h2>Recent output</h2><p>Bounded in-memory process log.</p></div></div><pre>{status?.logs.length ? status.logs.join('\n') : 'Waiting for router output…'}</pre></section>
     </div>
   )

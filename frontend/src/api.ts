@@ -232,6 +232,7 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ runtime_id: runtimeId || null }),
   }),
+  rollback: () => request<ServerStatus>('/api/server/rollback', { method: 'POST' }),
   loadModel: (model: string) =>
     request<{ success: boolean }>('/api/server/models/load', {
       method: 'POST',

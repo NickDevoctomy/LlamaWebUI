@@ -31,6 +31,16 @@ class ServerRunRegistry:
         with self._sessions() as session:
             return self._get(session, run_id)
 
+    def previous_runtime_id(self, current_run_id: str) -> str | None:
+        """Return the most recent distinct runtime used before the active run."""
+        with self._sessions() as session:
+            current = self._get(session, current_run_id)
+            statement = select(ServerRunRecord).order_by(ServerRunRecord.started_at.desc())
+            for run in session.scalars(statement):
+                if run.id != current.id and run.runtime_id and run.runtime_id != current.runtime_id:
+                    return run.runtime_id
+        return None
+
     def create(self, runtime_id: str, endpoint: str) -> ServerRunRecord:
         record = ServerRunRecord(
             id=str(uuid4()),
