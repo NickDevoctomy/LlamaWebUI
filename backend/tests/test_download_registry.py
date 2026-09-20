@@ -83,6 +83,27 @@ def test_create_rejects_unknown_group_and_insufficient_space(
             registry.create(manifest(), "Q4/model-Q4")
 
 
+    def test_registry_can_include_associated_projector(tmp_path: Path) -> None:
+        database = tmp_path / "app.db"
+        upgrade_database(database)
+        registry = DownloadRegistry(create_database_engine(database), tmp_path / "models")
+        manifest = RepositoryManifest(
+            repo_id="owner/model",
+            revision="a" * 40,
+            groups=(
+                GgufGroup(
+                    "model", "Q4", (HubFile("model.gguf", 4),), 4, True,
+                    (HubFile("mmproj-model.gguf", 2),),
+                ),
+            ),
+        )
+
+        job = registry.create(manifest, "model", include_projector=True)
+
+        assert job.total_bytes == 6
+        assert [file["path"] for file in job.files] == ["model.gguf", "mmproj-model.gguf"]
+
+
 def test_create_rejects_unsafe_repository_file_path(registry: DownloadRegistry) -> None:
     source = manifest()
     unsafe = GgufGroup(

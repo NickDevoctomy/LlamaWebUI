@@ -67,7 +67,13 @@ class DownloadRegistry:
             session.commit()
             return records
 
-    def create(self, manifest: RepositoryManifest, group_key: str) -> DownloadJobRecord:
+    def create(
+        self,
+        manifest: RepositoryManifest,
+        group_key: str,
+        *,
+        include_projector: bool = False,
+    ) -> DownloadJobRecord:
         repo_parts = manifest.repo_id.split("/")
         if (
             not _REPO_PATTERN.fullmatch(manifest.repo_id)
@@ -84,7 +90,11 @@ class DownloadRegistry:
             raise DownloadPlanError(f"GGUF group is incomplete: {group_key}")
         if group.total_size is None:
             raise DownloadPlanError(f"GGUF group size is unknown: {group_key}")
-        for file in group.files:
+        selected_files = group.files + (group.projector_files if include_projector else ())
+        total_size = sum(file.size or 0 for file in selected_files)
+        if any(file.size is None for file in selected_files):
+            raise DownloadPlanError("selected download contains a file with unknown size")
+        for file in selected_files:
             relative_path = Path(file.path)
             unsafe_segment = any(part in {".", ".."} for part in relative_path.parts)
             if relative_path.is_absolute() or unsafe_segment:
@@ -94,9 +104,9 @@ class DownloadRegistry:
         if not destination.is_relative_to(self._model_root):
             raise DownloadPlanError("download destination escapes the model root")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        if shutil.disk_usage(destination.parent).free < group.total_size:
+        if shutil.disk_usage(destination.parent).free < total_size:
             raise DownloadPlanError(
-                f"insufficient disk space: requires {group.total_size} bytes"
+                f"insufficient disk space: requires {total_size} bytes"
             )
 
         record = DownloadJobRecord(
@@ -110,10 +120,10 @@ class DownloadRegistry:
                     "size": file.size,
                     **({"sha256": file.sha256} if file.sha256 else {}),
                 }
-                for file in group.files
+                for file in selected_files
             ],
             destination=str(destination),
-            total_bytes=group.total_size,
+            total_bytes=total_size,
             completed_bytes=0,
             state=DownloadState.QUEUED,
             error=None,

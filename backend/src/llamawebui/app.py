@@ -146,6 +146,7 @@ class DownloadCreateRequest(BaseModel):
     repo_id: str = Field(min_length=3, max_length=400)
     group_key: str = Field(min_length=1)
     revision: str | None = Field(default=None, max_length=100)
+    include_projector: bool = False
 
 
 class ServerStartRequest(BaseModel):
@@ -1163,7 +1164,11 @@ def create_app(
         registry = cast(DownloadRegistry, request.app.state.download_registry)
         try:
             manifest = await hub.repository(download.repo_id, revision=download.revision)
-            job = registry.create(manifest, download.group_key)
+            job = registry.create(
+                manifest,
+                download.group_key,
+                include_projector=download.include_projector,
+            )
             payload = _download_payload(job)
             coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
             coordinator.start(job.id)
