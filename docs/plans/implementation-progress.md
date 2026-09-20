@@ -99,6 +99,7 @@ Frontend foundation validation:
 - Server status exposes parsed prompt throughput, decode throughput, recent decode peak, and active task ID from llama.cpp timing lines
 - Dashboard is now the default workspace with router, runtime, model, profile, activity, and timing summaries
 - Server exposes an expandable effective launch-arguments view with the exact validated vector persisted at startup; secrets remain represented only by the key-file path
+- Server shows enabled profiles and model paths associated with the selected runtime
 - CUDA/backend runtime asset groups include the primary archive plus published companion archives; all group members are downloaded, digest-checked, extracted into one staging payload, probed, and promoted together
 - Runtime removal is confirmed in the UI, preserves installed files, and rejects removal of the active router runtime while retaining profile foreign-key protection
 - Server rollback selects the most recent distinct prior runtime, validates it through the normal start path, and attempts to restore the current runtime if rollback startup fails
