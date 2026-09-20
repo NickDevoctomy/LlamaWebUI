@@ -1086,6 +1086,7 @@ def create_app(
                             "path": file.path,
                             "size": file.size,
                             **({"sha256": file.sha256} if file.sha256 else {}),
+                            **({"etag": file.etag} if file.etag else {}),
                         }
                         for file in group.files
                     ],

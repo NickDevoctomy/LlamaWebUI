@@ -16,6 +16,7 @@ class HubFile:
     path: str
     size: int | None
     sha256: str | None = None
+    etag: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

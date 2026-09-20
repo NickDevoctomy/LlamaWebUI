@@ -86,6 +86,7 @@ class HuggingFaceCatalog:
                 path=sibling.rfilename,
                 size=sibling.size,
                 sha256=_sibling_sha256(sibling),
+                etag=_sibling_etag(sibling),
             )
             for sibling in model.siblings or ()
         )
@@ -107,3 +108,8 @@ def _sibling_sha256(sibling: object) -> str | None:
     ):
         return oid.lower()
     return None
+
+
+def _sibling_etag(sibling: object) -> str | None:
+    etag = getattr(sibling, "etag", None)
+    return etag.strip('"') if isinstance(etag, str) and etag else None
