@@ -149,6 +149,10 @@ class ServerStartRequest(BaseModel):
     runtime_id: str
 
 
+class ServerRestartRequest(BaseModel):
+    runtime_id: str | None = None
+
+
 class RouterModelRequest(BaseModel):
     model: str = Field(min_length=1, max_length=400)
 
@@ -618,7 +622,9 @@ def create_app(
         return _server_payload(supervisor, app_settings)
 
     @app.post("/api/server/restart")
-    async def restart_server(request: Request) -> dict[str, object]:
+    async def restart_server(
+        request: Request, restart_request: ServerRestartRequest | None = None
+    ) -> dict[str, object]:
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
         run_registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
         lock = cast(asyncio.Lock, request.app.state.router_lifecycle_lock)
@@ -629,7 +635,8 @@ def create_app(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="router has no previous runtime selection",
                 )
-            runtime_id = run_registry.get(run_id).runtime_id
+            runtime_id = restart_request.runtime_id if restart_request else None
+            runtime_id = runtime_id or run_registry.get(run_id).runtime_id
             if runtime_id is None:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,

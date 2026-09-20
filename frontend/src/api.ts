@@ -225,7 +225,10 @@ export const api = {
       body: JSON.stringify({ runtime_id: runtimeId }),
     }),
   stop: () => request<ServerStatus>('/api/server/stop', { method: 'POST' }),
-  restart: () => request<ServerStatus>('/api/server/restart', { method: 'POST' }),
+  restart: (runtimeId?: string) => request<ServerStatus>('/api/server/restart', {
+    method: 'POST',
+    body: JSON.stringify({ runtime_id: runtimeId || null }),
+  }),
   loadModel: (model: string) =>
     request<{ success: boolean }>('/api/server/models/load', {
       method: 'POST',
