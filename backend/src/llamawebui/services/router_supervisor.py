@@ -382,7 +382,8 @@ class RouterSupervisor:
             text,
         )
         generation = re.search(
-            r"task\s+(\d+).*?n_gen\s*=.*?tg\s*=\s*([\d.]+) t/s"
+            r"task\s+(\d+).*?n_gen\s*=.*?(?:t\s*=\s*([\d.]+)\s*s.*?)?"
+            r"tg\s*=\s*([\d.]+) t/s"
             r"(?:, tg_3s\s*=\s*([\d.]+))?",
             text,
         )
@@ -390,9 +391,11 @@ class RouterSupervisor:
             self._timing["prompt_tokens_per_second"] = float(prompt.group(2))
         if generation:
             self._timing["task_id"] = int(generation.group(1))
-            self._timing["decode_tokens_per_second"] = float(generation.group(2))
-            if generation.group(3):
-                self._timing["decode_tokens_per_second_peak"] = float(generation.group(3))
+            if generation.group(2):
+                self._timing["task_elapsed_seconds"] = float(generation.group(2))
+            self._timing["decode_tokens_per_second"] = float(generation.group(3))
+            if generation.group(4):
+                self._timing["decode_tokens_per_second_peak"] = float(generation.group(4))
         context = re.search(
             r"(?:context|n_ctx)\s*[=:]\s*(\d+)(?:\s*/\s*(\d+))?",
             text,

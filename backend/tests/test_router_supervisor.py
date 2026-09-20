@@ -119,7 +119,8 @@ async def test_supervisor_parses_prompt_and_decode_timing() -> None:
         "progress = 0.98, t = 6.93 s / 83.24 tokens per second"
     )
     supervisor._parse_timing(
-        "slot print_timing: id 2 | task 125 | n_gen = 7289, tg = 14.81 t/s, "
+        "slot print_timing: id 2 | task 125 | n_gen = 7289, t = 491.2 s, "
+        "tg = 14.81 t/s, "
         "tg_3s = 16.65 t/s"
     )
     supervisor._parse_timing("slot context n_ctx=32768")
@@ -129,7 +130,7 @@ async def test_supervisor_parses_prompt_and_decode_timing() -> None:
         "decode_tokens_per_second": 14.81,
         "decode_tokens_per_second_peak": 16.65,
         "task_id": 125,
-        "task_elapsed_seconds": None,
+        "task_elapsed_seconds": 491.2,
         "context_tokens": 32768,
     }
 
