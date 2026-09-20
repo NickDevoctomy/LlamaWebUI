@@ -166,6 +166,7 @@ class RouterSupervisor:
         self._restart_task: asyncio.Task[None] | None = None
         self._restart_enabled = False
         self._launch: RouterLaunch | None = None
+        self._launch_arguments: tuple[str, ...] = ()
         self._timing: dict[str, float | int | None] = {
             "prompt_tokens_per_second": None,
             "decode_tokens_per_second": None,
@@ -194,6 +195,10 @@ class RouterSupervisor:
     def timing(self) -> dict[str, float | int | None]:
         return dict(self._timing)
 
+    @property
+    def launch_arguments(self) -> tuple[str, ...]:
+        return self._launch_arguments
+
     def set_state_observer(self, observer: RouterStateObserver | None) -> None:
         self._state_observer = observer
 
@@ -206,6 +211,7 @@ class RouterSupervisor:
 
     async def _start_once(self, launch: RouterLaunch) -> None:
         arguments = launch.arguments()
+        self._launch_arguments = arguments
         require_transition(self._state, RouterState.STARTING)
         self._set_state(RouterState.STARTING)
         self._last_exit_code = None

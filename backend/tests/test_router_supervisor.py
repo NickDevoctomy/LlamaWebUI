@@ -97,6 +97,20 @@ async def test_supervisor_starts_marks_ready_and_stops(tmp_path: Path) -> None:
     assert supervisor.last_exit_code == 0
 
 
+async def test_supervisor_exposes_effective_launch_arguments(tmp_path: Path) -> None:
+    process = FakeProcess()
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        return process
+
+    supervisor = RouterSupervisor(launcher)
+    launch = launch_configuration(tmp_path)
+
+    await supervisor.start(launch)
+
+    assert supervisor.launch_arguments == launch.arguments()
+
+
 async def test_supervisor_parses_prompt_and_decode_timing() -> None:
     supervisor = RouterSupervisor()
 

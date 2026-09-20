@@ -241,6 +241,7 @@ def _server_payload(supervisor: RouterSupervisor, settings: Settings) -> dict[st
         "endpoint": f"http://{settings.router_host}:{settings.router_port}",
         "logs": supervisor.logs,
         "timing": supervisor.timing,
+        "arguments": supervisor.launch_arguments,
         "system": _system_metrics(settings.data_dir),
     }
 

@@ -14,6 +14,7 @@ export interface ServerStatus {
   logs: string[]
   timing: Record<string, number | string | null>
   system: { disk_free_bytes: number; disk_total_bytes: number }
+  arguments: string[]
 }
 
 export interface Runtime {
