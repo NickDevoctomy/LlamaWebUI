@@ -13,7 +13,7 @@ The delivery plan has eight numbered phases (`0` through `7`). Work has intentio
 
 | Phase | Status | Implemented | Important remaining work |
 | --- | --- | --- | --- |
-| 0. Feasibility spikes | Partial | Real llama.cpp b11053 probed; required Qwen flags confirmed; generated preset accepted; `/v1/models` returned the test alias; Windows parent/child process-tree shutdown verified | Real load/inference/SSE/tool tests, API-key reload behavior, older-build comparison |
+| 0. Feasibility spikes | Partial | Real llama.cpp b11053 CPU and b11060 CUDA probed; required Qwen flags confirmed; generated preset accepted; authenticated `/v1/models`, real CUDA load, non-streaming request, streaming termination, and Windows parent/child process-tree shutdown verified | Tool-call test, API-key reload behavior, older-build comparison |
 | 1. Application foundation | Advanced partial | Python package, FastAPI, settings, SQLite, Alembic, portable data directory, unified bounded event broker with sequencing/replay/reconciliation, React/Vite operator shell | Publish remaining download/runtime/profile state changes, structured/redacted logging, single-instance lock, diagnostics, static frontend packaging |
 | 2. Runtime manager | Partial | Register/list/get/reprobe/remove; option/device capability parsing; in-use deletion guard | GitHub release discovery/install, stable-to-build resolution, digest verification, switching/rollback |
 | 3. Local library and profiles | In progress | Profile persistence, typed Qwen options, capability validation, shard completeness, deterministic atomic single/combined preset writing, validated completed-download projection, profile prefill | General directory scanning, GGUF metadata, durable logical model records, command import/export |
@@ -113,6 +113,7 @@ Frontend foundation validation:
 - Current registered runtime is `Vulcan` at `E:\llama\llama-server.exe`; its probe reports no Vulkan devices on this machine.
 - This test machine has an RTX 4090 and 128 GB RAM. Register a CUDA llama.cpp build before GPU acceptance.
 - Recommended first real model: `unsloth/Qwen3.5-9B-GGUF`, revision `3885219b6810b007914f3a7950a8d1b469d598a5`, `Qwen3.5-9B-Q4_K_M`, one complete file, 5,680,522,464 bytes (5.29 GiB).
+- CUDA runtime: `E:\llama-cuda-b11053\llama-server.exe`; supplied archive is actually build b11060 (`0.4.1-dev`, commit `426090367`) with CUDA 12.4 libraries. Probe reports `CUDA0: NVIDIA GeForce RTX 4090 (24563 MiB, 23036 MiB free)`.
 
 ## Next Implementation Slice
 
@@ -124,6 +125,22 @@ Manual acceptance for transfer interruption:
 2. Select **Pause** and confirm the API returns Paused promptly, bytes stop increasing, and the hidden `.incomplete` file remains.
 3. Select **Resume** and confirm progress continues from the retained byte count rather than restarting at zero.
 4. Select **Cancel** and confirm the API returns Cancelled promptly, bytes stop increasing, the job-specific hidden staging directory is removed, and no destination is published.
+
+Measured live transfer-interruption acceptance on 2026-09-20:
+
+- Started `unsloth/Qwen3-Coder-Next-GGUF` revision `ce09c67b53bc8739eef83fe67b2f5d293c270632`, group `Qwen3-Coder-Next-UD-TQ1_0`, through the UI as job `e0d7181d-a0f8-4b59-b7dc-2ef147d2610b`.
+- Before pause, API/filesystem samples increased from 125,829,120 to 209,715,200 to 262,144,000 to 293,601,280 bytes. Pause returned and rendered Paused in 50 ms; the retained incomplete file stopped at 576,716,800 bytes for at least 2.5 seconds, no transfer child remained, and no destination was published.
+- Resume returned and rendered Downloading in 37 ms. The same incomplete path continued from the retained data and increased through 681,574,400, 713,031,680, 754,974,720, and 828,375,040 bytes rather than restarting at zero.
+- Cancel returned and rendered Cancelled in 190 ms at 1,027,604,480 persisted bytes. After 1.5 seconds the job-specific staging directory and transfer child were absent, and no destination had been published.
+- The live proof used the already-authorized large repository only long enough to test interruption; the transfer was cancelled and its new staging data removed.
+
+Measured CUDA/router acceptance on 2026-09-20:
+
+- Registered runtime `CUDA b11060` (`bc541c85-83d5-43f3-b641-1793fd6c9aef`) from the user-supplied CUDA 12.4 folder. Direct and managed probes both detected the RTX 4090; no runtime download was performed by the app.
+- Created profile `qwen3.8-27b-cuda` (`4960148c-aacf-462e-b10e-87c2b21c493e`) against the already validated 13.3 GiB `unsloth/Qwen3.8-27B-GGUF` `UD-IQ4_XS` artifact, with 60 GPU layers, 32,768 context, and flash attention on.
+- The managed router reached Ready in router mode and advertised exactly one preset. Native load reached Loaded; metadata reported 27,320,697,856 parameters, 32,768 active context, and `IQ4_XS - 4.25 bpw`. The worker process was `E:\llama-cuda-b11053\llama-server.exe`.
+- A random bearer token was rejected with 401. Using the existing local key without printing it, authenticated `/v1/models` returned `qwen3.8-27b-cuda`; a non-streaming chat request completed at the protocol level, and a streaming request produced 19 SSE events plus `[DONE]` at 20.66 predicted tokens/s. The low token cap was consumed by reasoning, so exact visible response text remains to be accepted with a larger output budget or reasoning disabled.
+- Generated OpenCode configuration contained `qwen3.8-27b-cuda` and the `LLAMA_WEB_UI_API_KEY` environment placeholder, with no raw `lwui_` token. The model was unloaded and router stopped after acceptance.
 
 Manual acceptance for terminal-job clearing:
 
@@ -155,6 +172,6 @@ Measured real-transfer acceptance on 2026-09-20:
 - 146 backend and 16 frontend tests pass; Ruff, strict mypy, production build, and editor diagnostics pass.
 - Live public-catalog acceptance returned 25 results and 27 complete groups for the selected repository; desktop and 390x844 layouts had no horizontal overflow. No download job was created.
 - At handoff, the backend is healthy on `http://127.0.0.1:18080/api/health` and Vite is serving `http://127.0.0.1:5173/`.
-- Exact next slice: live-prove child-process pause/resume and cancel cleanup, then register/probe a CUDA runtime and begin the recommended 5.29 GiB real-model acceptance flow.
+- Exact next slice: finish authenticated connection acceptance with visible non-streaming output, streaming content, and a simple parseable tool call; then implement official llama.cpp release discovery/install (including CUDA companion assets and digest verification). The recommended 5.29 GiB model download is no longer required to prove basic CUDA operation because an existing validated model loaded and streamed successfully.
 
 Deferred backend work includes real-runtime SSE/inference acceptance, local library scanning, release installation, broader event publication, and authenticated connection tests.
