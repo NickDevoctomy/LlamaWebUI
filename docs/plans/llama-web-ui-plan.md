@@ -210,7 +210,7 @@ A profile binds:
 - Additional advanced arguments for flags not yet represented by typed controls.
 - Optional notes and tags.
 
-Profiles support clone, rename, import command, export command, reset to runtime defaults, and dry-run validation.
+- Profiles support clone, rename, import command, export command, reset to runtime defaults, and dry-run validation. The current implementation includes saved-profile inspection/editing and disabled-copy cloning; command import/export and reset/dry-run workflows remain future slices.
 
 ### 7.2 Command import/export
 

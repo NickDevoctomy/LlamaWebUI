@@ -174,6 +174,10 @@ class AccessTokenCreateRequest(BaseModel):
     expiry_note: str | None = Field(default=None, max_length=500)
 
 
+class ProfileCloneRequest(BaseModel):
+    alias: str = Field(min_length=1, max_length=64)
+
+
 def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
     return {
         "id": runtime.id,
@@ -1052,6 +1056,20 @@ def create_app(
             )
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileAliasExistsError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(profile, artifacts)
+
+    @app.post("/api/profiles/{profile_id}/clone", status_code=status.HTTP_201_CREATED)
+    async def clone_profile(
+        profile_id: str, clone_request: ProfileCloneRequest, request: Request
+    ) -> dict[str, object]:
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        try:
+            profile = registry.clone(profile_id, clone_request.alias)
         except ProfileNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ProfileAliasExistsError as error:

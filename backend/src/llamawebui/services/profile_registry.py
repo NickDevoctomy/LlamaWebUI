@@ -110,3 +110,25 @@ class ProfileRegistry:
             record.enabled = enabled
             session.commit()
             return record
+
+    def clone(self, profile_id: str, alias: str) -> ModelProfileRecord:
+        with self._sessions() as session:
+            source = session.get(ModelProfileRecord, profile_id)
+            if source is None:
+                raise ProfileNotFoundError(f"model profile not found: {profile_id}")
+            if session.scalar(
+                select(ModelProfileRecord.id).where(ModelProfileRecord.alias == alias)
+            ):
+                raise ProfileAliasExistsError(f"model alias is already registered: {alias}")
+            clone = ModelProfileRecord(
+                id=str(uuid4()),
+                alias=alias,
+                runtime_id=source.runtime_id,
+                model_path=source.model_path,
+                configuration=dict(source.configuration),
+                preset=source.preset,
+                enabled=False,
+            )
+            session.add(clone)
+            session.commit()
+            return clone
