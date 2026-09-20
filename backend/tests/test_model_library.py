@@ -101,6 +101,42 @@ def test_library_rejects_checksum_modified_file(tmp_path: Path) -> None:
     assert ModelLibrary(registry, model_root).list() == ()
 
 
+def test_library_deduplicates_completed_jobs_for_same_primary_path(tmp_path: Path) -> None:
+    database = tmp_path / "app.db"
+    model_root = tmp_path / "models"
+    upgrade_database(database)
+    registry = DownloadRegistry(create_database_engine(database), model_root)
+    manifest = RepositoryManifest(
+        repo_id="owner/model-GGUF",
+        revision="f" * 40,
+        groups=(
+            GgufGroup(
+                key="model-Q4",
+                quantization="Q4",
+                files=(HubFile("model-Q4.gguf", 4),),
+                total_size=4,
+                complete=True,
+            ),
+        ),
+    )
+    first = registry.create(manifest, "model-Q4")
+    second = registry.create(manifest, "model-Q4")
+    destination = Path(first.destination)
+    destination.mkdir(parents=True)
+    (destination / "model-Q4.gguf").write_bytes(b"good")
+    registry.transition(first.id, DownloadState.DOWNLOADING)
+    registry.update_progress(first.id, 4)
+    registry.transition(first.id, DownloadState.COMPLETED)
+    registry.transition(second.id, DownloadState.DOWNLOADING)
+    registry.update_progress(second.id, 4)
+    registry.transition(second.id, DownloadState.COMPLETED)
+
+    models = ModelLibrary(registry, model_root).list()
+
+    assert len(models) == 1
+    assert models[0].download_id == first.id
+
+
 def test_library_endpoint_returns_primary_profile_path(tmp_path: Path) -> None:
     app = create_app(Settings(data_dir=tmp_path / "data"))
     with TestClient(app) as client:

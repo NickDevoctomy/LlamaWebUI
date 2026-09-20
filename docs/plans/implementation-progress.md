@@ -200,7 +200,7 @@ Measured real-transfer acceptance on 2026-09-20:
 - Managed-root library reconciliation is now implemented as a non-destructive report. The Models page can count valid completed jobs, invalid completed jobs, and stray GGUF files without deleting or mutating artifacts.
 - Resumable downloads now validate staged files against supported 32-character MD5 and 64-character SHA-256 Hub ETags before reuse; mismatches are re-downloaded. Focused worker validation passes in 4.78 seconds.
 - Rollback now reports both the candidate failure and restoration failure instead of hiding the recovery error. Server API coverage passes all 13 tests in 4.58 seconds.
-- Local library discovery now reports complete external GGUF files and shard sets under the managed root without importing or mutating them. The Models page exposes this as a separate discovery action; six focused model-library tests and the production build pass in 5.33 seconds.
+- Local library discovery now reports complete external GGUF files and shard sets under the managed root without importing or mutating them. Library projections now deduplicate completed records by canonical primary path, so duplicate downloads cannot render the same model twice. The Models page exposes discovery as a separate action; seven focused model-library tests and the production build pass in 5.41 seconds.
 - Profiles now have a non-destructive **Validate** action that checks the saved model path and runtime capabilities and previews the generated preset. Seven focused profile API tests and the production build pass in 5.68 seconds.
 
 - Commit `69c4fd5` is the checked-in Discover/Downloads baseline on `alpha` and `origin/alpha`.

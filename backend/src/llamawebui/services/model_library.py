@@ -48,13 +48,14 @@ class ModelLibrary:
         self._model_root = model_root.resolve()
 
     def list(self) -> tuple[LibraryModel, ...]:
-        models = (
-            model
-            for job in self._downloads.list(include_hidden=True)
-            if DownloadState(job.state) is DownloadState.COMPLETED
-            if (model := self._project(job)) is not None
-        )
-        return tuple(models)
+        models: dict[Path, LibraryModel] = {}
+        for job in self._downloads.list(include_hidden=True):
+            if DownloadState(job.state) is not DownloadState.COMPLETED:
+                continue
+            model = self._project(job)
+            if model is not None:
+                models.setdefault(model.primary_path.resolve(), model)
+        return tuple(models.values())
 
     def reconcile(self) -> LibraryReconcileResult:
         jobs = self._downloads.list(include_hidden=True)
