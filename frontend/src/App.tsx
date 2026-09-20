@@ -68,7 +68,11 @@ function App() {
   const [selectedRuntime, setSelectedRuntime] = useState('')
   const [profileSeed, setProfileSeed] = useState<LibraryModel>()
   const queryClient = useQueryClient()
-  const status = useQuery({ queryKey: ['server'], queryFn: api.serverStatus })
+  const status = useQuery({
+    queryKey: ['server'],
+    queryFn: api.serverStatus,
+    refetchInterval: (query) => query.state.data?.state === 'ready' ? 2000 : false,
+  })
   const runtimes = useQuery({ queryKey: ['runtimes'], queryFn: api.runtimes })
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles })
   const tokens = useQuery({ queryKey: ['tokens'], queryFn: api.tokens })
