@@ -12,6 +12,8 @@ from huggingface_hub import hf_hub_download
 from llamawebui.domain.download_job import DownloadState
 from llamawebui.services.download_registry import DownloadRegistry
 
+_PROGRESS_INTERVAL_SECONDS = 0.25
+
 
 class FileTransfer(Protocol):
     async def download(
@@ -53,13 +55,18 @@ class DownloadWorker:
                     return
                 filename = str(file_data["path"])
                 expected_size = file_data["size"]
+                if not isinstance(expected_size, int):
+                    raise OSError(f"download file size is invalid: {filename}")
                 downloaded = staging / filename
                 if not downloaded.is_file() or downloaded.stat().st_size != expected_size:
-                    downloaded = await self._transfer.download(
+                    downloaded = await self._download_with_progress(
+                        job_id=job_id,
                         repo_id=job.repo_id,
                         filename=filename,
                         revision=job.revision,
                         destination=staging,
+                        completed_bytes=completed_bytes,
+                        expected_size=expected_size,
                     )
                 current_state = DownloadState(self._registry.get(job_id).state)
                 if current_state is not DownloadState.DOWNLOADING:
@@ -89,3 +96,49 @@ class DownloadWorker:
             raise
         except Exception as error:
             self._registry.fail(job_id, str(error))
+
+    async def _download_with_progress(
+        self,
+        *,
+        job_id: str,
+        repo_id: str,
+        filename: str,
+        revision: str,
+        destination: Path,
+        completed_bytes: int,
+        expected_size: int,
+    ) -> Path:
+        transfer = asyncio.create_task(
+            self._transfer.download(
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+                destination=destination,
+            )
+        )
+        target = destination / filename
+        cache_directory = destination / ".cache" / "huggingface" / "download"
+        reported_bytes = self._registry.get(job_id).completed_bytes
+        try:
+            while not transfer.done():
+                await asyncio.sleep(_PROGRESS_INTERVAL_SECONDS)
+                incomplete_bytes = max(
+                    (
+                        path.stat().st_size
+                        for path in cache_directory.rglob("*.incomplete")
+                        if path.is_file()
+                    ),
+                    default=0,
+                )
+                current_file_bytes = max(
+                    target.stat().st_size if target.is_file() else 0,
+                    incomplete_bytes,
+                )
+                next_bytes = completed_bytes + min(current_file_bytes, expected_size)
+                if next_bytes > reported_bytes:
+                    updated = self._registry.update_progress(job_id, next_bytes)
+                    reported_bytes = updated.completed_bytes
+            return await transfer
+        finally:
+            if not transfer.done():
+                transfer.cancel()

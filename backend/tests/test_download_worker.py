@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,43 @@ async def test_worker_downloads_verifies_and_completes(tmp_path: Path) -> None:
     assert job.error is None
     assert (Path(job.destination) / "model-0.gguf").read_bytes() == b"xx"
     assert not list(Path(job.destination).parent.glob("*.partial"))
+
+
+async def test_worker_tracks_progress_inside_a_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    registry, job_id = create_registry(tmp_path, (10,))
+    partial_written = asyncio.Event()
+    finish_transfer = asyncio.Event()
+
+    class Transfer:
+        async def download(
+            self, *, repo_id: str, filename: str, revision: str, destination: Path
+        ) -> Path:
+            incomplete = destination / ".cache" / "huggingface" / "download" / (
+                "mUS11PkUrQTVsen78h_qeKf5F7c=.etag.incomplete"
+            )
+            incomplete.parent.mkdir(parents=True, exist_ok=True)
+            incomplete.write_bytes(b"xxxx")
+            partial_written.set()
+            await finish_transfer.wait()
+            target = destination / filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"x" * 10)
+            incomplete.unlink()
+            return target
+
+    monkeypatch.setattr("llamawebui.services.download_worker._PROGRESS_INTERVAL_SECONDS", 0.01)
+    worker_task = asyncio.create_task(DownloadWorker(registry, Transfer()).run(job_id))
+    await partial_written.wait()
+    try:
+        await asyncio.sleep(0.03)
+        assert registry.get(job_id).completed_bytes == 4
+    finally:
+        finish_transfer.set()
+        await worker_task
+
+    assert registry.get(job_id).state == DownloadState.COMPLETED
 
 
 async def test_worker_records_size_failure(tmp_path: Path) -> None:

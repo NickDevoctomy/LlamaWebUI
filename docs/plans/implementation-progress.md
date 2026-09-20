@@ -18,7 +18,7 @@ The delivery plan has eight numbered phases (`0` through `7`). Work has intentio
 | 2. Runtime manager | Partial | Register/list/get/reprobe/remove; option/device capability parsing; in-use deletion guard | GitHub release discovery/install, stable-to-build resolution, digest verification, switching/rollback |
 | 3. Local library and profiles | In progress | Profile persistence, typed Qwen options, capability validation, shard completeness, deterministic atomic single/combined preset writing, validated completed-download projection, profile prefill | General directory scanning, GGUF metadata, durable logical model records, command import/export |
 | 4. Server lifecycle | In progress | Router state machine, validated argument vector, process-group launch, single-process supervisor, HTTP readiness polling, bounded log tail, crash observation, owned process-tree graceful/forced shutdown, serialized status/start/stop/restart API, durable run and restart-attempt history, safe port preflight, bounded crash recovery with rapid-failure suppression, native model list/load/unload/SSE APIs, lifecycle/model event publication through unified replayable `/api/events` | Real-runtime SSE acceptance |
-| 5. Hugging Face and downloads | Advanced partial | Search, repository manifests, quant/shard grouping, revision-pinned durable jobs, staging, size verification, atomic publication, pause/resume/cancel coordination, startup reconciliation, terminal-job clearing, responsive Discover and Downloads workflows | In-file progress, retry/backoff, periodic disk checks, checksum/ETag verification, event streaming, projector association, artifact deletion, library reconciliation |
+| 5. Hugging Face and downloads | Advanced partial | Search, repository manifests, quant/shard grouping, revision-pinned durable jobs, in-file progress, staging, size verification, atomic publication, pause/resume/cancel coordination, startup reconciliation, terminal-job clearing, responsive Discover and Downloads workflows | Retry/backoff, periodic disk checks, checksum/ETag verification, event streaming, projector association, artifact deletion, library reconciliation |
 | 6. Tokens and onboarding | Advanced partial | Show-once token creation, HMAC metadata, last-four/name/expiry-note listing, permanent revocation, atomic restricted native key file, authenticated router launch/control calls, live-model OpenCode generation, Access frontend workflow | End-to-end authenticated connection tests remain blocked on an available model/profile |
 | 7. Hardening and release | Not started | Unit quality gate established | Packaging, CI/platform matrix, accessibility, backup/restore, offline behavior, operator docs |
 
@@ -36,8 +36,8 @@ From `backend/` using `..\.venv\Scripts\python.exe`:
 
 Current validation:
 
-- 143 tests passed.
-- 94.14% total coverage; configured floor is 90% with branch coverage enabled.
+- 144 tests passed.
+- 94.12% total coverage; configured floor is 90% with branch coverage enabled.
 - Ruff passed.
 - Strict mypy passed for 35 source files.
 - Two dependency deprecation warnings remain: Starlette/httpx and AnyIO `BlockingPortal`.
@@ -67,6 +67,7 @@ Frontend foundation validation:
 - Access tokens: show-once cryptographic tokens, HMAC-only SQLite persistence, metadata-only listing, permanent revocation, and atomic restricted `generated/api-keys.txt` rendering while the router is stopped
 - OpenCode: generated configuration from live native model IDs with an environment-variable API-key placeholder; no direct modification of user configuration
 - Local library: read-only `/api/library` projection includes only completed downloads whose paths remain inside the managed root and whose files still match expected sizes; sharded models resolve to the first shard
+- Download progress: active Hugging Face hashed/ETag-qualified incomplete files are discovered under each job's isolated local-dir cache, sampled every 250 ms, and persisted as monotonic byte counts while each file transfers
 
 ## Implemented Frontend Surfaces
 
@@ -120,13 +121,29 @@ Manual acceptance for terminal-job clearing:
 3. Confirm completed and cancelled rows disappear while failed, paused, queued, and downloading rows remain.
 4. Confirm any downloaded model from a cleared completed job remains available when creating a profile.
 
+Manual acceptance for in-file progress:
+
+1. Start a model download and open Downloads.
+2. Confirm the byte count and progress bar advance before the current GGUF file completes.
+3. Refresh the page during transfer and confirm the latest persisted progress remains visible.
+4. Confirm the job reaches 100% and Completed after validation and atomic publication.
+
+Measured real-transfer acceptance on 2026-09-20:
+
+- Root cause: `huggingface_hub` 0.36.2 does not write `<filename>.incomplete` for `local_dir` downloads. It derives `.cache/huggingface/download/<base64-sha1(metadata-name)>.<etag>.incomplete`, so the previous exact-path sampler never saw active bytes.
+- The authorized repository `unsloth/Qwen3-Coder-Next-GGUF` at revision `ce09c67b53bc8739eef83fe67b2f5d293c270632` exposed 35 complete groups. The smallest was `Qwen3-Coder-Next-UD-TQ1_0`, one file totaling 18,941,835,296 bytes (17.6 GiB), and it was started through the Discover UI.
+- For job `3d7b3d27-c9a9-4ced-8d8d-43ef7847e4b2`, active bytes were written to `data/models/unsloth/Qwen3-Coder-Next-GGUF/.ce09c67b53bc8739eef83fe67b2f5d293c270632.3d7b3d27-c9a9-4ced-8d8d-43ef7847e4b2.partial/.cache/huggingface/download/b7exlr1Rr7qLDLwcAZdupd92-vQ=.352049921f1dc861bf33fd03f5d2c25a08f248ee808179fe63ce16307357551c.incomplete`.
+- Four pre-completion API/filesystem samples matched and increased from 1,583,349,760 to 1,646,264,320 to 1,740,636,160 to 1,782,579,200 bytes. The Downloads UI showed 2.4 GiB / 17.6 GiB (13%), then 3.0 GiB (17%), and 3.6 GiB (21%) before cancellation.
+- The job was cancelled after proof, at a persisted 3,911,188,480 bytes. No destination was published. `huggingface_hub` cannot stop mid-file, so the hidden partial remains until the transfer call returns; this is existing cancellation behavior and must be addressed in the later cancellation/retry slice.
+- Full backend validation passed: 144 tests, 94.12% coverage, Ruff, and strict mypy for 37 source files. Frontend files were unchanged, so frontend tests/build and responsive re-acceptance were not required.
+
 ## Resume State
 
 - Commit `69c4fd5` is the checked-in Discover/Downloads baseline on `alpha` and `origin/alpha`.
 - Root `data/` is ignored because it contains local runtime/application state. Commit `1f8eca6` removed `data/llamawebui.db` from Git tracking only; the local file remains intact and must not be deleted or reset.
-- 143 backend and 10 frontend tests pass; Ruff, strict mypy, production build, and editor diagnostics pass.
+- 144 backend and 10 frontend tests pass; Ruff, strict mypy, production build, and editor diagnostics pass.
 - Live public-catalog acceptance returned 25 results and 27 complete groups for the selected repository; desktop and 390x844 layouts had no horizontal overflow. No download job was created.
 - At handoff, the backend is healthy on `http://127.0.0.1:18080/api/health` and Vite is serving `http://127.0.0.1:5173/`.
-- First action next session: register/probe a CUDA runtime and begin the 5.29 GiB real-model acceptance flow.
+- Exact next slice: make active pause/cancel interrupt a Hugging Face transfer promptly while preserving its partial for resume (cancel should remove it), then register/probe a CUDA runtime and begin the recommended 5.29 GiB real-model acceptance flow.
 
 Deferred backend work includes real-runtime SSE/inference acceptance, local library scanning, release installation, broader event publication, and authenticated connection tests.
