@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import shutil
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress

@@ -276,7 +276,7 @@ The main dashboard is an operational workspace, not a landing page. It includes:
 
 - Persistent left navigation: Dashboard, Models, Discover, Downloads, Server, Profiles, Access, Runtimes, Settings.
 - Top status strip for router state, endpoint, active runtime, loaded model count, and current throughput/activity.
-- Dashboard is the primary operational summary: CPU, RAM, network, disk I/O, and—when available—GPU/VRAM utilization and memory. Metrics must show unavailable/unsupported states clearly rather than inventing values. The initial implementation ships CPU/RAM/disk/network gauges plus disk-I/O counters with explicit GPU/VRAM-unavailable state; richer GPU samplers remain follow-up work.
+- Dashboard is the primary operational summary: CPU, RAM, network, disk I/O, and—when available—separate GPU processing utilization and VRAM usage gauges. Metrics must show unavailable/unsupported states clearly rather than inventing values. The implementation uses `nvidia-smi` when available; unsupported GPU environments remain explicitly unavailable.
 - Model table with quant, size, profile, loaded/loading/sleeping/error state, and load/unload actions.
 - Server page with start/stop/restart, endpoint copy action, health, selected profile details, effective runtime and launch arguments, log stream, and recent failures.
 - Server monitoring shows current and peak tokens per second, prompt-processing throughput, decode throughput, active task number, current-task elapsed time, and context usage when those values are available from llama.cpp timing/status output.
