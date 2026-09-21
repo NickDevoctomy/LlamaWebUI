@@ -111,7 +111,7 @@ Frontend foundation validation:
 - Deterministic rollback API coverage confirms successful return to a previous runtime; a live native `/models/sse` request reached the expected event-stream endpoint but PowerShell's buffered request timed out before receiving a frame, so bounded streaming capture remains required
 - Bounded SSE collection is now covered by deterministic transport tests and safely stops after a frame limit or timeout without leaking the upstream stream; live curl acceptance reached the native event endpoint but received no frame within five seconds
 - Control-plane `/api/server/models/events` now emits `: keepalive` comments during idle native streams and cleans up pending reads on disconnect, so clients can distinguish a healthy idle stream from a stalled connection; deterministic endpoint coverage remains green, while live curl buffering did not expose the comment within 17 seconds
-- Endpoint-level keepalive testing is explicitly deferred because an unbounded Starlette `TestClient` stream caused unacceptable suite hangs; deterministic transport and finite API coverage remain in place
+- Endpoint-level keepalive testing is now covered by a bounded async-generator test that observes `: keepalive\\n\\n`, explicitly closes the stream, and completes promptly without a real router; the former SSE test debt is resolved
 - Desktop and mobile layouts use stable metrics, table reduction, and fixed navigation without content overlap
 
 ## Important Constraints

@@ -9,7 +9,11 @@ from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.domain.download_job import DownloadState
 from llamawebui.domain.model_manifest import GgufGroup, HubFile
 from llamawebui.services.download_registry import DownloadRegistry
-from llamawebui.services.download_worker import DownloadWorker, HuggingFaceFileTransfer
+from llamawebui.services.download_worker import (
+    DownloadWorker,
+    HuggingFaceFileTransfer,
+    _matches_etag,
+)
 from llamawebui.services.huggingface_catalog import RepositoryManifest
 from llamawebui.services.huggingface_transfer_process import execute_transfer
 
@@ -246,6 +250,15 @@ async def test_worker_redownloads_staged_file_when_etag_does_not_match(
 
     assert calls == ["model-0.gguf"]
     assert registry.get(job_id).state == DownloadState.COMPLETED
+
+
+async def test_worker_etag_validation_ignores_unsupported_values(tmp_path: Path) -> None:
+    path = tmp_path / "model.gguf"
+    path.write_bytes(b"model")
+
+    assert _matches_etag(path, None)
+    assert _matches_etag(path, "opaque-etag")
+    assert _matches_etag(path, '"opaque-etag"')
 
 
 async def test_worker_rejects_transfer_path_outside_staging(tmp_path: Path) -> None:

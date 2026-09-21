@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from llamawebui.app import create_app
 from llamawebui.config import Settings
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
+from llamawebui.services.model_event_stream import stream_model_events
 from llamawebui.services.router_client import RouterAPIError, RouterModel, RouterModelEvent
 from llamawebui.services.router_supervisor import (
     RouterProcess,
@@ -80,6 +81,26 @@ class FakeRouterClient:
             raise self.error
         for event in self.events:
             yield event
+
+
+@pytest.mark.asyncio
+async def test_model_event_stream_emits_keepalive_and_closes_promptly() -> None:
+    class IdleClient:
+        closed = False
+
+        async def model_events(self) -> AsyncIterator[RouterModelEvent]:
+            try:
+                await asyncio.Event().wait()
+                yield RouterModelEvent(model="never", event="never", data={})
+            finally:
+                self.closed = True
+
+    client = IdleClient()
+    stream = stream_model_events(client, keepalive_seconds=0.01)
+
+    assert await anext(stream) == ": keepalive\n\n"
+    await stream.aclose()
+    assert client.closed
 
 
 def test_server_start_status_and_stop(tmp_path: Path) -> None:

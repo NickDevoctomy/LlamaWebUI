@@ -101,3 +101,18 @@ async def test_coordinator_events_include_durable_progress(tmp_path: Path) -> No
     assert event.data["job_id"] == job_id
     assert event.data["total_bytes"] == registry.get(job_id).total_bytes
     await coordinator.shutdown()
+
+
+async def test_coordinator_ignores_duplicate_start_and_rejects_active_restart(
+    tmp_path: Path,
+) -> None:
+    coordinator, registry, job_id = create_coordinator(tmp_path)
+    coordinator.start(job_id)
+    coordinator.start(job_id)
+    await asyncio.sleep(0)
+
+    with pytest.raises(ValueError, match="active"):
+        coordinator.redownload(job_id)
+
+    await coordinator.shutdown()
+    assert registry.get(job_id).state == DownloadState.PAUSED
