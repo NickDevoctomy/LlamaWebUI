@@ -28,6 +28,24 @@ def test_health_creates_data_directory_without_exposing_token(tmp_path: Path) ->
     assert settings.database_path.is_file()
 
 
+def test_packaged_static_directory_serves_frontend_without_vite(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text(
+        "<!doctype html><html><body>packaged-ui</body></html>", encoding="utf-8"
+    )
+    settings = Settings(data_dir=tmp_path / "data")
+
+    with TestClient(create_app(settings, static_dir=static_dir)) as client:
+        frontend = client.get("/")
+        health = client.get("/api/health")
+
+    assert frontend.status_code == 200
+    assert "packaged-ui" in frontend.text
+    assert frontend.headers["content-type"].startswith("text/html")
+    assert health.status_code == 200
+
+
 def test_access_token_is_shown_once_and_can_be_revoked(tmp_path: Path) -> None:
     settings = Settings(data_dir=tmp_path / "data")
 

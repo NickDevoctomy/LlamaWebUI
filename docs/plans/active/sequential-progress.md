@@ -5,7 +5,7 @@
 **Requirements reference:** [../llama-web-ui-plan.md](../llama-web-ui-plan.md)
 **Updated:** 2026-09-21
 **Current phase:** Phase 1 — Application foundation completion
-**Current slice:** 1.3 — Diagnostics bundle
+**Current slice:** Phase 1 gate review
 
 ## Operating rule
 
@@ -18,11 +18,12 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 - Phase 1.1 - see `notes/0003-phase-1-1-single-instance-locking.md`.
 - Phase 1.2 - see `notes/0004-phase-1-2-redacted-structured-logging.md`.
 - Phase 1.3 - see `notes/0005-phase-1-3-diagnostics-bundle.md`.
+- Phase 1.4 - see `notes/0006-phase-1-4-static-frontend-packaging.md`.
 
 ## Phase gates
 
 - Phase 0: Complete — slices 0.1 and 0.2 complete; all required gates pass.
-- Phase 1: In progress — slices 1.1, 1.2, and 1.3 complete; slice 1.4 is next.
+- Phase 1: Gate review — slices 1.1 through 1.4 complete; all slice-level gates pass.
 - Phase 2: Not started.
 - Phase 3: Not started.
 - Phase 4: Not started.
@@ -43,9 +44,10 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 | 2026-09-21 | Phase 1.1 single-instance locking | 229 backend tests passed; 90.00% branch coverage; Ruff, strict mypy, and `git diff --check` passed; lock contention and clean release are deterministic |
 | 2026-09-21 | Phase 1.2 redacted structured logging | 232 backend tests passed; 90.18% branch coverage; Ruff, strict mypy, frontend tests/build, and `git diff --check` passed; representative bearer/HF/application tokens are absent from emitted records and router log tails |
 | 2026-09-21 | Phase 1.3 diagnostics bundle | 236 backend tests passed; 90.08% branch coverage; Ruff, strict mypy, frontend tests/build, and `git diff --check` passed; export is atomic, bounded, schema-aware, and excludes representative token/key-file contents |
+| 2026-09-21 | Phase 1.4 static frontend packaging | 237 backend tests passed; 90.07% branch coverage; Ruff, strict mypy, frontend tests/build, and `git diff --check` passed; packaged static assets serve from FastAPI and API routing remains available |
 
 ## Next action
 
-Begin Phase 1 slice 1.4 — static frontend packaging. Do not begin Phase 2 until the Phase 1 gate passes.
+Complete the Phase 1 gate review. If accepted, begin Phase 2 slice 2.1 — runtime capability diagnostics.
 
-Suggested commit: `feat: add redacted diagnostics bundle`
+Suggested commit: `feat: serve packaged frontend assets`

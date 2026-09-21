@@ -32,6 +32,7 @@ packages = ["src/llamawebui"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/llamawebui/migrations/script.py.mako" = "llamawebui/migrations/script.py.mako"
+"src/llamawebui/static" = "llamawebui/static"
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers --cov=llamawebui --cov-branch --cov-report=term-missing --cov-fail-under=90"

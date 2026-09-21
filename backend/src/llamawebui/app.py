@@ -11,6 +11,7 @@ from typing import Literal, cast
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, Field, field_validator
 
@@ -383,8 +384,10 @@ def create_app(
     router_supervisor: RouterSupervisor | None = None,
     router_port_probe: RouterPortProbe = probe_router_port,
     router_client: RouterClient | None = None,
+    static_dir: Path | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
+    packaged_static_dir = static_dir or Path(__file__).parent / "static"
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -1583,6 +1586,9 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    if packaged_static_dir.is_dir():
+        app.mount("/", StaticFiles(directory=packaged_static_dir, html=True), name="frontend")
 
     return app
 
