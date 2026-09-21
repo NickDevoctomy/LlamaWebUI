@@ -79,9 +79,21 @@ def test_serve_command_uses_environment_settings(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("LLAMAWEBUI_HOST", "127.0.0.2")
     monkeypatch.setenv("LLAMAWEBUI_PORT", "9124")
     monkeypatch.setattr("uvicorn.run", fake_run)
+    class FakeLock:
+        def __init__(self, path: Path) -> None:
+            captured["lock_path"] = path
+
+        def __enter__(self) -> FakeLock:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(cli, "InstanceLock", FakeLock)
     monkeypatch.setattr("sys.argv", ["llamawebui", "serve"])
 
     assert cli.main() == 0
     assert captured["host"] == "127.0.0.2"
     assert captured["port"] == 9124
     assert captured["app"] is not None
+    assert str(captured["lock_path"]).endswith("llamawebui.lock")

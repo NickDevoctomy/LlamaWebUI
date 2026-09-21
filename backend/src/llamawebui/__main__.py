@@ -12,6 +12,7 @@ import uvicorn
 
 from llamawebui.app import create_app
 from llamawebui.config import Settings
+from llamawebui.services.instance_lock import InstanceLock
 from llamawebui.services.runtime_probe import RuntimeProbeResult, probe_runtime
 
 
@@ -52,7 +53,8 @@ def main() -> int:
 
     if args.command == "serve":
         settings = Settings()
-        uvicorn.run(create_app(settings), host=settings.host, port=settings.port)
+        with InstanceLock(settings.data_dir / "llamawebui.lock"):
+            uvicorn.run(create_app(settings), host=settings.host, port=settings.port)
         return 0
 
     return 2

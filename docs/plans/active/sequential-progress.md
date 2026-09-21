@@ -4,8 +4,8 @@
 **Execution plan:** [sequential-completion-plan.md](sequential-completion-plan.md)
 **Requirements reference:** [../llama-web-ui-plan.md](../llama-web-ui-plan.md)
 **Updated:** 2026-09-21
-**Current phase:** Phase 0 — Feasibility completion
-**Current slice:** 0.2 — Compare one older runtime build
+**Current phase:** Phase 1 — Application foundation completion
+**Current slice:** 1.2 — Redacted structured logging
 
 ## Operating rule
 
@@ -15,11 +15,12 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 
 - Phase 0.1 — see `notes/0001-phase-0-1-api-key-reload.md`.
 - Phase 0.2 - see `notes/0002-phase-0-2-older-runtime-comparison.md`.
+- Phase 1.1 - see `notes/0003-phase-1-1-single-instance-locking.md`.
 
 ## Phase gates
 
 - Phase 0: Complete — slices 0.1 and 0.2 complete; all required gates pass.
-- Phase 1: Not started.
+- Phase 1: In progress — slice 1.1 complete; slice 1.2 is next.
 - Phase 2: Not started.
 - Phase 3: Not started.
 - Phase 4: Not started.
@@ -37,7 +38,10 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 | 2026-09-21 | Phase 0.2 full backend validation | 224 tests passed; 90.01% branch coverage, Ruff, and strict mypy passed |
 | 2026-09-21 | Phase 0.2 frontend gate | 19 frontend tests passed; production build passed |
 | 2026-09-21 | Phase 0.2 older-runtime comparison | Official b10964 versus registered b11053: identical 329-option catalogs, no devices on either CPU build; unsupported profile options remain diagnostics and validation does not mutate saved configuration or presets |
+| 2026-09-21 | Phase 1.1 single-instance locking | 229 backend tests passed; 90.00% branch coverage; Ruff, strict mypy, and `git diff --check` passed; lock contention and clean release are deterministic |
 
 ## Next action
 
-Begin Phase 1 slice 1.1 — single-instance locking. Do not begin any later Phase 1 slice until slice 1.1 passes all required gates.
+Begin Phase 1 slice 1.2 — redacted structured logging. Do not begin any later Phase 1 slice until slice 1.2 passes all required gates.
+
+Suggested commit: `feat: add single-instance application locking`
