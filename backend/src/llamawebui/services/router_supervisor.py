@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import signal
@@ -17,6 +18,9 @@ from typing import Protocol
 import httpx
 
 from llamawebui.domain.router_lifecycle import RouterLaunch, RouterState, require_transition
+from llamawebui.services.logging_utils import redact_text
+
+LOGGER = logging.getLogger("llamawebui.router")
 
 
 class RouterOutput(Protocol):
@@ -372,8 +376,12 @@ class RouterSupervisor:
     async def _capture_logs(self, output: RouterOutput) -> None:
         while line := await output.readline():
             text = line.decode(errors="replace").rstrip("\r\n")
-            self._logs.append(text)
+            self._logs.append(redact_text(text))
             self._parse_timing(text)
+            LOGGER.debug(
+                "router_output",
+                extra={"component": "router", "event": "output", "line": redact_text(text)},
+            )
 
     def _parse_timing(self, text: str) -> None:
         prompt = re.search(

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from llamawebui.domain.download_job import DownloadState
 from llamawebui.models import DownloadJobRecord
 from llamawebui.services.download_registry import DownloadRegistry
 from llamawebui.services.download_worker import DownloadWorker
 from llamawebui.services.event_broker import EventBroker
+
+LOGGER = logging.getLogger("llamawebui.download")
 
 
 class DownloadCoordinator:
@@ -36,6 +39,10 @@ class DownloadCoordinator:
             return
         task = asyncio.create_task(self._worker.run(job_id))
         self._tasks[job_id] = task
+        LOGGER.info(
+            "download_started",
+            extra={"component": "download", "event": "started", "job_id": job_id},
+        )
         self._publish(job_id, "started")
         task.add_done_callback(lambda _: self._task_finished(job_id))
 

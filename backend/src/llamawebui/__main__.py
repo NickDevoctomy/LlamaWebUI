@@ -13,6 +13,7 @@ import uvicorn
 from llamawebui.app import create_app
 from llamawebui.config import Settings
 from llamawebui.services.instance_lock import InstanceLock
+from llamawebui.services.logging_utils import configure_logging
 from llamawebui.services.runtime_probe import RuntimeProbeResult, probe_runtime
 
 
@@ -53,6 +54,8 @@ def main() -> int:
 
     if args.command == "serve":
         settings = Settings()
+        token = settings.hf_token.get_secret_value() if settings.hf_token else ""
+        configure_logging(settings.log_level, secrets=(token,))
         with InstanceLock(settings.data_dir / "llamawebui.lock"):
             uvicorn.run(create_app(settings), host=settings.host, port=settings.port)
         return 0

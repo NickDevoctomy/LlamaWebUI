@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -87,6 +88,7 @@ from llamawebui.services.system_metrics import collect_system_metrics
 from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRegistry
 
 MODEL_EVENT_KEEPALIVE_SECONDS = 15.0
+LOGGER = logging.getLogger("llamawebui.app")
 
 
 class RuntimeRegistrationRequest(BaseModel):
@@ -385,6 +387,16 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        LOGGER.info(
+            "application_starting",
+            extra={
+                "component": "application",
+                "event": "startup",
+                "host": app_settings.host,
+                "port": app_settings.port,
+                "hf_token_configured": app_settings.hf_token is not None,
+            },
+        )
         app_settings.data_dir.mkdir(parents=True, exist_ok=True)
         upgrade_database(app_settings.database_path)
         engine = create_database_engine(app_settings.database_path)
@@ -438,6 +450,16 @@ def create_app(
         def record_router_state(
             state: RouterState, pid: int | None, exit_code: int | None
         ) -> None:
+            LOGGER.info(
+                "router_state_changed",
+                extra={
+                    "component": "router",
+                    "event": "state_changed",
+                    "state": state.value,
+                    "pid": pid,
+                    "exit_code": exit_code,
+                },
+            )
             run_id = cast(str | None, app.state.active_server_run_id)
             if run_id is not None:
                 previous_run = app.state.server_run_registry.get(run_id)
@@ -463,15 +485,27 @@ def create_app(
                 app.state.router_event_synchronizer.deactivate()
 
         app.state.router_supervisor.set_state_observer(record_router_state)
+        LOGGER.info(
+            "application_started",
+            extra={"component": "application", "event": "started"},
+        )
         try:
             yield
         finally:
+            LOGGER.info(
+                "application_stopping",
+                extra={"component": "application", "event": "shutdown"},
+            )
             async with app.state.router_lifecycle_lock:
                 await app.state.router_supervisor.stop()
             app.state.router_supervisor.set_state_observer(None)
             await app.state.router_event_synchronizer.shutdown()
             await app.state.download_coordinator.shutdown()
             engine.dispose()
+            LOGGER.info(
+                "application_stopped",
+                extra={"component": "application", "event": "stopped"},
+            )
 
     app = FastAPI(title="LlamaWebUI", version="0.1.0", lifespan=lifespan)
 
