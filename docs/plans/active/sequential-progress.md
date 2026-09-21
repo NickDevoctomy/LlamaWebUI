@@ -13,27 +13,12 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 
 ## Completed slices
 
-- Phase 0.1 — API-key reload semantics: see `notes/0001-phase-0-1-api-key-reload.md`.
-
-## Phase 0 — Feasibility completion
-
-### 0.1 Confirm API-key reload semantics — **COMPLETE**
-
-**Required work:** Determine whether the selected llama.cpp runtime reloads changes to `--api-key-file` without a router restart. Use a controlled local runtime test and record the runtime/build, method, observed status codes, and required UI behavior.
-
-**Evidence:** See `notes/0001-phase-0-1-api-key-reload.md`.
-
-**Suggested commit message:** `test: record api key reload semantics`
-
-### 0.2 Compare one older runtime build — **IN PROGRESS**
-
-**Required work:** Probe one older available llama.cpp build, compare capabilities, and verify unsupported options remain diagnostics without profile mutation.
-
-**Result:** Ready to begin now that 0.1 is complete. Do not proceed beyond this slice.
+- Phase 0.1 — see `notes/0001-phase-0-1-api-key-reload.md`.
+- Phase 0.2 - see `notes/0002-phase-0-2-older-runtime-comparison.md`.
 
 ## Phase gates
 
-- Phase 0: In progress — slice 0.1 complete; slice 0.2 in progress.
+- Phase 0: Complete — slices 0.1 and 0.2 complete; all required gates pass.
 - Phase 1: Not started.
 - Phase 2: Not started.
 - Phase 3: Not started.
@@ -48,7 +33,11 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 | --- | --- | --- |
 | 2026-09-21 | Existing backend/frontend baseline | 224 backend tests, 90.01% branch coverage, Ruff, mypy, and frontend build passed |
 | 2026-09-21 | Phase 0.1 API-key reload runtime probe | Build 11053 kept the old key valid and rejected the replacement key after an in-place file change; managed-router restart is required |
+| 2026-09-21 | Phase 0.2 focused backend validation | 35 focused tests passed; the focused command was not a full quality gate |
+| 2026-09-21 | Phase 0.2 full backend validation | 224 tests passed; 90.01% branch coverage, Ruff, and strict mypy passed |
+| 2026-09-21 | Phase 0.2 frontend gate | 19 frontend tests passed; production build passed |
+| 2026-09-21 | Phase 0.2 older-runtime comparison | Official b10964 versus registered b11053: identical 329-option catalogs, no devices on either CPU build; unsupported profile options remain diagnostics and validation does not mutate saved configuration or presets |
 
 ## Next action
 
-Complete Phase 0 slice 0.2. Do not implement Phase 1 or any later-phase slice until the Phase 0 gate is explicitly closed here.
+Begin Phase 1 slice 1.1 — single-instance locking. Do not begin any later Phase 1 slice until slice 1.1 passes all required gates.

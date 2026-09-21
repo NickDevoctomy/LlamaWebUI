@@ -52,7 +52,7 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### 0.2 Compare one older runtime build
 
-**Status:** Current slice — not started.
+**Status:** Complete — evidence is recorded in `notes/0002-phase-0-2-older-runtime-comparison.md`
 
 - Probe one older available llama.cpp build against the current capability parser.
 - Record option/device/router-mode differences.
@@ -63,8 +63,8 @@ The baseline contains known stale statements in older planning documents. This p
 ### Phase 0 gate
 
 - [x] API-key reload behavior recorded.
-- [ ] Older-build comparison recorded.
-- [ ] Focused tests and runtime acceptance evidence added to progress documentation.
+- [x] Older-build comparison recorded.
+- [x] Focused tests and runtime acceptance evidence added to progress documentation.
 
 ## Phase 1 — Application foundation completion
 

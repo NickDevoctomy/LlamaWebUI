@@ -17,19 +17,10 @@ Use this prompt when starting a new coding session:
 
 > Read `README.md` and follow the current slice handoff exactly.
 
-## Current slice handoff
-
-This section is the single copy/paste handoff for the next session. Update it whenever the current slice changes.
-
-- **Phase:** Phase 0 — Feasibility completion
-- **Slice:** 0.2 — Compare one older runtime build
-- **Instruction:** Probe one older available llama.cpp build, compare capabilities, and verify unsupported options remain diagnostics without profile mutation. Do not begin Phase 1 or any later phase.
-- **Suggested commit message:** `test: compare older runtime capabilities`
-
 ## Sequential workflow
 
 1. Open `sequential-progress.md`.
-2. Read the current phase and current slice.
+2. Read the current phase and next action in `sequential-progress.md`.
 3. Read the matching requirements and acceptance criteria in `sequential-completion-plan.md`.
 4. Inspect the repository and existing tests before editing.
 5. Run the required baseline check before making changes when the slice is substantial:
@@ -40,7 +31,7 @@ This section is the single copy/paste handoff for the next session. Update it wh
 8. Run focused validation immediately after the edit.
 9. Run the relevant full quality gates before closing the slice.
 10. Perform manual acceptance when the slice requires a browser, installed runtime, process, or live integration.
-11. Add a numbered note under `notes/` for the completed slice, then update `sequential-progress.md` with only a short link and handoff state.
+11. Add one numbered note under `notes/` only after the slice passes all required gates, then update `sequential-progress.md` with only a short link and the next handoff state.
 12. Include a suggested commit message in the progress entry and final response.
 
 ## Required deliverable for every slice

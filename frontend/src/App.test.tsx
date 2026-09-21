@@ -94,7 +94,6 @@ describe('App', () => {
     renderApp()
 
     expect(await screen.findByText('http://127.0.0.1:1234')).toBeInTheDocument()
-    expect(screen.getByText('No downloaded models')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Server' }))
 
@@ -105,13 +104,14 @@ describe('App', () => {
   it('renders the operational dashboard by default', async () => {
     renderApp()
 
-    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Dashboard', level: 1 })).toBeInTheDocument()
     expect(screen.getByText('Operational overview')).toBeInTheDocument()
-    expect(screen.getByText('Current work queues.')).toBeInTheDocument()
+    expect(screen.getByText('Local control-plane health and active work.')).toBeInTheDocument()
   })
 
   it('refreshes the downloaded model library from the Models page', async () => {
     const fetchMock = renderApp()
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
     await screen.findByText('No downloaded models')
     fetchMock.mockClear()
 
@@ -146,6 +146,7 @@ describe('App', () => {
     const profile = { id: 'profile-1', alias: 'profile-only', runtime_id: 'runtime-1', model_path: 'E:\\other.gguf', configuration: {}, enabled: true }
     renderApp({ libraryList: [model], profileList: [profile] })
 
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
     expect(await screen.findByText('owner/Qwen-Test-GGUF')).toBeInTheDocument()
     expect(screen.getByText('Q4/model-Q4')).toBeInTheDocument()
     expect(screen.getByText('3.9 GB')).toBeInTheDocument()
@@ -159,6 +160,7 @@ describe('App', () => {
     const model = { download_id: 'download-1', repo_id: 'owner/Qwen-Test-GGUF', revision: 'a'.repeat(40), group_key: 'Q4/model-Q4', primary_path: 'E:\\models\\model.gguf', file_count: 1, total_bytes: 1000 }
     renderApp({ libraryList: [model], runtimeList: [runtime] })
 
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Configure' }))
 
     expect(await screen.findByRole('heading', { name: 'Create model profile' })).toBeInTheDocument()
@@ -171,6 +173,7 @@ describe('App', () => {
     const profile = { id: 'profile-1', alias: 'qwen-test', runtime_id: 'runtime-1', model_path: model.primary_path, configuration: {}, enabled: true, validation_state: 'available', source_download: { id: model.download_id, repo_id: model.repo_id, revision: model.revision, group_key: model.group_key, file_count: 1, total_bytes: 1000 } }
     const fetchMock = renderApp({ libraryList: [model], profileList: [profile] })
 
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
     fireEvent.click(await screen.findByRole('button', { name: `Delete ${model.repo_id} ${model.group_key}` }))
     expect(screen.getByRole('heading', { name: 'Delete downloaded model?' })).toBeInTheDocument()
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete model' }))
