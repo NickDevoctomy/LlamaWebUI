@@ -68,7 +68,7 @@ The baseline contains known stale statements in older planning documents. This p
 
 ## Phase 1 — Application foundation completion
 
-**Status:** Incomplete. Start only after Phase 0 gate.
+**Status:** Complete — all slices and the Phase 1 gate pass. Start only after Phase 0 gate.
 
 ### 1.1 Single-instance locking
 
@@ -107,12 +107,12 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### Phase 1 gate
 
-- [ ] Single-instance behavior complete.
-- [ ] Structured redacted logging complete.
-- [ ] Diagnostics bundle complete.
-- [ ] Static frontend serving complete.
-- [ ] Backend/frontend quality gates pass.
-- [ ] Phase 1 packaged-start smoke test passes.
+- [x] Single-instance behavior complete.
+- [x] Structured redacted logging complete.
+- [x] Diagnostics bundle complete.
+- [x] Static frontend serving complete.
+- [x] Backend/frontend quality gates pass.
+- [x] Phase 1 packaged-start smoke test passes.
 
 ## Phase 2 — Runtime manager completion
 
@@ -301,4 +301,4 @@ Release is complete only when every phase gate above is checked and the followin
 - No required acceptance step depends on the 93.7 GB routine-download target.
 - A suggested release commit/tag message is recorded.
 
-**Current next action:** Complete Phase 0.1 by recording API-key reload semantics. Do not begin Phase 1 work until the Phase 0 gate is checked.
+**Current next action:** Begin Phase 2.1 — runtime capability diagnostics. Do not begin Phase 2.2 until Phase 2.1 passes its acceptance criteria.
