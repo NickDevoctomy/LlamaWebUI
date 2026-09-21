@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import deque
 from datetime import UTC, datetime
 from typing import Any
 
@@ -15,6 +16,8 @@ _SECRET_PATTERNS = (
     re.compile(r"(?i)\b(?:hf|lwui)_[A-Za-z0-9_-]{8,}"),
     re.compile(r"(?i)(\b(?:HF_TOKEN|LLAMAWEBUI_HF_TOKEN|API_KEY|TOKEN)\s*[=:]\s*)[^\s,;]+"),
 )
+_LOG_CAPACITY = 200
+_recent_logs: deque[str] = deque(maxlen=_LOG_CAPACITY)
 
 
 class RedactionFilter(logging.Filter):
@@ -64,6 +67,16 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str, sort_keys=True)
 
 
+class RecentLogHandler(logging.Handler):
+    """Retain a bounded, already-formatted application log tail."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            _recent_logs.append(self.format(record))
+        except Exception:
+            self.handleError(record)
+
+
 _RESERVED_RECORD_FIELDS = frozenset(
     logging.LogRecord("llamawebui", 0, "", 0, "", (), None).__dict__
 )
@@ -76,6 +89,18 @@ def configure_logging(level: str = "INFO", *, secrets: tuple[str, ...] = ()) -> 
     root.handlers.clear()
     handler = logging.StreamHandler()
     handler.setFormatter(JsonFormatter())
-    handler.addFilter(RedactionFilter(secrets))
+    redactor = RedactionFilter(secrets)
+    handler.addFilter(redactor)
+    recent = RecentLogHandler()
+    recent.setFormatter(JsonFormatter())
+    recent.addFilter(RedactionFilter(secrets))
     root.addHandler(handler)
+    root.addHandler(recent)
     root.propagate = False
+
+
+def recent_logs(limit: int = _LOG_CAPACITY) -> tuple[str, ...]:
+    """Return the newest bounded application records in chronological order."""
+    if limit < 1:
+        return ()
+    return tuple(_recent_logs)[-limit:]

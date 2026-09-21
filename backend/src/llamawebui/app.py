@@ -34,6 +34,7 @@ from llamawebui.models import (
     RuntimeRecord,
     ServerRunRecord,
 )
+from llamawebui.services.diagnostics import DiagnosticsExporter
 from llamawebui.services.download_coordinator import DownloadCoordinator
 from llamawebui.services.download_registry import (
     DownloadJobNotFoundError,
@@ -444,6 +445,7 @@ def create_app(
             app.state.router_client, app.state.event_broker
         )
         app.state.server_run_registry = ServerRunRegistry(engine)
+        app.state.diagnostics_exporter = DiagnosticsExporter(app_settings, engine)
         app.state.active_server_run_id = None
         app.state.router_lifecycle_lock = asyncio.Lock()
 
@@ -621,6 +623,23 @@ def create_app(
             "database_path": str(app_settings.database_path),
             "hugging_face_token_configured": app_settings.hf_token is not None,
         }
+
+    @app.post("/api/diagnostics/export")
+    async def export_diagnostics(request: Request) -> dict[str, object]:
+        exporter = cast(DiagnosticsExporter, request.app.state.diagnostics_exporter)
+        path = exporter.export(
+            runtimes=cast(RuntimeRegistry, request.app.state.runtime_registry),
+            profiles=cast(ProfileRegistry, request.app.state.profile_registry),
+            artifacts=cast(ModelArtifactRegistry, request.app.state.model_artifact_registry),
+            supervisor=cast(RouterSupervisor, request.app.state.router_supervisor),
+            server_runs=cast(ServerRunRegistry, request.app.state.server_run_registry),
+            downloads=cast(DownloadRegistry, request.app.state.download_registry),
+        )
+        LOGGER.info(
+            "diagnostics_exported",
+            extra={"component": "diagnostics", "event": "exported"},
+        )
+        return {"path": str(path), "format": 1}
 
     @app.get("/api/events")
     async def stream_events(
