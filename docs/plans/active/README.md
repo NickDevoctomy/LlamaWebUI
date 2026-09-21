@@ -10,6 +10,21 @@ This folder contains the only active execution documents for the remaining imple
 
 The old handoff document is retained under `../stale/` for historical reference only.
 
+## New-session prompt
+
+Use this prompt when starting a new coding session:
+
+> Read `docs/plans/active/README.md`, then read the section named **Current slice handoff** below. Follow the referenced slice in `docs/plans/active/sequential-completion-plan.md` strictly. Read `docs/plans/active/sequential-progress.md` before editing. Treat `docs/plans/llama-web-ui-plan.md` as the overall design and requirements reference. Preserve user changes, run the required baseline checks, implement only the current slice, validate it, update sequential progress, and provide the suggested commit message and manual acceptance steps.
+
+## Current slice handoff
+
+This section is the single copy/paste handoff for the next session. Update it whenever the current slice changes.
+
+- **Phase:** Phase 0 — Feasibility completion
+- **Slice:** 0.1 — Confirm API-key reload semantics
+- **Instruction:** Determine whether the selected llama.cpp runtime reloads `--api-key-file` changes without a router restart. Use a controlled local runtime test and record the runtime/build, method, observed status codes, and required UI behavior. Do not begin Phase 0.2 or any later phase.
+- **Suggested commit message:** `test: record api key reload semantics`
+
 ## Sequential workflow
 
 1. Open `sequential-progress.md`.
