@@ -218,5 +218,5 @@ The backend test configuration enforces the configured 90% branch-coverage floor
 - Do not download the 93.7 GB development target during routine testing.
 - Executables are launched with argument vectors, never shell command strings.
 - Model downloads are revision-pinned and published atomically only after validation.
-- For the current implementation handoff and remaining roadmap, see `docs/plans/implementation-progress.md`.
+- For the current implementation handoff and remaining roadmap, see `docs/plans/active/sequential-progress.md` and `docs/plans/active/sequential-completion-plan.md`.
 - Authoritative product requirements are in `docs/plans/llama-web-ui-plan.md`.

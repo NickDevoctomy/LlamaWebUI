@@ -2,7 +2,7 @@
 
 ## Start Every Session
 
-- Read `docs/plans/implementation-progress.md` first. Treat `docs/plans/llama-web-ui-plan.md` as the authoritative requirements document.
+- Read `docs/plans/active/README.md` first, then `docs/plans/active/sequential-progress.md`. Follow `docs/plans/active/sequential-completion-plan.md` strictly. Treat `docs/plans/llama-web-ui-plan.md` as the authoritative overall design and requirements document.
 - Run `git status --short` and `git log -3 --oneline --decorate` before editing. Preserve user changes and never reset or overwrite work that is not yours.
 - Continue from the documented next slice. Do not expand backend or frontend scope beyond what is needed to complete that slice.
 - Work in visible, testable slices. Every slice must end with a runnable deliverable, numbered manual test steps, validation results, and a suggested commit message.
@@ -84,6 +84,6 @@ npm run dev -- --host 127.0.0.1
 - Make the smallest complete change that resolves the current user-visible dependency.
 - Validate the narrow behavior immediately after the first edit, then run the relevant full quality gates.
 - Perform live browser acceptance for user-facing workflows without mutating valuable user state.
-- Update `docs/plans/implementation-progress.md` with implemented behavior, measured validation, remaining blocker, and the exact next slice.
+- Update `docs/plans/active/sequential-progress.md` with implemented behavior, measured validation, remaining blocker, and the exact next slice.
 - Run `git diff --check` and inspect `git status --short --untracked-files=all` for generated files or secrets.
 - Leave development services running when the user is expected to test the slice.
