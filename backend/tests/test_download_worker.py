@@ -4,10 +4,13 @@ import json
 from pathlib import Path
 
 import pytest
+from sqlalchemy.orm import Session
 
 from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.domain.download_job import DownloadState
 from llamawebui.domain.model_manifest import GgufGroup, HubFile
+from llamawebui.models import DownloadJobRecord
+from llamawebui.services import huggingface_transfer_process
 from llamawebui.services.download_registry import DownloadRegistry
 from llamawebui.services.download_worker import (
     DownloadWorker,
@@ -97,6 +100,67 @@ async def test_worker_verifies_published_file_checksum(tmp_path: Path) -> None:
     await DownloadWorker(registry, Transfer()).run(job_id)
 
     assert registry.get(job_id).state == DownloadState.COMPLETED
+
+
+async def test_worker_fails_on_checksum_mismatch(tmp_path: Path) -> None:
+    registry, job_id = create_registry(tmp_path, (2,))
+    with Session(create_database_engine(tmp_path / "app.db")) as session:
+        job = session.get(DownloadJobRecord, job_id)
+        assert job is not None
+        job.files = [{**job.files[0], "sha256": hashlib.sha256(b"nope").hexdigest()}]
+        session.commit()
+
+    class Transfer:
+        async def download(
+            self, *, repo_id: str, filename: str, revision: str, destination: Path
+        ) -> Path:
+            target = destination / filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"xx")
+            return target
+
+    await DownloadWorker(registry, Transfer()).run(job_id)
+
+    assert registry.get(job_id).state == DownloadState.FAILED
+    assert "checksum mismatch" in (registry.get(job_id).error or "")
+
+
+async def test_worker_rejects_invalid_size_metadata(tmp_path: Path) -> None:
+    registry, job_id = create_registry(tmp_path, (2,))
+    with Session(create_database_engine(tmp_path / "app.db")) as session:
+        job = session.get(DownloadJobRecord, job_id)
+        assert job is not None
+        job.files = [{**job.files[0], "size": "2"}]
+        session.commit()
+
+    class Transfer:
+        async def download(
+            self, *, repo_id: str, filename: str, revision: str, destination: Path
+        ) -> Path:
+            raise AssertionError("transfer should not start")
+
+    await DownloadWorker(registry, Transfer()).run(job_id)
+
+    assert "size is invalid" in (registry.get(job_id).error or "")
+
+
+async def test_worker_rejects_existing_destination(tmp_path: Path) -> None:
+    registry, job_id = create_registry(tmp_path, (1,))
+    job = registry.get(job_id)
+    Path(job.destination).mkdir(parents=True)
+
+    class Transfer:
+        async def download(
+            self, *, repo_id: str, filename: str, revision: str, destination: Path
+        ) -> Path:
+            target = destination / filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"x")
+            return target
+
+    await DownloadWorker(registry, Transfer()).run(job_id)
+
+    assert "already exists" in (registry.get(job_id).error or "")
 
 
 async def test_worker_fails_when_disk_space_drops_during_transfer(
@@ -336,6 +400,32 @@ async def test_huggingface_transfer_process_redacts_token(
     )
 
     assert result == {"error": "request rejected for [redacted]"}
+
+
+async def test_huggingface_transfer_main_reports_invalid_stdin(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(huggingface_transfer_process.sys.stdin, "read", lambda: "not-json")
+
+    assert huggingface_transfer_process.main() == 1
+    assert '"error"' in capsys.readouterr().out
+
+
+async def test_huggingface_transfer_main_returns_success(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        huggingface_transfer_process.sys.stdin,
+        "read",
+        lambda: (
+            '{"repo_id":"owner/model","filename":"model.gguf",'
+            '"revision":"r","destination":".","token":null}'
+        ),
+    )
+    monkeypatch.setattr(
+        huggingface_transfer_process,
+        "execute_transfer",
+        lambda request: {"path": "model.gguf"},
+    )
+
+    assert huggingface_transfer_process.main() == 0
+    assert capsys.readouterr().out == '{"path": "model.gguf"}'
 
 
 async def test_huggingface_transfer_kills_child_when_cancelled(

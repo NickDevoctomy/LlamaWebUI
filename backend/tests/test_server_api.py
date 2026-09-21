@@ -103,6 +103,32 @@ async def test_model_event_stream_emits_keepalive_and_closes_promptly() -> None:
     assert client.closed
 
 
+@pytest.mark.asyncio
+async def test_model_event_stream_emits_event_and_upstream_error() -> None:
+    class EventClient:
+        async def model_events(self) -> AsyncIterator[RouterModelEvent]:
+            yield RouterModelEvent(model="local", event="loaded", data={"ok": True})
+
+    stream = stream_model_events(EventClient(), keepalive_seconds=0.01)
+    event = await anext(stream)
+    while event == ": keepalive\n\n":
+        event = await anext(stream)
+    assert '"model":"local"' in event
+    await stream.aclose()
+
+    class ErrorClient:
+        async def model_events(self) -> AsyncIterator[RouterModelEvent]:
+            raise RouterAPIError(503, "upstream unavailable")
+            yield RouterModelEvent(model="never", event="never", data={})
+
+    error_stream = stream_model_events(ErrorClient(), keepalive_seconds=0.01)
+    error = await anext(error_stream)
+    while error == ": keepalive\n\n":
+        error = await anext(error_stream)
+    assert '"code":502' in error
+    await error_stream.aclose()
+
+
 def test_server_start_status_and_stop(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     model = tmp_path / "model.gguf"

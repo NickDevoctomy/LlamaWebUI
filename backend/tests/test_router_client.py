@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 
 import httpx
@@ -241,6 +242,17 @@ async def test_collect_model_events_is_bounded(monkeypatch: pytest.MonkeyPatch) 
 
     assert len(events) == 1
     assert events[0].event == "model_status"
+
+
+async def test_collect_model_events_returns_empty_after_timeout() -> None:
+    class IdleClient:
+        async def model_events(self) -> AsyncIterator[object]:
+            await asyncio.Event().wait()
+            yield object()
+
+    events = await collect_model_events(IdleClient(), timeout_seconds=0.001)  # type: ignore[arg-type]
+
+    assert events == ()
 
 
 async def test_router_client_rejects_non_event_stream_response(

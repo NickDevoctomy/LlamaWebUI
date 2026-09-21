@@ -49,3 +49,27 @@ def test_registry_validates_name_and_missing_token(tmp_path: Path) -> None:
         tokens.create(" ")
     with pytest.raises(AccessTokenNotFoundError):
         tokens.revoke("missing")
+
+
+def test_token_creation_rolls_back_key_file_when_database_commit_fails(tmp_path: Path) -> None:
+    tokens = registry(tmp_path)
+
+    class FailingSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def add(self, record):
+            return None
+
+        def commit(self):
+            raise RuntimeError("database unavailable")
+
+    tokens._sessions = lambda: FailingSession()  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        tokens.create("Rollback")
+
+    assert tokens._read_tokens() == ()

@@ -155,3 +155,65 @@ def test_profile_health_uses_valid_duplicate_provenance(tmp_path: Path) -> None:
     source = artifacts.source_for_profile(profile)
     assert source is not None
     assert source.download_id == valid_job.id
+
+
+def test_profile_health_falls_back_to_external_path(tmp_path: Path) -> None:
+    registry, artifacts, _ = create_completed_artifact(tmp_path)
+    external = tmp_path / "external.gguf"
+    external.write_bytes(b"gguf")
+    profile = ModelProfileRecord(
+        id="external",
+        alias="external",
+        runtime_id="runtime",
+        model_path=str(external),
+        configuration={},
+        preset="",
+        enabled=False,
+    )
+
+    assert artifacts.profile_available(profile)
+    external.unlink()
+    assert not artifacts.profile_available(profile)
+    assert artifacts.source_for_profile(profile) is None
+
+
+@pytest.mark.parametrize(
+    "mutate, message",
+    [
+        (lambda job: setattr(job, "destination", "outside"), "escapes"),
+        (lambda job: job.files[0].update(path="../escape.gguf"), "unsafe"),
+        (lambda job: job.files[0].update(path=123), "metadata is invalid"),
+        (lambda job: job.files[0].update(size="4"), "metadata is invalid"),
+    ],
+)
+def test_artifact_rejects_unsafe_metadata(tmp_path: Path, mutate, message: str) -> None:
+    registry, artifacts, job_id = create_completed_artifact(tmp_path)
+    job = registry.get(job_id)
+    mutate(job)
+
+    with pytest.raises(ModelArtifactError, match=message):
+        artifacts.is_valid(job)
+
+
+def test_artifact_delete_rejects_existing_tombstone(tmp_path: Path) -> None:
+    registry, artifacts, job_id = create_completed_artifact(tmp_path)
+    job = registry.get(job_id)
+    destination = Path(job.destination)
+    tombstone = destination.parent / f".{destination.name}.{job.id}.deleting"
+    tombstone.mkdir()
+
+    with pytest.raises(ModelArtifactError, match="already in progress"):
+        artifacts.delete(job_id)
+
+
+def test_primary_path_selects_first_shard_and_ignores_non_gguf(tmp_path: Path) -> None:
+    registry, artifacts, job_id = create_completed_artifact(tmp_path)
+    job = registry.get(job_id)
+    job.files = [
+        {"path": "model-00002-of-00002.gguf", "size": 1},
+        {"path": "model-00001-of-00002.gguf", "size": 1},
+    ]
+    assert artifacts.primary_path(job) == Path(job.destination) / "model-00001-of-00002.gguf"
+
+    job.files = [{"path": "model.bin", "size": 1}]
+    assert artifacts.primary_path(job) is None

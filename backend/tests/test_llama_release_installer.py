@@ -19,6 +19,7 @@ from llamawebui.services.llama_release_installer import (
     _extract_archive,
     _parse_assets,
     _safe_target,
+    group_runtime_assets,
 )
 from llamawebui.services.runtime_probe import RuntimeProbeResult
 
@@ -140,6 +141,31 @@ def test_archive_helpers_find_required_executable_and_parse_asset_rows(tmp_path:
     _extract_archive(archive, destination)
     assert (destination / "llama-server").read_text() == "binary"
     assert _parse_assets([{"name": "x", "browser_download_url": "u", "size": "bad"}])[0].size == 0
+
+
+def test_runtime_asset_grouping_selects_backend_companions() -> None:
+    assets = (
+        ReleaseAsset("llama-b1-cuda.zip", "cuda", 1, None),
+        ReleaseAsset("llama-b1-cudart.zip", "cudart", 1, None),
+        ReleaseAsset("llama-b1-cpu.zip", "cpu", 1, None),
+        ReleaseAsset("llama-b1-vulkan.zip", "vulkan", 1, None),
+        ReleaseAsset("notes.txt", "notes", 1, None),
+    )
+
+    cuda = group_runtime_assets(assets, backend="cuda")
+    cpu = group_runtime_assets(assets, backend="cpu")
+    auto = group_runtime_assets(assets)
+
+    assert len(cuda) == 3
+    assert cuda[0].primary.name == "llama-b1-cuda.zip"
+    assert [asset.name for asset in cuda[0].companions] == ["llama-b1-cudart.zip"]
+    assert [group.primary.name for group in cpu] == ["llama-b1-cpu.zip"]
+    assert [group.primary.name for group in auto] == ["llama-b1-cpu.zip"]
+
+
+def test_release_asset_parsing_skips_malformed_rows_and_digest_mismatch() -> None:
+    assert _parse_assets(["bad", {"name": "missing-url"}]) == ()
+    assert not _digest_matches(b"x", "sha256:not-the-digest")
 
 
 def test_installer_reports_missing_asset(tmp_path: Path) -> None:

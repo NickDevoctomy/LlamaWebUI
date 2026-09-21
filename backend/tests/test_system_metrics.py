@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 from llamawebui.services import system_metrics
@@ -78,3 +79,39 @@ def test_collect_system_metrics_handles_missing_disk_io_and_gpu(
     assert result["disk_write_bytes"] is None
     assert result["gpu"] is None
     assert result["gpu_supported"] is False
+
+
+def test_nvidia_metrics_rejects_process_errors_and_malformed_output(monkeypatch) -> None:
+    def fail(*args, **kwargs):
+        raise OSError("not installed")
+
+    monkeypatch.setattr(system_metrics.subprocess, "run", fail)
+    assert system_metrics._nvidia_metrics() is None
+
+    monkeypatch.setattr(
+        system_metrics.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess([], 0, stdout="1,2"),
+    )
+    assert system_metrics._nvidia_metrics() is None
+
+    monkeypatch.setattr(
+        system_metrics.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess([], 0, stdout="bad,2,3"),
+    )
+    assert system_metrics._nvidia_metrics() is None
+
+
+def test_nvidia_metrics_parses_supported_output(monkeypatch) -> None:
+    monkeypatch.setattr(
+        system_metrics.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess([], 0, stdout="25,30,40"),
+    )
+
+    assert system_metrics._nvidia_metrics() == {
+        "utilization_percent": 25,
+        "memory_used_bytes": 30 * 1024 * 1024,
+        "memory_total_bytes": 40 * 1024 * 1024,
+    }

@@ -118,6 +118,22 @@ def test_create_rejects_unsafe_repository_file_path(registry: DownloadRegistry) 
         registry.create(RepositoryManifest(source.repo_id, source.revision, (unsafe,)), unsafe.key)
 
 
+def test_create_rejects_unknown_file_size(registry: DownloadRegistry) -> None:
+    source = manifest()
+    unknown = GgufGroup(
+        key=source.groups[0].key,
+        quantization="Q4",
+        files=(HubFile("model.gguf", None),),
+        total_size=30,
+        complete=True,
+    )
+
+    with pytest.raises(DownloadPlanError, match="unknown size"):
+        registry.create(
+            RepositoryManifest(source.repo_id, source.revision, (unknown,)), unknown.key
+        )
+
+
 def test_download_state_transitions_are_guarded(registry: DownloadRegistry) -> None:
     job = registry.create(manifest(), "Q4/model-Q4")
 
