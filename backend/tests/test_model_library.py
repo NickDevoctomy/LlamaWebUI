@@ -321,6 +321,52 @@ def test_logical_model_registry_links_profiles_by_canonical_path(tmp_path: Path)
     assert logical.profile_ids(record.id) == ("profile-1",)
 
 
+def test_logical_model_registry_removes_obsolete_profile_links(tmp_path: Path) -> None:
+    database = tmp_path / "app.db"
+    upgrade_database(database)
+    engine = create_database_engine(database)
+    registry = DownloadRegistry(engine, tmp_path)
+    first_model = tmp_path / "first.gguf"
+    second_model = tmp_path / "second.gguf"
+    first_model.write_bytes(b"gguf")
+    second_model.write_bytes(b"gguf")
+    discovered = ModelLibrary(registry, tmp_path).discover()
+    logical = LogicalModelRegistry(engine)
+    records = logical.reconcile_discovered(discovered)
+
+    from llamawebui.models import ModelProfileRecord
+
+    profile = ModelProfileRecord(
+        id="profile-1",
+        alias="model",
+        runtime_id="runtime-1",
+        model_path=str(first_model),
+        configuration={},
+        preset="",
+        enabled=False,
+    )
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO runtimes (id, name, executable_path, devices, options, help_sha256) "
+            "VALUES ('runtime-1', 'CPU', 'cpu.exe', '[]', '[\"model\"]', '')"
+        )
+    from sqlalchemy.orm import Session
+
+    with Session(engine) as session:
+        session.add(profile)
+        session.commit()
+    with Session(engine) as session:
+        stored_profile = session.get(ModelProfileRecord, "profile-1")
+        assert stored_profile is not None
+        logical.reconcile_profile_links((stored_profile,))
+        stored_profile.model_path = str(second_model)
+        session.commit()
+        logical.reconcile_profile_links((stored_profile,))
+
+    assert logical.profile_ids(records[0].id) == ()
+    assert logical.profile_ids(records[1].id) == ("profile-1",)
+
+
 def test_logical_model_registry_marks_unseen_models_missing(tmp_path: Path) -> None:
     database = tmp_path / "app.db"
     upgrade_database(database)
@@ -388,10 +434,16 @@ def test_library_import_creates_disabled_profile_for_discovered_model(tmp_path: 
                 "alias": "external-model",
             },
         )
+        logical = client.get("/api/library/logical")
+        reconciliation = client.post("/api/library/reconcile")
 
     assert imported.status_code == 201
     assert imported.json()["enabled"] is False
     assert imported.json()["model_path"] == str(model)
+    assert logical.status_code == 200
+    assert logical.json()[0]["primary_path"] == str(model)
+    assert reconciliation.status_code == 200
+    assert reconciliation.json()["logical_models"] == 1
 
 
 def test_library_delete_preserves_profile_and_exposes_redownload(tmp_path: Path) -> None:

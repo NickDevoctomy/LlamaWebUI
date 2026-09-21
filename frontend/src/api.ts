@@ -135,6 +135,15 @@ export interface DiscoveredModel {
   metadata: Record<string, string | number>
 }
 
+export interface LogicalModel {
+  id: string
+  primary_path: string
+  files: string[]
+  metadata: Record<string, unknown>
+  validation_state: string
+  profile_ids: string[]
+}
+
 export interface RuntimeRegistration {
   name: string
   executable_path: string
@@ -192,7 +201,8 @@ export const api = {
   tokens: () => request<AccessToken[]>('/api/tokens'),
   downloads: () => request<DownloadJob[]>('/api/downloads'),
   library: () => request<LibraryModel[]>('/api/library'),
-  reconcileLibrary: () => request<{ managed_jobs: number; valid_models: number; invalid_jobs: number; stray_gguf_files: number }>('/api/library/reconcile', { method: 'POST' }),
+  logicalLibrary: () => request<LogicalModel[]>('/api/library/logical'),
+  reconcileLibrary: () => request<{ managed_jobs: number; valid_models: number; invalid_jobs: number; stray_gguf_files: number; logical_models: number; missing_logical_models: number; linked_logical_models: number }>('/api/library/reconcile', { method: 'POST' }),
   discoverLibrary: () => request<DiscoveredModel[]>('/api/library/discover'),
   importExternalModel: (primaryPath: string, runtimeId: string, alias: string) =>
     request<Profile>('/api/library/import', { method: 'POST', body: JSON.stringify({ primary_path: primaryPath, runtime_id: runtimeId, alias }) }),
@@ -218,6 +228,8 @@ export const api = {
     request<{ cleared: number }>('/api/downloads/terminal', { method: 'DELETE' }),
   deleteLibraryModel: (downloadId: string) =>
     request<DownloadJob>(`/api/library/${downloadId}`, { method: 'DELETE' }),
+  deleteLogicalModel: (logicalModelId: string) =>
+    request<void>(`/api/library/logical/${logicalModelId}`, { method: 'DELETE' }),
   redownload: (downloadId: string) =>
     request<DownloadJob>(`/api/downloads/${downloadId}/redownload`, { method: 'POST' }),
   registerRuntime: (runtime: RuntimeRegistration) =>

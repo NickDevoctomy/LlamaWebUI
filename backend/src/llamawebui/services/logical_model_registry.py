@@ -71,14 +71,20 @@ class LogicalModelRegistry:
                 record.canonical_path: record
                 for record in session.scalars(select(LogicalModelRecord))
             }
+            expected: set[tuple[str, str]] = set()
             for profile in profiles:
                 logical = records.get(str(Path(profile.model_path).resolve()))
                 if logical is None:
                     continue
+                expected.add((logical.id, profile.id))
+            for link in session.scalars(select(LogicalModelProfileRecord)).all():
+                if (link.logical_model_id, link.profile_id) not in expected:
+                    session.delete(link)
+            for logical_model_id, profile_id in expected:
                 session.merge(
                     LogicalModelProfileRecord(
-                        logical_model_id=logical.id,
-                        profile_id=profile.id,
+                        logical_model_id=logical_model_id,
+                        profile_id=profile_id,
                     )
                 )
             session.commit()

@@ -24,6 +24,8 @@ def test_upgrade_database_creates_schema_and_is_idempotent(tmp_path: Path) -> No
             "access_tokens",
             "alembic_version",
             "download_jobs",
+                "logical_model_profiles",
+                "logical_models",
             "model_profiles",
             "runtimes",
             "server_runs",

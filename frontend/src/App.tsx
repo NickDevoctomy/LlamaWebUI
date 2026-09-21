@@ -26,7 +26,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { AccessPanel } from './AccessPanel'
-import { api, type DownloadJob, type LibraryModel, type Profile, type RouterModel, type Runtime } from './api'
+import { api, type DownloadJob, type LibraryModel, type LogicalModel, type Profile, type RouterModel, type Runtime } from './api'
 import { DiscoverPanel, DownloadsPanel } from './DiscoveryPanels'
 import { Dialog, ProfilePanel, RuntimePanel } from './SetupPanels'
 
@@ -82,6 +82,7 @@ function App() {
     refetchInterval: (query) => query.state.data?.some((job) => ['queued', 'downloading'].includes(job.state)) ? 2000 : false,
   })
   const library = useQuery({ queryKey: ['library'], queryFn: api.library, refetchInterval: 5000 })
+  const logicalLibrary = useQuery({ queryKey: ['logical-library'], queryFn: api.logicalLibrary, refetchInterval: 5000 })
   const running = status.data?.state === 'ready' || status.data?.state === 'degraded'
   const models = useQuery({
     queryKey: ['models'],
@@ -234,6 +235,7 @@ function App() {
           ) : section === 'Models' ? (
             <ModelsPanel
               models={library.data ?? []}
+              logicalModels={logicalLibrary.data ?? []}
               profiles={profiles.data ?? []}
               onConfigure={(model) => { setProfileSeed(model); setSection('Profiles') }}
               onDiscover={() => setSection('Discover')}
@@ -282,8 +284,9 @@ function GaugeCard({ label, value, suffix, detail }: { label: string; value: num
   return <div className="gauge-card"><div className="gauge-ring" style={{ '--gauge-value': `${percentage * 3.6}deg` } as React.CSSProperties}><div><strong>{value == null ? '—' : `${value}${suffix}`}</strong><small>{label}</small></div></div>{detail && <span>{detail}</span>}</div>
 }
 
-function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh, running }: {
+function ModelsPanel({ models, logicalModels, profiles, onConfigure, onDiscover, onRefresh, running }: {
   models: LibraryModel[]
+  logicalModels: LogicalModel[]
   profiles: Profile[]
   onConfigure: (model: LibraryModel) => void
   onDiscover: () => void
@@ -293,6 +296,7 @@ function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh, run
   const [deleting, setDeleting] = useState<LibraryModel>()
   const [reconciling, setReconciling] = useState(false)
   const [reconcileResult, setReconcileResult] = useState<string>()
+  const [removingLogical, setRemovingLogical] = useState<LogicalModel>()
   const [discovered, setDiscovered] = useState<{ primary_path: string; files: string[]; total_bytes: number; model_name: string }[]>([])
   const [importing, setImporting] = useState<{ primary_path: string; model_name: string }>()
   const [importAlias, setImportAlias] = useState('')
@@ -315,12 +319,19 @@ function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh, run
       ])
     },
   })
+  const logicalRemoval = useMutation({
+    mutationFn: (id: string) => api.deleteLogicalModel(id),
+    onSuccess: async () => {
+      setRemovingLogical(undefined)
+      await queryClient.invalidateQueries({ queryKey: ['logical-library'] })
+    },
+  })
   async function reconcile() {
     setReconciling(true)
     try {
       const result = await api.reconcileLibrary()
-      setReconcileResult(`${result.valid_models} valid model(s), ${result.invalid_jobs} invalid job(s), ${result.stray_gguf_files} stray GGUF file(s).`)
-      await queryClient.invalidateQueries({ queryKey: ['library'] })
+      setReconcileResult(`${result.valid_models} valid model(s), ${result.invalid_jobs} invalid job(s), ${result.stray_gguf_files} stray GGUF file(s), ${result.logical_models} logical record(s).`)
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ['library'] }), queryClient.invalidateQueries({ queryKey: ['logical-library'] })])
     } finally {
       setReconciling(false)
     }
@@ -363,7 +374,11 @@ function ModelsPanel({ models, profiles, onConfigure, onDiscover, onRefresh, run
         {!models.length && <div className="empty"><Library size={28} /><strong>No downloaded models</strong><span>Use Discover to download a complete GGUF model.</span></div>}
       </div>
       <div className="panel-footer"><span>{models.length} downloaded models</span><span><ShieldCheck size={14} /> Validated files only</span></div>
-    </section>{importing && <Dialog title="Import external model" description="Create a disabled profile for this complete model set." onClose={() => setImporting(undefined)}><div className="form-body"><label className="field"><span>Profile alias</span><input autoFocus value={importAlias} onChange={(event) => setImportAlias(event.target.value.toLowerCase().replace(/\s+/g, '-'))} required /></label>{importExternal.error && <div className="form-error"><AlertCircle size={15} /> {importExternal.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setImporting(undefined)} type="button">Cancel</button><button className="button primary" disabled={importExternal.isPending || !profiles[0]?.runtime_id || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(importAlias)} onClick={() => importExternal.mutate()} type="button">{importExternal.isPending ? <LoaderCircle className="spin" size={15} /> : <FolderCog size={15} />} Import profile</button></footer></Dialog>}{deleting && <Dialog title="Delete downloaded model?" description="The downloaded files will be removed, but associated profiles will be preserved as broken." onClose={() => setDeleting(undefined)}><div className="confirm-body"><Trash2 size={24} /><p><strong>{deleting.repo_id}</strong> · <span className="mono">{deleting.group_key}</span> at revision <span className="mono">{deleting.revision.slice(0, 9)}</span> will be deleted. Re-downloading this exact artifact will repair its profiles.</p>{removal.error && <div className="form-error"><AlertCircle size={15} /> {removal.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep model</button><button className="button danger" disabled={removal.isPending} onClick={() => removal.mutate(deleting.download_id)} type="button">{removal.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete model</button></footer></Dialog>}</>
+    </section><section className="data-panel">
+      <div className="panel-heading"><div><h2>Logical library</h2><p>Durable records reconciled from local GGUF files and profile links.</p></div></div>
+      <div className="table-wrap"><table className="models-table"><thead><tr><th>Model path</th><th>State</th><th>Files</th><th>Profiles</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{logicalModels.map((model) => <tr key={model.id}><td><div className="model-name"><span className="model-glyph">GG</span><div><strong>{String(model.metadata['general.name'] ?? 'Local model')}</strong><span>{model.primary_path}</span></div></div></td><td><span className={`state-pill ${model.validation_state}`}>{stateLabel(model.validation_state)}</span></td><td>{model.files.length}</td><td>{model.profile_ids.length}</td><td>{model.validation_state === 'missing' && <button className="button row-button" disabled={model.profile_ids.length > 0 || logicalRemoval.isPending} onClick={() => setRemovingLogical(model)} type="button"><Trash2 size={13} /> Remove record</button>}</td></tr>)}</tbody></table>{!logicalModels.length && <div className="empty"><Library size={28} /><strong>No logical models</strong><span>Reconcile the library to create durable records.</span></div>}</div>
+      <div className="panel-footer"><span>{logicalModels.length} logical record(s)</span><span>Missing records linked to profiles must be repaired first.</span></div>
+    </section>{removingLogical && <Dialog title="Remove missing record?" description="This removes only the durable record; no files will be changed." onClose={() => setRemovingLogical(undefined)}><div className="confirm-body"><Trash2 size={24} /><p><strong>{removingLogical.primary_path}</strong> is missing and has no linked profiles.</p>{logicalRemoval.error && <div className="form-error"><AlertCircle size={15} /> {logicalRemoval.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setRemovingLogical(undefined)} type="button">Keep record</button><button className="button danger" disabled={logicalRemoval.isPending} onClick={() => logicalRemoval.mutate(removingLogical.id)} type="button">Remove record</button></footer></Dialog>}{importing && <Dialog title="Import external model" description="Create a disabled profile for this complete model set." onClose={() => setImporting(undefined)}><div className="form-body"><label className="field"><span>Profile alias</span><input autoFocus value={importAlias} onChange={(event) => setImportAlias(event.target.value.toLowerCase().replace(/\s+/g, '-'))} required /></label>{importExternal.error && <div className="form-error"><AlertCircle size={15} /> {importExternal.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setImporting(undefined)} type="button">Cancel</button><button className="button primary" disabled={importExternal.isPending || !profiles[0]?.runtime_id || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(importAlias)} onClick={() => importExternal.mutate()} type="button">{importExternal.isPending ? <LoaderCircle className="spin" size={15} /> : <FolderCog size={15} />} Import profile</button></footer></Dialog>}{deleting && <Dialog title="Delete downloaded model?" description="The downloaded files will be removed, but associated profiles will be preserved as broken." onClose={() => setDeleting(undefined)}><div className="confirm-body"><Trash2 size={24} /><p><strong>{deleting.repo_id}</strong> · <span className="mono">{deleting.group_key}</span> at revision <span className="mono">{deleting.revision.slice(0, 9)}</span> will be deleted. Re-downloading this exact artifact will repair its profiles.</p>{removal.error && <div className="form-error"><AlertCircle size={15} /> {removal.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep model</button><button className="button danger" disabled={removal.isPending} onClick={() => removal.mutate(deleting.download_id)} type="button">{removal.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete model</button></footer></Dialog>}</>
   )
 }
 

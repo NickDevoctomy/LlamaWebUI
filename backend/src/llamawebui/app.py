@@ -1328,7 +1328,12 @@ def create_app(
 
     @app.get("/api/library/logical")
     async def list_logical_library_models(request: Request) -> list[dict[str, object]]:
+        library = cast(ModelLibrary, request.app.state.model_library)
         registry = cast(LogicalModelRegistry, request.app.state.logical_model_registry)
+        registry.reconcile_discovered(library.discover())
+        registry.reconcile_profile_links(
+            tuple(cast(ProfileRegistry, request.app.state.profile_registry).list())
+        )
         return [
             {
                 "id": model.id,
@@ -1354,12 +1359,24 @@ def create_app(
     @app.post("/api/library/reconcile")
     async def reconcile_library(request: Request) -> dict[str, int]:
         library = cast(ModelLibrary, request.app.state.model_library)
+        registry = cast(LogicalModelRegistry, request.app.state.logical_model_registry)
         result = library.reconcile()
+        logical = registry.reconcile_discovered(library.discover())
+        registry.reconcile_profile_links(
+            tuple(cast(ProfileRegistry, request.app.state.profile_registry).list())
+        )
         return {
             "managed_jobs": result.managed_jobs,
             "valid_models": result.valid_models,
             "invalid_jobs": result.invalid_jobs,
             "stray_gguf_files": result.stray_gguf_files,
+            "logical_models": len(logical),
+            "missing_logical_models": sum(
+                model.validation_state == "missing" for model in logical
+            ),
+            "linked_logical_models": sum(
+                bool(registry.profile_ids(model.id)) for model in logical
+            ),
         }
 
     @app.get("/api/library/discover")

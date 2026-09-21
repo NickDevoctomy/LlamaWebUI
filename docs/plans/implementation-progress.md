@@ -1,6 +1,6 @@
 # LlamaWebUI Implementation Progress
 
-**Updated:** 2026-09-20
+**Updated:** 2026-09-21
 **Branch:** `alpha`
 **Baseline commit:** `69c4fd5` (`feat: add model discovery and download workflows`)
 **Active phase:** Frontend implementation
@@ -210,6 +210,7 @@ Measured real-transfer acceptance on 2026-09-20:
 - Logical models now persist profile relationships through `logical_model_profiles`; canonical-path reconciliation links saved profiles without changing profile ownership. Eleven focused model-library tests and strict mypy across 44 source files pass in 2.59 seconds.
 - Logical reconciliation now retains unseen records and marks them `missing` instead of deleting durable identity. Twelve focused model-library tests and strict mypy pass in 2.42 seconds.
 - Missing logical models can now be removed only when unlinked to profiles; linked records are protected. Thirteen focused model-library tests and strict mypy pass in 2.64 seconds.
+- General library reconciliation now persists discovered logical models and current profile links from both `GET /api/library/logical` and `POST /api/library/reconcile`; stale profile links are removed when profiles move, and the Models workspace displays valid/missing records with guarded missing-record removal.
 - Added `backend/requirements.txt` and expanded `README.md` with fresh-machine Windows setup, Python 3.12 virtual-environment creation, backend package installation, frontend `npm install`, runtime prerequisites, and explicit-interpreter startup guidance.
 
 - Commit `69c4fd5` is the checked-in Discover/Downloads baseline on `alpha` and `origin/alpha`.
