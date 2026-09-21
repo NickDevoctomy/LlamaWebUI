@@ -55,6 +55,30 @@ The **Main effect tags** column is intended for compact UI chips. Tags are lower
 | `usability` | User-facing workflow, configuration, or interaction behavior. |
 | `vram` | Device memory consumption or GPU/accelerator placement. |
 
+## Parameter type and range reference
+
+The option tables below keep the upstream argument syntax in the **Argument and aliases** column. Use this table to attach the expected UI control type and validation range to each option family. `N/A` means the option is a flag, selector, path, or free-form value for which a numeric range does not apply.
+
+| Parameter family | Expected type | Range / allowed values |
+| --- | --- | --- |
+| `--help`, `--version`, `--cache-list`, `--completion-bash`, `--perf`, `--swa-full`, `--no-host`, `--check-tensors`, `--op-offload`, `--backend-sampling`, `--metrics`, `--props`, `--slots`, `--tools`, `--agent`, `--ui`, `--embedding`, `--rerank`, `--warmup`, `--context-shift`, `--cache-prompt`, `--offline`, `--spec-default` | boolean flag | N/A |
+| `--threads`, `--threads-batch`, `--threads-http`, `--parallel`, `--models-max`, `--models-autoload`, `--predict`, `--n-predict`, `--batch-size`, `--ubatch-size`, `--ctx-size`, `--keep`, `--cache-ram`, `--cache-reuse`, `--cache-type-k`, `--cache-type-v` | integer or enum, depending on option | Integer ranges are option-specific; non-negative unless the definition explicitly permits a sentinel such as `-1`; cache types are `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0`, or `q5_1` |
+| `--cpu-strict`, `--cpu-strict-batch`, `--poll`, `--poll-batch`, `--fit`, `--flash-attn`, `--kv-offload`, `--no-kv-offload`, `--repack`, `--no-repack`, `--reasoning`, `--reasoning-preserve`, `--no-reasoning-preserve` | enum | Option-specific boolean or mode values; see the upstream definition |
+| `--prio`, `--prio-batch`, `--spec-draft-prio`, `--spec-draft-prio-batch` | integer | `-1` to `3` |
+| `--poll`, `--poll-batch`, `--spec-draft-poll`, `--spec-draft-poll-batch` | integer or boolean | Polling level `0` to `100`; batch/draft boolean forms `0` or `1` |
+| `--n-gpu-layers`, `--gpu-layers`, `--n-gpu-layers-draft`, `--gpu-layers-draft` | integer or enum | Non-negative layer count, `auto`, or `all` |
+| `--fit-target`, `--tensor-split`, `--spec-synth-rates`, `--cors-origins`, `--cors-methods`, `--cors-headers`, `--samplers` | comma-separated string | N/A; each element is validated by its option semantics |
+| `--temperature`, `--temp`, `--top-p`, `--min-p`, `--typical-p`, `--xtc-probability`, `--xtc-threshold`, `--adaptive-target`, `--adaptive-decay`, `--dynatemp-range`, `--dynatemp-exp`, `--mirostat-lr`, `--mirostat-ent`, `--repeat-penalty`, `--presence-penalty`, `--frequency-penalty`, `--dry-multiplier`, `--dry-base` | float | Option-specific; probabilities generally `0.0` to `1.0`, disabled values are documented per option |
+| `--rope-scaling`, `--load-mode`, `--lazy-mode`, `--numa`, `--device`, `--split-mode`, `--pooling`, `--reasoning-format`, `--reasoning-effort`, `--spec-type`, `--log-colors`, `--verbosity`, `--log-verbosity` | enum or string selector | Option-specific enumerated values from the upstream help text |
+| `--host`, `--port`, `--path`, `--model`, `--model-url`, `--hf-repo`, `--hf-file`, `--docker-repo`, `--mmproj`, `--mmproj-url`, `--lora`, `--lora-scaled`, `--control-vector`, `--control-vector-scaled`, `--chat-template`, `--chat-template-file`, `--media-path`, `--models-dir`, `--models-preset`, `--log-file`, `--log-prompts-dir`, `--slot-save-path`, `--ssl-key-file`, `--ssl-cert-file`, `--mcp-servers-config`, `--tools-runtime`, `--video-ffmpeg-dir` | string or filesystem path | Option-specific path, URL, host, port, or identifier validation; `--port` is `1` to `65535` |
+| `--cpu-mask`, `--cpu-range`, `--cpu-mask-batch`, `--cpu-range-batch`, `--cpu-mask-draft`, `--cpu-range-draft` | string | N/A; platform-specific affinity syntax |
+| `--override-tensor`, `--override-tensor-draft`, `--override-kv`, `--logit-bias`, `--chat-template-kwargs`, `--mcp-servers-json`, `--json-schema`, `--grammar` | string or structured string | N/A; must satisfy the option's grammar/JSON syntax |
+| `--alias`, `--tags`, `--api-prefix`, `--reverse-prompt`, `--reasoning-budget-message`, `--dry-sequence-breaker`, `--sampler-seq`, `--sampling-seq` | string | N/A |
+| `--timeout`, `--sse-ping-interval`, `--sleep-idle-seconds`, `--video-timestamp-interval`, `--video-fps`, `--image-min-tokens`, `--image-max-tokens`, `--mtmd-batch-max-tokens`, `--reasoning-budget`, `--spec-draft-n-max`, `--spec-draft-n-min` | integer or float | Non-negative unless the option documents a sentinel such as `-1`; `--sse-ping-interval` permits `-1` |
+| `--rope-scale`, `--rope-freq-base`, `--rope-freq-scale`, `--yarn-orig-ctx`, `--yarn-ext-factor`, `--yarn-attn-factor`, `--yarn-beta-slow`, `--yarn-beta-fast`, `--fit-ctx`, `--main-gpu`, `--n-cpu-moe`, `--n-cpu-ffn`, `--checkpoint-min-step`, `--ctx-checkpoints`, `--swa-checkpoints` | integer or float | Option-specific numeric range; `N/A` where the option is not numeric |
+
+When a future UI needs exact per-option validation rather than this family-level reference, it should read the selected executable's probed `--help` output. The upstream binary remains authoritative for accepted aliases, types, defaults, and ranges.
+
 ## Complete option reference
 
 ### Common and model/runtime options
