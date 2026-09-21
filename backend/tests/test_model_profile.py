@@ -7,6 +7,7 @@ from llamawebui.domain.model_profile import (
     ModelProfile,
     ProfileValidationError,
     combine_presets,
+    parse_command,
     render_command,
     render_preset,
     validate_profile,
@@ -78,8 +79,62 @@ def test_render_command_quotes_paths_but_keeps_numeric_values_readable(tmp_path:
     command = render_command(profile, tmp_path / "llama server.exe", platform="nt")
 
     assert 'llama server.exe"' in command
-    assert '"model file.gguf"' in command
+    assert "model file.gguf\"" in command
     assert "--ctx-size 4096" in command
+
+
+def test_parse_command_maps_known_and_preserves_unknown_options() -> None:
+    configuration = parse_command(
+        'llama-server --model "C:\\models\\model file.gguf" '
+        "--ctx-size 4096 --no-reasoning-preserve --future-flag value"
+    )
+
+    assert configuration["model_path"] == "C:\\models\\model file.gguf"
+    assert configuration["ctx_size"] == 4096
+    assert configuration["no_reasoning_preserve"] is True
+    assert configuration["advanced"] == [{"name": "future-flag", "value": "value"}]
+
+
+def test_parse_command_rejects_missing_model_and_values() -> None:
+    with pytest.raises(ValueError, match="--model"):
+        parse_command("llama-server --ctx-size 4096")
+    with pytest.raises(ValueError, match="requires a value"):
+        parse_command("llama-server --model")
+
+
+def test_parse_command_maps_all_typed_options_and_overrides() -> None:
+    configuration = parse_command(
+        "--model model.gguf --n-gpu-layers 20 --threads 8 --batch-size 256 "
+        "--ubatch-size 64 --flash-attn on --load-mode none --lazy-mode on "
+        "--cache-ram 0 --fit off --cache-type-k q4_0 --cache-type-v q4_0 "
+        "--override-tensor tensor=CPU --future-flag"
+    )
+
+    assert configuration["n_gpu_layers"] == 20
+    assert configuration["threads"] == 8
+    assert configuration["batch_size"] == 256
+    assert configuration["ubatch_size"] == 64
+    assert configuration["flash_attn"] == "on"
+    assert configuration["load_mode"] == "none"
+    assert configuration["lazy_mode"] == "on"
+    assert configuration["cache_ram"] == 0
+    assert configuration["fit"] == "off"
+    assert configuration["cache_type_k"] == "q4_0"
+    assert configuration["cache_type_v"] == "q4_0"
+    assert configuration["override_tensor"] == ["tensor=CPU"]
+    assert configuration["advanced"] == [{"name": "future-flag", "value": True}]
+
+
+def test_parse_command_rejects_invalid_typed_values() -> None:
+    with pytest.raises(ValueError, match="invalid value"):
+        parse_command("--model model.gguf --ctx-size many")
+    with pytest.raises(ValueError, match="--override-tensor requires a value"):
+        parse_command("--model model.gguf --override-tensor")
+
+
+def test_parse_command_rejects_unexpected_positional_argument() -> None:
+    with pytest.raises(ValueError, match="unexpected command argument"):
+        parse_command("llama-server positional --model model.gguf")
 
 
 def test_validation_reports_alias_capability_and_shard_errors(tmp_path: Path) -> None:

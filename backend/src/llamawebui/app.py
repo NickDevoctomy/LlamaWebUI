@@ -19,6 +19,7 @@ from llamawebui.domain.model_profile import (
     AdvancedOption,
     ModelProfile,
     ProfileValidationError,
+    parse_command,
     render_command,
     validate_profile,
     write_combined_preset_atomic,
@@ -151,6 +152,13 @@ class ProfileCreateRequest(BaseModel):
 class ProfileImportRequest(BaseModel):
     document: dict[str, object]
     alias: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class ProfileCommandImportRequest(BaseModel):
+    command: str = Field(min_length=1, max_length=10000)
+    alias: str = Field(min_length=1, max_length=64)
+    runtime_id: str
+    enabled: bool = False
 
 
 class ExternalModelImportRequest(BaseModel):
@@ -1209,6 +1217,37 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
             ) from error
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(profile, artifacts)
+
+    @app.post("/api/profiles/import-command", status_code=status.HTTP_201_CREATED)
+    async def import_profile_command(
+        import_request: ProfileCommandImportRequest, request: Request
+    ) -> dict[str, object]:
+        try:
+            configuration = parse_command(import_request.command)
+            profile_request = ProfileCreateRequest.model_validate(
+                {
+                    **configuration,
+                    "alias": import_request.alias,
+                    "runtime_id": import_request.runtime_id,
+                    "enabled": import_request.enabled,
+                }
+            )
+            registry = cast(ProfileRegistry, request.app.state.profile_registry)
+            profile = registry.create(
+                profile=profile_request.to_domain(),
+                runtime_id=import_request.runtime_id,
+                enabled=False,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileAliasExistsError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ProfileValidationError as error:
+            raise HTTPException(status_code=422, detail=list(error.errors)) from error
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
         return _profile_payload(profile, artifacts)
 

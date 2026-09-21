@@ -202,6 +202,9 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
   const [validation, setValidation] = useState<{ alias: string; valid: boolean; errors: string[]; preset: string }>()
   const [resetting, setResetting] = useState<Profile>()
   const [importError, setImportError] = useState('')
+  const [commandImportOpen, setCommandImportOpen] = useState(false)
+  const [commandImport, setCommandImport] = useState('')
+  const [commandImportAlias, setCommandImportAlias] = useState('')
   const [command, setCommand] = useState<{ alias: string; value: string }>()
   const queryClient = useQueryClient()
   const runtime = runtimes.find((item) => item.id === runtimeId)
@@ -361,6 +364,17 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
     },
     onError: (error: Error) => setImportError(error.message),
   })
+  const commandImportMutation = useMutation({
+    mutationFn: () => api.importProfileCommand(commandImport, commandImportAlias, runtimeId),
+    onSuccess: async () => {
+      setCommandImportOpen(false)
+      setCommandImport('')
+      setCommandImportAlias('')
+      setImportError('')
+      await queryClient.invalidateQueries({ queryKey: ['profiles'] })
+    },
+    onError: (error: Error) => setImportError(error.message),
+  })
 
   async function importProfile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
@@ -385,7 +399,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
       <section className="data-panel">
         <div className="panel-heading">
           <div><h2>Model profiles</h2><p>Named models and launch settings published to the router.</p></div>
-          <div className="row-actions"><label className="button secondary compact" htmlFor="profile-import"><Upload size={15} /> Import profile</label><input accept="application/json,.json" id="profile-import" onChange={importProfile} style={{ display: 'none' }} type="file" /><button className="button primary compact" disabled={!runtimes.length} onClick={openCreate} type="button"><Plus size={15} /> Create profile</button></div>
+          <div className="row-actions"><label className="button secondary compact" htmlFor="profile-import"><Upload size={15} /> Import profile</label><input accept="application/json,.json" id="profile-import" onChange={importProfile} style={{ display: 'none' }} type="file" /><button className="button secondary compact" disabled={!runtimes.length} onClick={() => setCommandImportOpen(true)} type="button"><TerminalSquare size={15} /> Import command</button><button className="button primary compact" disabled={!runtimes.length} onClick={openCreate} type="button"><Plus size={15} /> Create profile</button></div>
         </div>
         {importError && <div className="form-error"><AlertCircle size={15} /> {importError}</div>}
         {profiles.length ? <div className="record-list">{profiles.map((profile) => (
@@ -435,6 +449,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
       {cloning && <Dialog title="Clone model profile" description="Create a disabled copy that can be edited before enabling." onClose={() => setCloning(undefined)}><form onSubmit={(event) => { event.preventDefault(); clone.mutate() }}><div className="form-body"><Field label="New API model alias"><input autoFocus value={cloneAlias} onChange={(event) => setCloneAlias(event.target.value.toLowerCase().replace(/\s+/g, '-'))} required /></Field>{clone.error && <div className="form-error"><AlertCircle size={15} /> {clone.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setCloning(undefined)} type="button">Cancel</button><button className="button primary" disabled={clone.isPending || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(cloneAlias)} type="submit">{clone.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} Clone profile</button></footer></form></Dialog>}
       {validation && <Dialog title={`Validate ${validation.alias}`} description="No files or settings are changed by validation." onClose={() => setValidation(undefined)}><div className="confirm-body">{validation.valid ? <><Check size={24} /><p>This profile is valid for its selected runtime and model files.</p></> : <><AlertCircle size={24} /><div><p>Validation found {validation.errors.length} issue(s):</p><ul>{validation.errors.map((error) => <li key={error}>{error}</li>)}</ul></div></>}{validation.valid && <details><summary>Generated preset</summary><pre className="mono">{validation.preset}</pre></details>}</div><footer className="dialog-actions"><button className="button primary" onClick={() => setValidation(undefined)} type="button">Close</button></footer></Dialog>}
       {command && <Dialog title={`Command for ${command.alias}`} description="Readable export only; this command is never executed by the control plane." onClose={() => setCommand(undefined)}><div className="confirm-body"><TerminalSquare size={24} /><pre className="mono">{command.value}</pre></div><footer className="dialog-actions"><button className="button primary" onClick={() => setCommand(undefined)} type="button">Close</button></footer></Dialog>}
+      {commandImportOpen && <Dialog title="Import command" description="Tokenize a llama-server command without executing it. Unknown flags are retained as advanced options." onClose={() => setCommandImportOpen(false)}><div className="form-body"><Field label="Profile alias"><input autoFocus value={commandImportAlias} onChange={(event) => setCommandImportAlias(event.target.value.toLowerCase().replace(/\s+/g, '-'))} /></Field><Field label="Runtime"><select value={runtimeId} onChange={(event) => setRuntimeId(event.target.value)}><option value="">Select runtime</option>{runtimes.filter((item) => item.usable).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field><Field label="llama-server command"><textarea rows={7} value={commandImport} onChange={(event) => setCommandImport(event.target.value)} /></Field>{commandImportMutation.error && <div className="form-error"><AlertCircle size={15} /> {commandImportMutation.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setCommandImportOpen(false)} type="button">Cancel</button><button className="button primary" disabled={commandImportMutation.isPending || !aliasValid || !runtimeId || !commandImport.includes('--model')} onClick={() => commandImportMutation.mutate()} type="button">Import command</button></footer></Dialog>}
       {resetting && <Dialog title="Reset profile settings?" description="This removes advanced and typed launch overrides, retaining the alias and model path." onClose={() => setResetting(undefined)}><div className="confirm-body"><AlertCircle size={24} /><p>Reset <strong>{resetting.alias}</strong> to the selected runtime defaults?</p>{reset.error && <div className="form-error"><AlertCircle size={15} /> {reset.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setResetting(undefined)} type="button">Cancel</button><button className="button danger" disabled={reset.isPending} onClick={() => reset.mutate()} type="button">{reset.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Reset settings</button></footer></Dialog>}
       {repairing?.source_download && <Dialog title="Re-download missing model?" description="The exact pinned model artifact will be downloaded again and repair this profile." onClose={() => setRepairing(undefined)}><div className="confirm-body"><ShieldAlert size={24} /><p><strong>{repairing.source_download.repo_id}</strong> · <span className="mono">{repairing.source_download.group_key}</span> is missing for profile <strong>{repairing.alias}</strong>. Re-download revision <span className="mono">{repairing.source_download.revision.slice(0, 9)}</span>?</p>{redownload.error && <div className="form-error"><AlertCircle size={15} /> {redownload.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setRepairing(undefined)} type="button">Not now</button><button className="button primary" disabled={redownload.isPending} onClick={() => redownload.mutate(repairing.source_download!.id)} type="button">{redownload.isPending ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />} Re-download</button></footer></Dialog>}
     </>

@@ -235,6 +235,88 @@ def test_profile_command_export_returns_readable_structured_command(tmp_path: Pa
     assert "--ctx-size 4096" in command.text
 
 
+def test_profile_command_import_creates_disabled_profile(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model = tmp_path / "model.gguf"
+    model.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "ctx-size", "future-flag"}), raw_help="help"
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    with TestClient(
+        create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
+    ) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        imported = client.post(
+            "/api/profiles/import-command",
+            json={
+                "alias": "imported-command",
+                "runtime_id": runtime_id,
+                "command": f'--model "{model}" --ctx-size 4096 --future-flag value',
+            },
+        )
+
+    assert imported.status_code == 201, imported.text
+    assert imported.json()["enabled"] is False
+    assert imported.json()["configuration"]["ctx_size"] == 4096
+    assert imported.json()["configuration"]["advanced"] == [
+        {"name": "future-flag", "value": "value"}
+    ]
+
+
+def test_profile_command_import_rejects_malformed_command(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(options=frozenset({"model"}), raw_help="help"),
+            devices_output=None,
+            errors=(),
+        )
+
+    with TestClient(
+        create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
+    ) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        response = client.post(
+            "/api/profiles/import-command",
+            json={"alias": "bad", "runtime_id": runtime_id, "command": "--ctx-size 4"},
+        )
+
+    assert response.status_code == 422
+    assert "--model" in response.json()["detail"]
+
+
+def test_profile_command_import_rejects_unknown_runtime(tmp_path: Path) -> None:
+    with TestClient(create_app(Settings(data_dir=tmp_path / "data"))) as client:
+        response = client.post(
+            "/api/profiles/import-command",
+            json={
+                "alias": "missing-runtime",
+                "runtime_id": "missing",
+                "command": "--model model.gguf",
+            },
+        )
+
+    assert response.status_code == 404
+
+
 def test_profile_command_export_reports_missing_profile_and_runtime(tmp_path: Path) -> None:
     settings = Settings(data_dir=tmp_path / "data")
     with TestClient(create_app(settings)) as client:

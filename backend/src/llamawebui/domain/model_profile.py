@@ -25,6 +25,73 @@ class ProfileValidationError(ValueError):
         super().__init__("; ".join(errors))
 
 
+def parse_command(command: str, *, platform: str | None = None) -> dict[str, object]:
+    """Parse a llama-server command without executing it."""
+    if not command.strip():
+        raise ValueError("command must not be empty")
+    tokens = shlex.split(command, posix=(platform or os.name) != "nt")
+    if not tokens:
+        raise ValueError("command must not be empty")
+    tokens = [token.strip('"').strip("'") for token in tokens]
+    configuration: dict[str, object] = {"advanced": []}
+    known: dict[str, tuple[str, type]] = {
+        "ctx-size": ("ctx_size", int),
+        "n-gpu-layers": ("n_gpu_layers", int),
+        "threads": ("threads", int),
+        "batch-size": ("batch_size", int),
+        "ubatch-size": ("ubatch_size", int),
+        "flash-attn": ("flash_attn", str),
+        "load-mode": ("load_mode", str),
+        "lazy-mode": ("lazy_mode", str),
+        "cache-ram": ("cache_ram", int),
+        "fit": ("fit", str),
+        "cache-type-k": ("cache_type_k", str),
+        "cache-type-v": ("cache_type_v", str),
+    }
+    index = 0 if tokens[0].startswith("-") else 1
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith("-"):
+            raise ValueError(f"unexpected command argument: {token}")
+        name = token.lstrip("-")
+        if name == "model":
+            index += 1
+            if index >= len(tokens):
+                raise ValueError("--model requires a value")
+            configuration["model_path"] = tokens[index]
+        elif name == "no-reasoning-preserve":
+            configuration["no_reasoning_preserve"] = True
+        elif name == "override-tensor":
+            index += 1
+            if index >= len(tokens):
+                raise ValueError("--override-tensor requires a value")
+            configuration.setdefault("override_tensor", [])
+            cast_list = configuration["override_tensor"]
+            assert isinstance(cast_list, list)
+            cast_list.append(tokens[index])
+        elif name in known:
+            index += 1
+            if index >= len(tokens):
+                raise ValueError(f"--{name} requires a value")
+            field, value_type = known[name]
+            try:
+                configuration[field] = value_type(tokens[index])
+            except ValueError as error:
+                raise ValueError(f"--{name} has an invalid value") from error
+        else:
+            value: str | bool = True
+            if index + 1 < len(tokens) and not tokens[index + 1].startswith("-"):
+                index += 1
+                value = tokens[index]
+            advanced = configuration["advanced"]
+            assert isinstance(advanced, list)
+            advanced.append({"name": name, "value": value})
+        index += 1
+    if "model_path" not in configuration:
+        raise ValueError("command must include --model")
+    return configuration
+
+
 @dataclass(frozen=True, slots=True)
 class AdvancedOption:
     name: str

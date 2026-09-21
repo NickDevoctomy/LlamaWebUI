@@ -269,6 +269,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ document, alias: alias || null }),
     }),
+  importProfileCommand: (command: string, alias: string, runtimeId: string) =>
+    request<Profile>('/api/profiles/import-command', {
+      method: 'POST',
+      body: JSON.stringify({ command, alias, runtime_id: runtimeId, enabled: false }),
+    }),
   deleteProfile: (profileId: string) =>
     request<void>(`/api/profiles/${profileId}`, { method: 'DELETE' }),
   createToken: (name: string, expiryNote?: string) =>
