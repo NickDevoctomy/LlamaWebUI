@@ -15,7 +15,7 @@ The old handoff document is retained under `../stale/` for historical reference 
 
 Use this prompt when starting a new coding session:
 
-> Read `docs/plans/active/README.md`, then read the section named **Current slice handoff** below. Follow the referenced slice in `docs/plans/active/sequential-completion-plan.md` strictly. Read `docs/plans/active/sequential-progress.md` before editing. Treat `docs/plans/llama-web-ui-plan.md` as the overall design and requirements reference. Preserve user changes, run the required baseline checks, implement only the current slice, validate it, update sequential progress, and provide the suggested commit message and manual acceptance steps.
+> Read `README.md` and follow the current slice handoff exactly.
 
 ## Current slice handoff
 

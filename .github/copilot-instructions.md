@@ -2,7 +2,7 @@
 
 ## Start Every Session
 
-- Read `docs/plans/active/README.md` first, then `docs/plans/active/sequential-progress.md`. Follow `docs/plans/active/sequential-completion-plan.md` strictly. Treat `docs/plans/llama-web-ui-plan.md` as the authoritative overall design and requirements document.
+- Read `docs/plans/active/README.md` first and follow its current slice handoff exactly. Treat `docs/plans/llama-web-ui-plan.md` as the authoritative overall design and requirements document.
 - Run `git status --short` and `git log -3 --oneline --decorate` before editing. Preserve user changes and never reset or overwrite work that is not yours.
 - Continue from the documented next slice. Do not expand backend or frontend scope beyond what is needed to complete that slice.
 - The current slice is not complete unless every required gate passes. If any focused test, frontend test, build, lint, type check, coverage check, or required manual check fails, keep the slice BLOCKED and stop. Do not advance the phase, mark it complete, or write a success-style handoff.

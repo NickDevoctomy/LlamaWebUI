@@ -42,6 +42,8 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### 0.1 Confirm API-key reload semantics
 
+**Status:** Complete — evidence is recorded in `notes/0001-phase-0-1-api-key-reload.md`.
+
 - Determine whether the selected llama.cpp runtime reloads `--api-key-file` changes without a router restart.
 - Use a controlled local runtime test; do not infer behavior from documentation alone.
 - Record the result and required UI behavior.
@@ -49,6 +51,8 @@ The baseline contains known stale statements in older planning documents. This p
 **Acceptance:** Result documented with command/runtime build, observed status codes, and whether restart is required.
 
 ### 0.2 Compare one older runtime build
+
+**Status:** Current slice — not started.
 
 - Probe one older available llama.cpp build against the current capability parser.
 - Record option/device/router-mode differences.
@@ -58,7 +62,7 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### Phase 0 gate
 
-- [ ] API-key reload behavior recorded.
+- [x] API-key reload behavior recorded.
 - [ ] Older-build comparison recorded.
 - [ ] Focused tests and runtime acceptance evidence added to progress documentation.
 
