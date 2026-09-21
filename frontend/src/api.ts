@@ -263,6 +263,7 @@ export const api = {
     if (!response.ok) throw new Error(response.statusText)
     return response.blob()
   }),
+  profileCommand: (profileId: string) => request<string>(`/api/profiles/${profileId}/command`),
   importProfile: (document: Record<string, unknown>, alias?: string) =>
     request<Profile>('/api/profiles/import', {
       method: 'POST',

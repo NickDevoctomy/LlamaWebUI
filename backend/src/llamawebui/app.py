@@ -19,6 +19,7 @@ from llamawebui.domain.model_profile import (
     AdvancedOption,
     ModelProfile,
     ProfileValidationError,
+    render_command,
     validate_profile,
     write_combined_preset_atomic,
 )
@@ -1144,6 +1145,30 @@ def create_app(
             media_type="application/json",
             headers={"Content-Disposition": f'attachment; filename="{profile.alias}.json"'},
         )
+
+    @app.get("/api/profiles/{profile_id}/command", response_class=PlainTextResponse)
+    async def export_profile_command(profile_id: str, request: Request) -> PlainTextResponse:
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        profile = next((item for item in registry.list() if item.id == profile_id), None)
+        if profile is None:
+            raise HTTPException(status_code=404, detail="model profile not found")
+        runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        try:
+            runtime = runtimes.get(profile.runtime_id)
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        command = render_command(
+            ProfileCreateRequest.model_validate(
+                {
+                    **profile.configuration,
+                    "alias": profile.alias,
+                    "runtime_id": profile.runtime_id,
+                    "model_path": profile.model_path,
+                }
+            ).to_domain(),
+            Path(runtime.executable_path),
+        )
+        return PlainTextResponse(command, media_type="text/plain")
 
     @app.post("/api/profiles/import", status_code=status.HTTP_201_CREATED)
     async def import_profile(

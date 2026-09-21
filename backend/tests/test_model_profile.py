@@ -7,6 +7,7 @@ from llamawebui.domain.model_profile import (
     ModelProfile,
     ProfileValidationError,
     combine_presets,
+    render_command,
     render_preset,
     validate_profile,
     write_combined_preset_atomic,
@@ -68,6 +69,17 @@ def test_render_qwen_profile_as_deterministic_preset(tmp_path: Path) -> None:
         "batch-size = 1024\n"
         "ubatch-size = 1024\n"
     )
+
+
+def test_render_command_quotes_paths_but_keeps_numeric_values_readable(tmp_path: Path) -> None:
+    model = tmp_path / "model file.gguf"
+    profile = ModelProfile(alias="model", model_path=model, ctx_size=4096)
+
+    command = render_command(profile, tmp_path / "llama server.exe", platform="nt")
+
+    assert 'llama server.exe"' in command
+    assert '"model file.gguf"' in command
+    assert "--ctx-size 4096" in command
 
 
 def test_validation_reports_alias_capability_and_shard_errors(tmp_path: Path) -> None:

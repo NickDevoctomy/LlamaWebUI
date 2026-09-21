@@ -194,6 +194,55 @@ def test_profile_export_returns_portable_profile_json(tmp_path: Path) -> None:
     assert "export-model" in payload["preset"]
 
 
+def test_profile_command_export_returns_readable_structured_command(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model = tmp_path / "model file.gguf"
+    model.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "ctx-size"}), raw_help="help"
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    with TestClient(
+        create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
+    ) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        profile = client.post(
+            "/api/profiles",
+            json={
+                "alias": "command-model",
+                "runtime_id": runtime_id,
+                "model_path": str(model),
+                "ctx_size": 4096,
+            },
+        ).json()
+        command = client.get(f"/api/profiles/{profile['id']}/command")
+
+    assert command.status_code == 200
+    assert str(executable.resolve()) in command.text
+    assert "--model" in command.text
+    assert "model file.gguf" in command.text
+    assert "--ctx-size 4096" in command.text
+
+
+def test_profile_command_export_reports_missing_profile_and_runtime(tmp_path: Path) -> None:
+    settings = Settings(data_dir=tmp_path / "data")
+    with TestClient(create_app(settings)) as client:
+        missing = client.get("/api/profiles/missing/command")
+
+    assert missing.status_code == 404
+
+
 def test_profile_import_recreates_export_as_disabled_profile(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()

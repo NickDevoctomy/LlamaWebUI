@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -135,6 +136,31 @@ def render_preset(profile: ModelProfile, capabilities: RuntimeCapabilities) -> s
         value = str(option.value).lower() if isinstance(option.value, bool) else str(option.value)
         lines.append(f"{option.name.removeprefix('--')} = {value}")
     return "\n".join(lines) + "\n"
+
+
+def render_command(
+    profile: ModelProfile,
+    executable: Path,
+    *,
+    platform: str | None = None,
+) -> str:
+    """Render a readable, non-executed command from the structured profile."""
+    quote = _windows_quote if (platform or os.name) == "nt" else shlex.quote
+    arguments: list[str] = [quote(str(executable))]
+    for option in profile.options():
+        arguments.append(f"--{option.name.removeprefix('--')}")
+        if option.value is not True:
+            value = (
+                str(option.value).lower()
+                if isinstance(option.value, bool)
+                else str(option.value)
+            )
+            arguments.append(quote(value) if any(char.isspace() for char in value) else value)
+    return " ".join(arguments)
+
+
+def _windows_quote(value: str) -> str:
+    return '"' + value.replace('"', '\\"') + '"'
 
 
 def write_preset_atomic(
