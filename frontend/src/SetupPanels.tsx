@@ -85,6 +85,7 @@ export function RuntimePanel({ runtimes }: { runtimes: Runtime[] }) {
   const [release, setRelease] = useState<RuntimeRelease>()
   const [assetName, setAssetName] = useState('')
   const [deletingRuntime, setDeletingRuntime] = useState<Runtime>()
+  const [expandedRuntime, setExpandedRuntime] = useState<string>()
   const queryClient = useQueryClient()
   const registration = useMutation({
     mutationFn: () => api.registerRuntime({ name, executable_path: path, backend }),
@@ -118,6 +119,10 @@ export function RuntimePanel({ runtimes }: { runtimes: Runtime[] }) {
       await queryClient.invalidateQueries({ queryKey: ['runtimes'] })
     },
   })
+  const reprobe = useMutation({
+    mutationFn: (runtimeId: string) => api.reprobeRuntime(runtimeId),
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['runtimes'] }) },
+  })
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -135,9 +140,10 @@ export function RuntimePanel({ runtimes }: { runtimes: Runtime[] }) {
           <article className="record-row" key={runtime.id}>
             <span className="record-icon"><Cpu size={18} /></span>
             <div className="record-copy"><strong>{runtime.name}</strong><span>{runtime.executable_path}</span></div>
-            <div className="record-meta"><small>Build</small><span>{runtime.build ?? 'Unknown'}</span></div>
+            <div className="record-meta"><small>Build</small><span>{runtime.build ?? 'Unknown'}{runtime.commit ? ` · ${runtime.commit.slice(0, 8)}` : ''}</span></div>
             <div className="record-meta"><small>Backend</small><span>{runtime.backend?.toUpperCase() ?? 'AUTO'}</span></div>
-            <div className="row-actions"><span className={`state-pill ${runtime.usable ? 'ready' : 'error'}`}>{runtime.usable ? 'Ready' : 'Probe failed'}</span><button aria-label={`Remove runtime ${runtime.name}`} className="icon-button small danger-icon" onClick={() => setDeletingRuntime(runtime)} title="Remove runtime" type="button"><Trash2 size={16} /></button></div>
+            <div className="row-actions"><span className={`state-pill ${runtime.usable ? 'ready' : 'error'}`}>{runtime.usable ? 'Ready' : 'Probe failed'}</span><button className="button secondary compact" disabled={reprobe.isPending} onClick={() => reprobe.mutate(runtime.id)} type="button">{reprobe.isPending ? <LoaderCircle className="spin" size={14} /> : 'Re-probe'}</button><button aria-expanded={expandedRuntime === runtime.id} aria-label={`Show diagnostics for ${runtime.name}`} className="button secondary compact" onClick={() => setExpandedRuntime(expandedRuntime === runtime.id ? undefined : runtime.id)} type="button">Details</button><button aria-label={`Remove runtime ${runtime.name}`} className="icon-button small danger-icon" onClick={() => setDeletingRuntime(runtime)} title="Remove runtime" type="button"><Trash2 size={16} /></button></div>
+            {expandedRuntime === runtime.id && <div className="record-details"><span>Devices: {runtime.device_status === 'available' ? runtime.devices.join(', ') : runtime.device_status}</span><span>Options: {runtime.options.length}</span><span>Router: {runtime.router_compatible ? 'compatible' : 'incompatible'}</span>{runtime.diagnostics.length > 0 && <ul>{runtime.diagnostics.map((diagnostic) => <li key={diagnostic}>{diagnostic}</li>)}</ul>}{reprobe.error && <div className="form-error"><AlertCircle size={15} /> {reprobe.error.message}</div>}</div>}
           </article>
         ))}</div> : <div className="empty"><Cpu size={28} /><strong>No runtime registered</strong><span>Point Llama Control at an existing llama-server executable to begin.</span><button className="button primary" onClick={() => setOpen(true)} type="button"><Plus size={15} /> Register runtime</button></div>}
       </section>

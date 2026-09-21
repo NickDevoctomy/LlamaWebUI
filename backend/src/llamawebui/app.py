@@ -207,6 +207,20 @@ class ProfileCloneRequest(BaseModel):
 
 
 def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
+    probe_errors = tuple(runtime.probe_error.splitlines()) if runtime.probe_error else ()
+    version_errors = tuple(
+        error for error in probe_errors if error.startswith(("version probe", "help probe"))
+    )
+    device_errors = tuple(error for error in probe_errors if error.startswith("devices probe"))
+    missing_router_options = () if "models-preset" in runtime.options else ("models-preset",)
+    if device_errors:
+        device_status = "unavailable"
+    elif runtime.devices:
+        device_status = "available"
+    else:
+        device_status = "none"
+    diagnostics = list(probe_errors)
+    diagnostics.extend(f"runtime does not support --{option}" for option in missing_router_options)
     return {
         "id": runtime.id,
         "name": runtime.name,
@@ -216,9 +230,28 @@ def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
         "backend": runtime.backend,
         "devices": runtime.devices,
         "options": runtime.options,
-        "usable": runtime.probe_error is None and bool(runtime.options),
+        "usable": bool(runtime.options) and not version_errors,
         "probe_error": runtime.probe_error,
+        "probe_errors": list(probe_errors),
+        "device_status": device_status,
+        "router_compatible": not missing_router_options and not version_errors,
+        "missing_router_options": list(missing_router_options),
+        "diagnostics": diagnostics,
+        "help_sha256": runtime.help_sha256,
     }
+
+
+def _router_diagnostics(runtime: RuntimeRecord) -> tuple[str, ...]:
+    diagnostics: list[str] = []
+    if runtime.probe_error:
+        diagnostics.extend(
+            error
+            for error in runtime.probe_error.splitlines()
+            if error.startswith(("version probe", "help probe"))
+        )
+    if "models-preset" not in runtime.options:
+        diagnostics.append("runtime does not support --models-preset")
+    return tuple(diagnostics)
 
 
 def _profile_payload(
@@ -529,10 +562,11 @@ def create_app(
             runtime = runtimes.get(runtime_id)
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-        if "models-preset" not in runtime.options:
+        router_diagnostics = _router_diagnostics(runtime)
+        if router_diagnostics:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="runtime does not support --models-preset",
+                detail="; ".join(router_diagnostics),
             )
         enabled_profiles = profiles.list_enabled(runtime.id)
         if not enabled_profiles:
@@ -781,10 +815,11 @@ def create_app(
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT, detail=str(error)
                 ) from error
-            if "models-preset" not in candidate.options:
+            router_diagnostics = _router_diagnostics(candidate)
+            if router_diagnostics:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail="previous runtime does not support --models-preset",
+                    detail="; ".join(router_diagnostics),
                 )
             candidate_profiles = profiles.list_enabled(previous_runtime_id)
             broken = tuple(
@@ -1160,11 +1195,12 @@ def create_app(
             configuration["alias"] = profile.alias
             configuration["runtime_id"] = profile.runtime_id
             validated = ProfileCreateRequest.model_validate(configuration).to_domain()
-            errors = validate_profile(
+            errors = list(validate_profile(
                 validated, RuntimeCapabilities(options=frozenset(runtime.options), raw_help="")
-            )
+            ))
+            errors.extend(_router_diagnostics(runtime))
         except ProfileValidationError as error:
-            errors = error.errors
+            errors = list(error.errors)
         return {"valid": not errors, "errors": list(errors), "preset": profile.preset}
 
     @app.post("/api/profiles/{profile_id}/reset")

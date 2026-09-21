@@ -39,7 +39,17 @@ class RuntimeProbeResult:
 
     @property
     def usable(self) -> bool:
-        return not self.errors and bool(self.capabilities.options)
+        return bool(self.capabilities.options) and not any(
+            error.startswith(("version probe", "help probe")) for error in self.errors
+        )
+
+    @property
+    def device_status(self) -> str:
+        if self.devices_output:
+            return "available"
+        if any(error.startswith("devices probe") for error in self.errors):
+            return "unavailable"
+        return "none"
 
 
 RuntimeProber = Callable[[Path], Awaitable[RuntimeProbeResult]]

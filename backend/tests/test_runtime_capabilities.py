@@ -26,6 +26,17 @@ def test_parse_help_output_ignores_prose_and_short_options() -> None:
     assert capabilities.options == frozenset()
 
 
+def test_runtime_capabilities_classifies_router_support() -> None:
+    capabilities = parse_help_output("--model PATH\n--models-preset PATH\n")
+
+    assert capabilities.router_compatible
+    assert capabilities.missing_router_options == ()
+
+    unsupported = parse_help_output("--model PATH\n")
+    assert not unsupported.router_compatible
+    assert unsupported.missing_router_options == ("models-preset",)
+
+
 def test_parse_version_output_reads_labeled_build_and_commit() -> None:
     version = parse_version_output("version: b10964 (commit B29C606E28A01B1B)\n")
 

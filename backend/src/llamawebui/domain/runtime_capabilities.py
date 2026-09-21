@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+ROUTER_REQUIRED_OPTIONS = frozenset({"models-preset"})
+
 _OPTION_PATTERN = re.compile(r"(?<!\w)--([a-z][a-z0-9-]*)")
 _BUILD_PATTERN = re.compile(r"\b(?:build|version)\s*[:=]?\s*([\w.-]+)", re.IGNORECASE)
 _COMMIT_PATTERN = re.compile(r"\bcommit\s*[:=]?\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
@@ -23,6 +25,16 @@ class RuntimeCapabilities:
 
         normalized = option.removeprefix("--").strip().lower()
         return normalized in self.options
+
+    @property
+    def missing_router_options(self) -> tuple[str, ...]:
+        """Return required router options that this executable does not advertise."""
+
+        return tuple(sorted(ROUTER_REQUIRED_OPTIONS - self.options))
+
+    @property
+    def router_compatible(self) -> bool:
+        return not self.missing_router_options
 
 
 @dataclass(frozen=True, slots=True)

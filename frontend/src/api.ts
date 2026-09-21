@@ -34,10 +34,18 @@ export interface Runtime {
   name: string
   executable_path: string
   build: string | null
+  commit: string | null
   backend: string | null
   devices: string[]
   options: string[]
   usable: boolean
+  probe_error: string | null
+  probe_errors: string[]
+  device_status: 'available' | 'none' | 'unavailable'
+  router_compatible: boolean
+  missing_router_options: string[]
+  diagnostics: string[]
+  help_sha256: string
 }
 
 export interface Profile {
@@ -197,6 +205,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   serverStatus: () => request<ServerStatus>('/api/server/status'),
   runtimes: () => request<Runtime[]>('/api/runtimes'),
+  reprobeRuntime: (runtimeId: string) => request<Runtime>(`/api/runtimes/${runtimeId}/probe`, { method: 'POST' }),
   profiles: () => request<Profile[]>('/api/profiles'),
   tokens: () => request<AccessToken[]>('/api/tokens'),
   downloads: () => request<DownloadJob[]>('/api/downloads'),

@@ -55,6 +55,35 @@ async def test_probe_runtime_records_failures_without_losing_successes(executabl
         "version probe timed out after 15s",
         "devices probe could not start: missing dependency",
     )
+    assert result.device_status == "unavailable"
+
+
+async def test_probe_runtime_keeps_runtime_usable_when_only_devices_fail(executable: Path) -> None:
+    async def runner(arguments: Sequence[str], _timeout: float) -> CommandResult:
+        if arguments[-1] == "--list-devices":
+            raise OSError("unsupported")
+        if arguments[-1] == "--version":
+            return CommandResult(0, "version: 1", "")
+        return CommandResult(0, "--models-preset PATH", "")
+
+    result = await probe_runtime(executable, runner=runner)
+
+    assert result.usable
+    assert result.device_status == "unavailable"
+
+
+async def test_probe_runtime_marks_empty_device_output_as_no_devices(executable: Path) -> None:
+    async def runner(arguments: Sequence[str], _timeout: float) -> CommandResult:
+        if arguments[-1] == "--version":
+            return CommandResult(0, "version: 1", "")
+        if arguments[-1] == "--help":
+            return CommandResult(0, "--models-preset PATH", "")
+        return CommandResult(0, "", "")
+
+    result = await probe_runtime(executable, runner=runner)
+
+    assert result.usable
+    assert result.device_status == "none"
 
 
 async def test_probe_runtime_records_nonzero_exit(executable: Path) -> None:
