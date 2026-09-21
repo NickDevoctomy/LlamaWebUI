@@ -5,7 +5,10 @@
 - Read `docs/plans/active/README.md` first, then `docs/plans/active/sequential-progress.md`. Follow `docs/plans/active/sequential-completion-plan.md` strictly. Treat `docs/plans/llama-web-ui-plan.md` as the authoritative overall design and requirements document.
 - Run `git status --short` and `git log -3 --oneline --decorate` before editing. Preserve user changes and never reset or overwrite work that is not yours.
 - Continue from the documented next slice. Do not expand backend or frontend scope beyond what is needed to complete that slice.
-- Work in visible, testable slices. Every slice must end with a runnable deliverable, numbered manual test steps, validation results, and a suggested commit message.
+- The current slice is not complete unless every required gate passes. If any focused test, frontend test, build, lint, type check, coverage check, or required manual check fails, keep the slice BLOCKED and stop. Do not advance the phase, mark it complete, or write a success-style handoff.
+- Never overwrite a failed validation with a later progress update. Record one concise numbered note under `docs/plans/active/notes/` only after the slice is complete; keep `sequential-progress.md` to current status, blocker, next action, and links.
+- Do not modify README files or planning instructions during a feature slice unless the current slice explicitly requires documentation changes. Do not add narrative, retrospective, or commit-history material to progress documents.
+- Work in visible, testable slices. Every completed slice must end with a runnable deliverable, numbered manual test steps when required, validation results, and a suggested commit message. A failed or partial slice must not be presented as completed.
 
 ## Architecture Boundaries
 
@@ -52,6 +55,8 @@
 npm test
 npm run build
 ```
+
+- If `npm test` fails, inspect and report every failure. Do not assume a baseline failure is acceptable, do not advance the sequential plan, and do not change unrelated backend tests to improve the status.
 
 ## Live Development
 
