@@ -6,6 +6,7 @@ This folder contains the only active execution documents for the remaining imple
 
 - `sequential-completion-plan.md` — ordered phases, slices, gates, and acceptance criteria.
 - `sequential-progress.md` — current phase, current slice, completed evidence, validation results, blockers, and next action.
+- `notes/NNNN-<slice>.md` — one numbered, append-only evidence note per completed slice. Keep detailed results here instead of growing `sequential-progress.md`.
 - `../llama-web-ui-plan.md` — original overall design and requirements reference. Do not rewrite or use it as the day-to-day progress tracker.
 
 The old handoff document is retained under `../stale/` for historical reference only.
@@ -21,9 +22,9 @@ Use this prompt when starting a new coding session:
 This section is the single copy/paste handoff for the next session. Update it whenever the current slice changes.
 
 - **Phase:** Phase 0 — Feasibility completion
-- **Slice:** 0.1 — Confirm API-key reload semantics
-- **Instruction:** Determine whether the selected llama.cpp runtime reloads `--api-key-file` changes without a router restart. Use a controlled local runtime test and record the runtime/build, method, observed status codes, and required UI behavior. Do not begin Phase 0.2 or any later phase.
-- **Suggested commit message:** `test: record api key reload semantics`
+- **Slice:** 0.2 — Compare one older runtime build
+- **Instruction:** Probe one older available llama.cpp build, compare capabilities, and verify unsupported options remain diagnostics without profile mutation. Do not begin Phase 1 or any later phase.
+- **Suggested commit message:** `test: compare older runtime capabilities`
 
 ## Sequential workflow
 
@@ -39,7 +40,7 @@ This section is the single copy/paste handoff for the next session. Update it wh
 8. Run focused validation immediately after the edit.
 9. Run the relevant full quality gates before closing the slice.
 10. Perform manual acceptance when the slice requires a browser, installed runtime, process, or live integration.
-11. Update `sequential-progress.md` before considering the slice complete.
+11. Add a numbered note under `notes/` for the completed slice, then update `sequential-progress.md` with only a short link and handoff state.
 12. Include a suggested commit message in the progress entry and final response.
 
 ## Required deliverable for every slice
@@ -140,6 +141,7 @@ A slice may be marked complete only when:
 - Relevant full quality gates pass.
 - Required manual acceptance is complete or explicitly blocked with evidence.
 - `sequential-progress.md` records the result.
+- A numbered note under `notes/` records the detailed evidence.
 - The next slice is named.
 - A suggested commit message is recorded.
 
