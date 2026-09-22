@@ -1288,19 +1288,23 @@ def create_app(
             )
         runtime_id = document.get("runtime_id")
         alias = import_request.alias or document.get("alias")
+        enabled = document.get("enabled", False)
         if not isinstance(runtime_id, str) or not isinstance(alias, str):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="profile export is missing runtime_id or alias",
             )
+        if not isinstance(enabled, bool):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="profile export enabled value is invalid",
+            )
         try:
             profile_request = ProfileCreateRequest.model_validate(
-                {**configuration, "alias": alias, "runtime_id": runtime_id, "enabled": False}
+                {**configuration, "alias": alias, "runtime_id": runtime_id, "enabled": enabled}
             )
             registry = cast(ProfileRegistry, request.app.state.profile_registry)
-            profile = registry.create(
-                profile=profile_request.to_domain(), runtime_id=runtime_id, enabled=False
-            )
+            profile = registry.create(profile=profile_request.to_domain(), runtime_id=runtime_id, enabled=enabled)
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ProfileAliasExistsError as error:

@@ -325,7 +325,7 @@ def test_profile_command_export_reports_missing_profile_and_runtime(tmp_path: Pa
     assert missing.status_code == 404
 
 
-def test_profile_import_recreates_export_as_disabled_profile(tmp_path: Path) -> None:
+def test_profile_import_recreates_export_with_exported_enabled_state(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
     model = tmp_path / "model.gguf"
@@ -367,7 +367,7 @@ def test_profile_import_recreates_export_as_disabled_profile(tmp_path: Path) -> 
 
     assert imported.status_code == 201
     assert imported.json()["alias"] == "imported-model"
-    assert imported.json()["enabled"] is False
+    assert imported.json()["enabled"] is True
     assert imported.json()["configuration"]["ctx_size"] == 4096
 
 
