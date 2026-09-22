@@ -73,6 +73,23 @@ Invoke-RestMethod http://127.0.0.1:18080/api/health
 
 The backend control plane listens on port `18080` by default in the development setup.
 
+## Start backend and frontend together
+
+From the repository root, use the included PowerShell launcher. It starts both processes and stops them together with `Ctrl+C`:
+
+```powershell
+.\start.ps1
+```
+
+To bind both services to a specific address, pass an IPv4 address or `0.0.0.0`:
+
+```powershell
+.\start.ps1 192.168.1.50
+.\start.ps1 0.0.0.0
+```
+
+The backend listens on port `18080` and the frontend on port `5173`. Use the machine's LAN address in a browser when connecting from another device. Binding beyond loopback requires an API key for the managed router; do not expose it to an untrusted network.
+
 ## Start the frontend
 
 In another terminal:
