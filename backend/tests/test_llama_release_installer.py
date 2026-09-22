@@ -52,6 +52,21 @@ async def test_release_client_resolves_stable_nightly_pointer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_release_client_resolves_latest_endpoint() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/releases/latest"):
+            return httpx.Response(200, json={"tag_name": "v1", "assets": []})
+        return httpx.Response(404)
+
+    client = GitHubReleaseClient(client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    result = await client.release("latest")
+
+    assert result.tag == "v1"
+    assert result.stable_tag == "v1"
+
+
+@pytest.mark.asyncio
 async def test_release_client_keeps_build_release_and_rejects_invalid_payload() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/releases/tags/b123"):

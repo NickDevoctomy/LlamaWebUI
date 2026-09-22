@@ -63,21 +63,25 @@ class GitHubReleaseClient:
             timeout=30.0, headers={"Accept": "application/vnd.github+json"}
         )
         try:
-            response = await client.get(f"https://api.github.com/repos/{self.repo}/releases/tags/{tag}")
+            endpoint = "latest" if tag.lower() == "latest" else f"tags/{tag}"
+            response = await client.get(
+                f"https://api.github.com/repos/{self.repo}/releases/{endpoint}"
+            )
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, dict) or not isinstance(payload.get("tag_name"), str):
                 raise ReleaseInstallError("GitHub returned an invalid release")
+            resolved_tag = payload["tag_name"]
             assets = _parse_assets(payload.get("assets"))
-            stable_tag = tag if not tag.startswith("b") else None
+            stable_tag = resolved_tag if not resolved_tag.startswith("b") else None
             nightly = next(
                 (asset for asset in assets if asset.name.lower() == "nightly-tag.txt"), None
             )
             if stable_tag and nightly:
                 build = (await client.get(nightly.url)).text.strip()
-                if build and build != tag:
-                    return await self._release_for_build(client, build, tag)
-            return ReleaseInfo(tag=tag, stable_tag=stable_tag, assets=assets)
+                if build and build != resolved_tag:
+                    return await self._release_for_build(client, build, resolved_tag)
+            return ReleaseInfo(tag=resolved_tag, stable_tag=stable_tag, assets=assets)
         except httpx.HTTPError as error:
             raise ReleaseInstallError("GitHub release lookup failed") from error
         finally:
