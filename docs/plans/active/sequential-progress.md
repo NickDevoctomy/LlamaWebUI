@@ -3,9 +3,9 @@
 **Status:** Active
 **Execution plan:** [sequential-completion-plan.md](sequential-completion-plan.md)
 **Requirements reference:** [../llama-web-ui-plan.md](../llama-web-ui-plan.md)
-**Updated:** 2026-09-21
-**Current phase:** Phase 1 — Application foundation completion
-**Current slice:** 2.2 — Real runtime rollback acceptance
+**Updated:** 2026-09-22
+**Current phase:** Phase 3 — Local library and profiles completion
+**Current slice:** 3.1 — Logical-model lifecycle completion
 
 ## Operating rule
 
@@ -20,13 +20,13 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 - Phase 1.3 - see `notes/0005-phase-1-3-diagnostics-bundle.md`.
 - Phase 1.4 - see `notes/0006-phase-1-4-static-frontend-packaging.md`.
 - Phase 2.1 - see `notes/0007-phase-2-1-runtime-capability-diagnostics.md`.
+- Phase 2.2 - see `notes/0008-phase-2-2-real-runtime-rollback.md`.
 
 ## Phase gates
 
 - Phase 0: Complete — slices 0.1 and 0.2 complete; all required gates pass.
 - Phase 1: Complete — slices 1.1 through 1.4 and the Phase 1 gate pass.
-- Phase 2: In progress — slice 2.1 is next.
-- Phase 2: Not started.
+- Phase 2: Complete — slices 2.1 and 2.2 pass; all Phase 2 gate criteria pass.
 - Phase 3: Not started.
 - Phase 4: Not started.
 - Phase 5: Not started.
@@ -49,9 +49,10 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 | 2026-09-21 | Phase 1.4 static frontend packaging | 237 backend tests passed; 90.07% branch coverage; Ruff, strict mypy, frontend tests/build, and `git diff --check` passed; packaged static assets serve from FastAPI and API routing remains available |
 | 2026-09-21 | Phase 1 gate | All six Phase 1 gate criteria pass; single-instance locking, redacted logging, diagnostics, static serving, backend/frontend quality gates, and packaged-start smoke test are complete |
 | 2026-09-21 | Phase 2.1 runtime capability diagnostics | 240 backend tests passed; 90.04% branch coverage; Ruff, strict mypy, frontend tests/build, focused runtime diagnostics tests, and `git diff --check` passed; device-only probe failures are non-blocking, while version/help/router incompatibilities remain actionable diagnostics |
+| 2026-09-22 | Phase 2.2 real runtime rollback acceptance | Two existing local CPU runtimes and profiles validated in isolated state; newer -> older -> newer live start/restart/rollback sequence reached ready; deterministic candidate-failure restoration tests passed; 240 backend tests passed at 90.04% coverage, 19 frontend tests and build passed, Ruff/mypy/diff checks passed, and the final tree was clean |
 
 ## Next action
 
-Begin Phase 2 slice 2.2 — real runtime rollback acceptance. Do not begin Phase 3 until the Phase 2 gate passes.
+Begin Phase 3 slice 3.1 — logical-model lifecycle completion. Do not begin Phase 4 until the Phase 3 gate passes.
 
-Suggested commit: `feat: expose runtime capability diagnostics`
+Suggested commit: `test: record real runtime rollback acceptance`

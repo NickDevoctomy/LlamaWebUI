@@ -116,14 +116,18 @@ The baseline contains known stale statements in older planning documents. This p
 
 ## Phase 2 — Runtime manager completion
 
-**Status:** Incomplete. Start only after Phase 1 gate.
+**Status:** Complete — all slices and the Phase 2 gate pass. Start Phase 3 only after this gate.
 
 ### 2.1 Runtime capability diagnostics
+
+**Status:** Complete — evidence is recorded in `notes/0007-phase-2-1-runtime-capability-diagnostics.md`.
 
 - Expose clear per-runtime probe errors, unsupported router capabilities, device information, and option compatibility.
 - Ensure profile validation reports actionable diagnostics without overwriting saved profiles.
 
 ### 2.2 Real runtime rollback acceptance
+
+**Status:** Complete — evidence is recorded in `notes/0008-phase-2-2-real-runtime-rollback.md`.
 
 - Register two existing local runtimes.
 - Validate a profile against both.
@@ -132,13 +136,13 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### Phase 2 gate
 
-- [ ] Capability diagnostics are visible and tested.
-- [ ] Two runtimes work side by side.
-- [ ] Rollback and restoration have measured acceptance evidence.
+- [x] Capability diagnostics are visible and tested.
+- [x] Two runtimes work side by side.
+- [x] Rollback and restoration have measured acceptance evidence.
 
 ## Phase 3 — Local library and profiles completion
 
-**Status:** Feature implementation substantially complete; gate evidence and lifecycle polish remain. Start this phase only after Phase 2 gate, unless the work is explicitly recorded as correcting an earlier implementation defect.
+**Status:** In progress — begin with slice 3.1 after the Phase 2 gate.
 
 ### 3.1 Logical-model lifecycle completion
 
@@ -301,4 +305,4 @@ Release is complete only when every phase gate above is checked and the followin
 - No required acceptance step depends on the 93.7 GB routine-download target.
 - A suggested release commit/tag message is recorded.
 
-**Current next action:** Begin Phase 2.1 — runtime capability diagnostics. Do not begin Phase 2.2 until Phase 2.1 passes its acceptance criteria.
+**Current next action:** Begin Phase 3.1 — logical-model lifecycle completion. Do not begin Phase 3.2 until Phase 3.1 passes its acceptance criteria.
