@@ -131,7 +131,7 @@ async def test_installer_downloads_zip_verifies_and_promotes(tmp_path: Path) -> 
     try:
         destination = await RuntimeInstaller(
             tmp_path, prober=prober, releases=Releases()
-        ).install(tag="v1", asset_name="build.zip", backend="cuda")
+        ).install(tag="v1", asset_name="build.zip")
     finally:
         module.httpx.AsyncClient = original
     assert (destination / "bin" / "llama-server.exe").read_text() == "binary"
@@ -171,7 +171,7 @@ def test_runtime_asset_grouping_selects_backend_companions() -> None:
     cpu = group_runtime_assets(assets, backend="cpu")
     auto = group_runtime_assets(assets)
 
-    assert len(cuda) == 3
+    assert len(cuda) == 1
     assert cuda[0].primary.name == "llama-b1-cuda.zip"
     assert [asset.name for asset in cuda[0].companions] == ["llama-b1-cudart.zip"]
     assert [group.primary.name for group in cpu] == ["llama-b1-cpu.zip"]

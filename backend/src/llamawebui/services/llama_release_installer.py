@@ -60,7 +60,9 @@ class GitHubReleaseClient:
     async def release(self, tag: str) -> ReleaseInfo:
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient(
-            timeout=30.0, headers={"Accept": "application/vnd.github+json"}
+            timeout=30.0,
+            follow_redirects=True,
+            headers={"Accept": "application/vnd.github+json"},
         )
         try:
             endpoint = "latest" if tag.lower() == "latest" else f"tags/{tag}"
@@ -205,7 +207,7 @@ def _matches_backend(name: str, backend: str | None) -> bool:
             token in name.lower() for token in ("cuda", "vulkan", "rocm", "sycl", "metal")
         )
     normalized = name.lower()
-    return backend.lower() in normalized or _looks_like_primary(name)
+    return backend.lower() in normalized
 
 
 def _looks_like_primary(name: str) -> bool:
