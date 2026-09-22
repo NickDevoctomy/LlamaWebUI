@@ -31,6 +31,9 @@ Set-Location .\LlamaWebUI
 py -3.12 -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
 & .\.venv\Scripts\python.exe -m pip install -r .\backend\requirements.txt
+Set-Location .\backend
+& ..\.venv\Scripts\python.exe -m pip install -e .
+Set-Location ..
 ```
 
 If the `py` launcher is unavailable, use `python -m venv .venv` instead. Do not select a different interpreter for backend commands: use `.venv\Scripts\python.exe` explicitly.
@@ -43,7 +46,7 @@ npm install
 Set-Location ..
 ```
 
-The first application start creates the SQLite database and required data directories. No Python activation script or PowerShell execution-policy change is required when using the explicit interpreter path above.
+The editable install is required because the backend uses a `src/` layout; installing only `requirements.txt` installs dependencies but does not install the local `llamawebui` package. The first application start creates the SQLite database and required data directories. No Python activation script or PowerShell execution-policy change is required when using the explicit interpreter path above.
 
 ## Start the backend
 
@@ -54,6 +57,12 @@ Set-Location E:\Source\Misc\LlamaWebUI\backend
 $env:LLAMAWEBUI_PORT = '18080'
 $env:LLAMAWEBUI_DATA_DIR = '../data'
 & ..\.venv\Scripts\python.exe -m llamawebui serve
+```
+
+If the editable install has not been completed, run this once from `backend` before starting the server:
+
+```powershell
+& ..\.venv\Scripts\python.exe -m pip install -e .
 ```
 
 Leave this terminal running. Verify health from another terminal:
