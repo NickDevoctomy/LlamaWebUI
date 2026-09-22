@@ -597,6 +597,20 @@ def create_app(
             port=app_settings.router_port,
             api_key_file=tokens.key_file if tokens.has_enabled() else None,
         )
+        supervisor.record_log("llama-server router command: " + " ".join(launch.arguments()))
+        for profile in enabled_profiles:
+            profile_request = ProfileCreateRequest.model_validate(
+                {
+                    **profile.configuration,
+                    "alias": profile.alias,
+                    "runtime_id": profile.runtime_id,
+                    "model_path": profile.model_path,
+                }
+            )
+            supervisor.record_log(
+                "llama-server model command (preset equivalent): "
+                + render_command(profile_request.to_domain(), Path(runtime.executable_path))
+            )
         endpoint = f"http://{app_settings.router_host}:{app_settings.router_port}"
         run = run_registry.create(runtime.id, endpoint)
         request.app.state.active_server_run_id = run.id

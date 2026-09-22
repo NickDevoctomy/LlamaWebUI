@@ -204,6 +204,10 @@ class RouterSupervisor:
     def launch_arguments(self) -> tuple[str, ...]:
         return self._launch_arguments
 
+    def record_log(self, message: str) -> None:
+        """Add a control-plane launch detail to the same bounded log tail."""
+        self._logs.append(redact_text(message))
+
     def set_state_observer(self, observer: RouterStateObserver | None) -> None:
         self._state_observer = observer
 
