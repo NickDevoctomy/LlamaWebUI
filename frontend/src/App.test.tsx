@@ -30,6 +30,7 @@ function renderApp({
   libraryList = [],
   profileList = [],
   serverStatus = responses['/api/server/status'],
+  repositoryGroups = [{ key: 'model-Q4_K_M', quantization: 'Q4_K_M', total_size: 4_200_000_000, complete: true, files: [{ path: 'model-Q4_K_M.gguf', size: 4_200_000_000 }] }],
 }: {
   runtimeList?: unknown[]
   tokenList?: unknown[]
@@ -37,6 +38,7 @@ function renderApp({
   libraryList?: unknown[]
   profileList?: unknown[]
   serverStatus?: unknown
+  repositoryGroups?: unknown[]
 } = {}) {
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const rawPath = typeof input === 'string'
@@ -71,8 +73,8 @@ function renderApp({
             ? serverStatus
             : path === '/api/huggingface/models'
               ? [{ repo_id: 'owner/model-GGUF', downloads: 1200, likes: 42, last_modified: '2026-09-19T00:00:00Z', gated: false, private: false, tags: ['gguf', 'qwen'] }]
-              : path === '/api/huggingface/repositories/owner/model-GGUF'
-                ? { repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), groups: [{ key: 'model-Q4_K_M', quantization: 'Q4_K_M', total_size: 4_200_000_000, complete: true, files: [{ path: 'model-Q4_K_M.gguf', size: 4_200_000_000 }] }] }
+                : path === '/api/huggingface/repositories/owner/model-GGUF'
+                  ? { repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), groups: repositoryGroups }
             : path === '/api/integrations/opencode'
               ? { provider: { 'llama-web-ui': { options: { apiKey: '{env:LLAMA_WEB_UI_API_KEY}' }, models: { 'qwen-local': { name: 'qwen-local' } } } } }
               : path === '/api/server/models'
@@ -295,6 +297,16 @@ describe('App', () => {
       body: JSON.stringify({ repo_id: 'owner/model-GGUF', group_key: 'model-Q4_K_M', revision: 'a'.repeat(40) }),
     })))
     expect(await screen.findByRole('heading', { name: 'Download jobs' })).toBeInTheDocument()
+  })
+
+  it('shows the group key when quantization detection has no match', async () => {
+    renderApp({ repositoryGroups: [{ key: 'model-custom-format', quantization: null, total_size: 42, complete: true, files: [{ path: 'model-custom-format.gguf', size: 42 }] }] })
+    fireEvent.click(screen.getByRole('button', { name: 'Discover' }))
+    fireEvent.change(screen.getByLabelText('Search models'), { target: { value: 'qwen' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    fireEvent.click(await screen.findByRole('button', { name: /owner\/model-GGUF/ }))
+
+    expect(await screen.findByText('model-custom-format')).toBeInTheDocument()
   })
 
   it('marks a validated matching quantization as downloaded', async () => {

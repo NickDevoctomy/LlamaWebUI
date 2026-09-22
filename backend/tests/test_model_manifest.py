@@ -49,3 +49,10 @@ def test_group_gguf_files_associates_unambiguous_projector() -> None:
     )
 
     assert groups[0].projector_files == (HubFile("mmproj-model-f16.gguf", 12),)
+
+
+def test_group_gguf_files_preserves_group_when_quantization_is_unknown() -> None:
+    group = group_gguf_files((HubFile("model-custom-format.gguf", 42),))[0]
+
+    assert group.key == "model-custom-format"
+    assert group.quantization is None

@@ -94,7 +94,7 @@ export function DiscoverPanel({ jobs, library, onQueued }: {
                 const activeJob = jobs.find((job) => matches(job) && ['queued', 'downloading', 'paused'].includes(job.state))
                 const actionLabel = downloaded ? 'Downloaded' : activeJob ? stateLabel(activeJob.state) : 'Download'
                 return <article className="quant-row" key={group.key}>
-                  <div><strong>{group.quantization}</strong><span>{group.files.length} {group.files.length === 1 ? 'file' : 'files'} · {formatBytes(group.total_size)}</span></div>
+                  <div><strong>{group.quantization ?? group.key}</strong><span>{group.files.length} {group.files.length === 1 ? 'file' : 'files'} · {formatBytes(group.total_size)}</span></div>
                   <span className={`state-pill ${group.complete ? 'ready' : 'error'}`}>{group.complete ? 'All shards available' : 'Missing shards'}</span>
                   <button className="button secondary compact" disabled={!group.complete || downloaded || Boolean(activeJob) || create.isPending} onClick={() => create.mutate({ groupKey: group.key, revision: manifest.data!.revision })} type="button"><Download size={14} /> {actionLabel}</button>
                 </article>

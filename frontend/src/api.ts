@@ -98,7 +98,7 @@ export interface ModelSearchResult {
 
 export interface GgufGroup {
   key: string
-  quantization: string
+  quantization: string | null
   total_size: number
   complete: boolean
   files: { path: string; size: number }[]
