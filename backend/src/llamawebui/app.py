@@ -1314,6 +1314,16 @@ def create_app(
                 detail="profile export enabled value is invalid",
             )
         try:
+            imported_model_path = configuration.get("model_path")
+            if not isinstance(imported_model_path, str) or not Path(imported_model_path).is_file():
+                registry = cast(ProfileRegistry, request.app.state.profile_registry)
+                profile = registry.create_unresolved_import(
+                    alias=alias,
+                    runtime_id=runtime_id,
+                    configuration=configuration,
+                )
+                artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+                return _profile_payload(profile, artifacts)
             profile_request = ProfileCreateRequest.model_validate(
                 {**configuration, "alias": alias, "runtime_id": runtime_id, "enabled": enabled}
             )

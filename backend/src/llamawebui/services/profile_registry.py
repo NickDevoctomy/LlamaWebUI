@@ -74,6 +74,38 @@ class ProfileRegistry:
             session.commit()
             return record
 
+    def create_unresolved_import(
+        self,
+        *,
+        alias: str,
+        runtime_id: str,
+        configuration: dict[str, object],
+    ) -> ModelProfileRecord:
+        """Persist an imported profile whose model path needs local repair."""
+        with self._sessions() as session:
+            if session.get(RuntimeRecord, runtime_id) is None:
+                raise RuntimeNotFoundError(f"runtime not found: {runtime_id}")
+            if session.scalar(
+                select(ModelProfileRecord.id).where(ModelProfileRecord.alias == alias)
+            ) is not None:
+                raise ProfileAliasExistsError(f"model alias is already registered: {alias}")
+            stored_configuration = dict(configuration)
+            stored_configuration["alias"] = alias
+            stored_configuration["model_path"] = ""
+            stored_configuration["enabled"] = False
+            record = ModelProfileRecord(
+                id=str(uuid4()),
+                alias=alias,
+                runtime_id=runtime_id,
+                model_path="",
+                configuration=stored_configuration,
+                preset=f"version = 1\n\n[{alias}]\n",
+                enabled=False,
+            )
+            session.add(record)
+            session.commit()
+            return record
+
     def remove(self, profile_id: str) -> None:
         with self._sessions() as session:
             record = session.get(ModelProfileRecord, profile_id)

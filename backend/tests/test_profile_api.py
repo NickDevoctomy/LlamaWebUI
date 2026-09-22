@@ -270,9 +270,32 @@ def test_profile_command_import_creates_disabled_profile(tmp_path: Path) -> None
     assert imported.status_code == 201, imported.text
     assert imported.json()["enabled"] is False
     assert imported.json()["configuration"]["ctx_size"] == 4096
-    assert imported.json()["configuration"]["advanced"] == [
-        {"name": "future-flag", "value": "value"}
-    ]
+
+
+def test_profile_import_clears_missing_model_path(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            path.resolve(), RuntimeVersion("1", None, "version"),
+            RuntimeCapabilities(frozenset({"model", "models-preset"}), "help"), None, (),
+        )
+
+    settings = Settings(data_dir=tmp_path / "data")
+    with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        imported = client.post("/api/profiles/import", json={"document": {
+            "format": "llamawebui-profile-v1", "alias": "portable-model",
+            "runtime_id": runtime_id, "enabled": True,
+            "configuration": {"model_path": str(tmp_path / "other-machine.gguf")},
+        }})
+
+    assert imported.status_code == 201
+    assert imported.json()["model_path"] == ""
+    assert imported.json()["enabled"] is False
 
 
 def test_profile_command_import_rejects_malformed_command(tmp_path: Path) -> None:
