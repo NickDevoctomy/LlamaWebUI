@@ -272,6 +272,144 @@ def test_profile_command_import_creates_disabled_profile(tmp_path: Path) -> None
     assert imported.json()["configuration"]["ctx_size"] == 4096
 
 
+def test_windows_profile_command_round_trip_preserves_settings_and_shards(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "llama tools" / "llama-server.exe"
+    executable.parent.mkdir()
+    executable.touch()
+    model_dir = tmp_path / "Qwen model shards"
+    model_dir.mkdir()
+    shards = [
+        model_dir / f"Qwen-UD-IQ4_XS-{index:05d}-of-00003.gguf"
+        for index in range(1, 4)
+    ]
+    for shard in shards:
+        shard.touch()
+    option_names = {
+        "model",
+        "no-reasoning-preserve",
+        "n-gpu-layers",
+        "ctx-size",
+        "flash-attn",
+        "load-mode",
+        "lazy-mode",
+        "cache-ram",
+        "fit",
+        "override-tensor",
+        "cache-type-k",
+        "cache-type-v",
+        "threads",
+        "batch-size",
+        "ubatch-size",
+        "future-option",
+        "future-toggle",
+    }
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(options=frozenset(option_names), raw_help="help"),
+            devices_output=None,
+            errors=(),
+        )
+
+    with TestClient(
+        create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
+    ) as client:
+        runtime_id = client.post(
+            "/api/runtimes",
+            json={"name": "CPU", "executable_path": str(executable)},
+        ).json()["id"]
+        command = (
+            f'"{executable}" -m "{shards[0]}" --no-reasoning-preserve '
+            "-ngl 60 -c 262144 -fa on --load-mode none -lzm on --cache-ram 0 "
+            "--fit off -ot per_layer_token_embd=CPU -ctk q4_0 -ctv q4_0 "
+            "--threads 8 -b 1024 -ub 1024 --future-option \"value with spaces\" "
+            "--future-toggle"
+        )
+        imported = client.post(
+            "/api/profiles/import-command",
+            json={
+                "alias": "round-trip-one",
+                "runtime_id": runtime_id,
+                "command": command,
+            },
+        )
+        assert imported.status_code == 201, imported.text
+        imported_profile = imported.json()
+        exported_command = client.get(f"/api/profiles/{imported_profile['id']}/command")
+        assert exported_command.status_code == 200
+        round_tripped = client.post(
+            "/api/profiles/import-command",
+            json={
+                "alias": "round-trip-two",
+                "runtime_id": runtime_id,
+                "command": exported_command.text,
+            },
+        )
+        assert round_tripped.status_code == 201, round_tripped.text
+
+    first = imported_profile["configuration"]
+    second = round_tripped.json()["configuration"]
+    first = {key: value for key, value in first.items() if key != "alias"}
+    second = {key: value for key, value in second.items() if key != "alias"}
+    assert imported_profile["enabled"] is False
+    assert round_tripped.json()["enabled"] is False
+    assert first == second
+    assert first["model_path"] == str(shards[0].resolve())
+    assert first["advanced"] == [
+        {"name": "future-option", "value": "value with spaces"},
+        {"name": "future-toggle", "value": True},
+    ]
+    assert "model = " + str(shards[0].resolve()) in imported_profile["preset"]
+    assert "override-tensor = per_layer_token_embd=CPU" in imported_profile["preset"]
+
+
+def test_invalid_profile_command_import_does_not_change_saved_profiles(tmp_path: Path) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model = tmp_path / "model.gguf"
+    model.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "ctx-size"}), raw_help="help"
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    with TestClient(
+        create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
+    ) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        existing = client.post(
+            "/api/profiles",
+            json={"alias": "saved-profile", "runtime_id": runtime_id, "model_path": str(model)},
+        )
+        before = client.get("/api/profiles").json()
+        invalid = client.post(
+            "/api/profiles/import-command",
+            json={
+                "alias": "invalid-import",
+                "runtime_id": runtime_id,
+                "command": f'--model "{model}" --unsupported-option value',
+            },
+        )
+        after = client.get("/api/profiles").json()
+
+    assert existing.status_code == 201
+    assert invalid.status_code == 422
+    assert after == before
+
+
 def test_profile_import_clears_missing_model_path(tmp_path: Path) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()

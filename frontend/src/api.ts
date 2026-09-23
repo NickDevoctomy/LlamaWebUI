@@ -272,7 +272,14 @@ export const api = {
     if (!response.ok) throw new Error(response.statusText)
     return response.blob()
   }),
-  profileCommand: (profileId: string) => request<string>(`/api/profiles/${profileId}/command`),
+  profileCommand: async (profileId: string) => {
+    const response = await fetch(`/api/profiles/${profileId}/command`)
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null
+      throw new Error(typeof payload?.detail === 'string' ? payload.detail : response.statusText)
+    }
+    return response.text()
+  },
   importProfile: (document: Record<string, unknown>, alias?: string) =>
     request<Profile>('/api/profiles/import', {
       method: 'POST',

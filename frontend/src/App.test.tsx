@@ -31,6 +31,8 @@ function renderApp({
   libraryList = [],
   logicalLibraryList = [],
   profileList = [],
+  onRequest,
+  commandResponse = '',
   serverStatus = responses['/api/server/status'],
   repositoryGroups = [{ key: 'model-Q4_K_M', quantization: 'Q4_K_M', total_size: 4_200_000_000, complete: true, files: [{ path: 'model-Q4_K_M.gguf', size: 4_200_000_000 }] }],
 }: {
@@ -40,6 +42,8 @@ function renderApp({
   libraryList?: unknown[]
   logicalLibraryList?: unknown[]
   profileList?: unknown[]
+  onRequest?: (path: string, init?: RequestInit) => unknown
+  commandResponse?: string
   serverStatus?: unknown
   repositoryGroups?: unknown[]
 } = {}) {
@@ -50,7 +54,8 @@ function renderApp({
         ? input.toString()
         : input.url
     const path = new URL(rawPath, 'http://localhost').pathname
-    const payload = init?.method === 'DELETE'
+      const customPayload = onRequest?.(path, init)
+      const payload = customPayload !== undefined ? customPayload : (init?.method === 'DELETE'
       ? { ...tokenList[0] as object, enabled: false }
       : init?.method === 'POST'
       ? path === '/api/runtimes'
@@ -86,11 +91,14 @@ function renderApp({
               ? { provider: { 'llama-web-ui': { options: { apiKey: '{env:LLAMA_WEB_UI_API_KEY}' }, models: { 'qwen-local': { name: 'qwen-local' } } } } }
               : path === '/api/server/models'
                 ? []
-                : responses[path]
-    return Promise.resolve(new Response(JSON.stringify(payload), {
+                : responses[path])
+    return Promise.resolve(new Response(
+      path.endsWith('/command') && init?.method !== 'POST' ? commandResponse : JSON.stringify(payload),
+      {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
-    }))
+      },
+    ))
   })
   vi.stubGlobal('fetch', fetchMock)
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -158,6 +166,47 @@ describe('App', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Reconcile library' }))
 
     expect(await screen.findByText(/1 missing logical model\(s\), 1 linked logical model\(s\)/)).toBeInTheDocument()
+  })
+
+  it('imports a command disabled and exports its readable command text', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CPU', executable_path: 'C:\\llama\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset', 'ctx-size'], usable: true }
+    const command = '"C:\\llama tools\\llama-server.exe" --model "C:\\models\\shard 00001-of-00003.gguf" --ctx-size 4096'
+    const profiles: unknown[] = []
+    const fetchMock = renderApp({
+      runtimeList: [runtime],
+      profileList: profiles,
+      commandResponse: command,
+      onRequest: (path, init) => {
+        if (path === '/api/profiles/import-command' && init?.method === 'POST') {
+          const request = JSON.parse(String(init.body)) as { alias: string; runtime_id: string; enabled: boolean }
+          const profile = { id: 'profile-imported', alias: request.alias, runtime_id: request.runtime_id, model_path: 'C:\\models\\shard 00001-of-00003.gguf', configuration: { ctx_size: 4096 }, enabled: request.enabled }
+          profiles.push(profile)
+          return profile
+        }
+        if (path === '/api/profiles') return profiles
+        return undefined
+      },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
+    await screen.findByRole('heading', { name: 'Model profiles' })
+    const openImport = screen.getByRole('button', { name: 'Import command' })
+    await waitFor(() => expect(openImport).toBeEnabled())
+    fireEvent.click(openImport)
+    await screen.findByLabelText('llama-server command')
+    fireEvent.change(screen.getByLabelText('Profile alias'), { target: { value: 'qwen-roundtrip' } })
+    fireEvent.change(screen.getByLabelText('llama-server command'), { target: { value: command } })
+    const importButton = screen.getAllByRole('button', { name: 'Import command' })[1]
+    await waitFor(() => expect(importButton).toBeEnabled())
+    fireEvent.click(importButton)
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/profiles/import-command', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ command, alias: 'qwen-roundtrip', runtime_id: 'runtime-1', enabled: false }),
+    })))
+    expect(await screen.findByText('Disabled')).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: 'Command' }))
+    expect(await screen.findByRole('heading', { name: 'Command for qwen-roundtrip' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog').querySelector('pre')?.textContent).toBe(command)
   })
 
   it('refreshes library and live models when a download completes', async () => {

@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -81,6 +82,87 @@ def test_render_command_quotes_paths_but_keeps_numeric_values_readable(tmp_path:
     assert 'llama server.exe"' in command
     assert "model file.gguf\"" in command
     assert "--ctx-size 4096" in command
+
+
+def test_windows_command_round_trip_preserves_crt_quoting_cases() -> None:
+    from llamawebui.domain.model_profile import _split_windows_command_line
+
+    arguments = [
+        r"C:\Program Files\llama\llama-server.exe",
+        "--model",
+        "C:\\models\\quoted folder\\model-00001-of-00003.gguf",
+        "--future-value",
+        'a value with \\"quotes\\" and \\\\ slashes',
+        "--trailing",
+        "C:\\folder with space\\",
+        "--tabbed",
+        "tab\tvalue",
+    ]
+    command = subprocess.list2cmdline(arguments)
+
+    assert _split_windows_command_line(command) == arguments
+
+
+def test_parse_command_maps_representative_short_aliases_on_windows() -> None:
+    command = (
+        r'"C:\Program Files\llama\llama-server.exe" -m '
+        r'"C:\models\Qwen model\model-00001-of-00003.gguf" '
+        "--no-reasoning-preserve -ngl 60 -c 262144 -fa on --load-mode none "
+        "-lzm on --cache-ram 0 --fit off -ot per_layer_token_embd=CPU "
+        "-ctk q4_0 -ctv q4_0 --threads 8 -b 1024 -ub 1024 "
+        '--future-option "custom value" --future-toggle'
+    )
+
+    configuration = parse_command(command, platform="nt")
+
+    assert configuration == {
+        "advanced": [
+            {"name": "future-option", "value": "custom value"},
+            {"name": "future-toggle", "value": True},
+        ],
+        "model_path": r"C:\models\Qwen model\model-00001-of-00003.gguf",
+        "no_reasoning_preserve": True,
+        "n_gpu_layers": 60,
+        "ctx_size": 262144,
+        "flash_attn": "on",
+        "load_mode": "none",
+        "lazy_mode": "on",
+        "cache_ram": 0,
+        "fit": "off",
+        "override_tensor": ["per_layer_token_embd=CPU"],
+        "cache_type_k": "q4_0",
+        "cache_type_v": "q4_0",
+        "threads": 8,
+        "batch_size": 1024,
+        "ubatch_size": 1024,
+    }
+
+
+def test_parse_command_supports_equals_syntax_and_rejects_open_windows_quote() -> None:
+    configuration = parse_command("--model=model.gguf --ctx-size=4096", platform="posix")
+
+    assert configuration["model_path"] == "model.gguf"
+    assert configuration["ctx_size"] == 4096
+    with pytest.raises(ValueError, match="unterminated quoted"):
+        parse_command('--model "model.gguf', platform="nt")
+
+
+def test_parse_exported_full_command_ignores_router_preset_option(tmp_path: Path) -> None:
+    model = tmp_path / "model.gguf"
+    model.touch()
+    profile = ModelProfile("round-trip", model, ctx_size=4096)
+
+    command = render_command(
+        profile,
+        tmp_path / "llama-server.exe",
+        platform="nt",
+    ) + ' --models-preset "C:\\data\\llama-models.ini"'
+
+    configuration = parse_command(command, platform="nt")
+
+    assert configuration["model_path"] == str(model.resolve())
+    assert configuration["ctx_size"] == 4096
+    assert configuration["advanced"] == []
 
 
 def test_parse_command_maps_known_and_preserves_unknown_options() -> None:

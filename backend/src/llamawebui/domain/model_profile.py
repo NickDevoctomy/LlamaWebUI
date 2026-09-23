@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import subprocess
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -29,58 +30,96 @@ def parse_command(command: str, *, platform: str | None = None) -> dict[str, obj
     """Parse a llama-server command without executing it."""
     if not command.strip():
         raise ValueError("command must not be empty")
-    tokens = shlex.split(command, posix=(platform or os.name) != "nt")
+    selected_platform = platform or os.name
+    tokens = (
+        _split_windows_command_line(command)
+        if selected_platform == "nt"
+        else shlex.split(command, posix=True)
+    )
     if not tokens:
         raise ValueError("command must not be empty")
-    tokens = [token.strip('"').strip("'") for token in tokens]
     configuration: dict[str, object] = {"advanced": []}
+    executable_present = not tokens[0].startswith("-")
     known: dict[str, tuple[str, type]] = {
+        "m": ("model_path", str),
+        "model": ("model_path", str),
         "ctx-size": ("ctx_size", int),
+        "c": ("ctx_size", int),
         "n-gpu-layers": ("n_gpu_layers", int),
+        "ngl": ("n_gpu_layers", int),
         "threads": ("threads", int),
+        "t": ("threads", int),
         "batch-size": ("batch_size", int),
+        "b": ("batch_size", int),
         "ubatch-size": ("ubatch_size", int),
+        "ub": ("ubatch_size", int),
         "flash-attn": ("flash_attn", str),
+        "fa": ("flash_attn", str),
         "load-mode": ("load_mode", str),
         "lazy-mode": ("lazy_mode", str),
+        "lzm": ("lazy_mode", str),
         "cache-ram": ("cache_ram", int),
         "fit": ("fit", str),
         "cache-type-k": ("cache_type_k", str),
+        "ctk": ("cache_type_k", str),
         "cache-type-v": ("cache_type_v", str),
+        "ctv": ("cache_type_v", str),
+        "override-tensor": ("override_tensor", str),
+        "ot": ("override_tensor", str),
     }
-    index = 0 if tokens[0].startswith("-") else 1
+    booleans = {"no-reasoning-preserve"}
+    index = 1 if executable_present else 0
+    option_only_model_seen = False
     while index < len(tokens):
         token = tokens[index]
         if not token.startswith("-"):
             raise ValueError(f"unexpected command argument: {token}")
         name = token.lstrip("-")
-        if name == "model":
-            index += 1
-            if index >= len(tokens):
-                raise ValueError("--model requires a value")
-            configuration["model_path"] = tokens[index]
-        elif name == "no-reasoning-preserve":
+        inline_value: str | None = None
+        if "=" in name:
+            name, inline_value = name.split("=", 1)
+        if executable_present and name == "models-preset":
+            if inline_value is None:
+                index += 1
+                if index >= len(tokens):
+                    raise ValueError("--models-preset requires a value")
+                index += 1
+            continue
+        if name in booleans:
+            if inline_value is not None:
+                raise ValueError(f"--{name} does not accept a value")
             configuration["no_reasoning_preserve"] = True
-        elif name == "override-tensor":
-            index += 1
-            if index >= len(tokens):
-                raise ValueError("--override-tensor requires a value")
-            configuration.setdefault("override_tensor", [])
-            cast_list = configuration["override_tensor"]
-            assert isinstance(cast_list, list)
-            cast_list.append(tokens[index])
         elif name in known:
-            index += 1
-            if index >= len(tokens):
-                raise ValueError(f"--{name} requires a value")
             field, value_type = known[name]
+            if inline_value is None:
+                index += 1
+                if index >= len(tokens):
+                    raise ValueError(f"--{name} requires a value")
+                inline_value = tokens[index]
+            if inline_value.startswith("-") and value_type is not str:
+                raise ValueError(f"--{name} has an invalid value")
             try:
-                configuration[field] = value_type(tokens[index])
+                parsed_value = value_type(inline_value)
             except ValueError as error:
                 raise ValueError(f"--{name} has an invalid value") from error
+            if field == "override_tensor":
+                configuration.setdefault(field, [])
+                cast_list = configuration[field]
+                assert isinstance(cast_list, list)
+                cast_list.append(parsed_value)
+            else:
+                if field == "model_path" and not executable_present and option_only_model_seen:
+                    raise ValueError("command must include --model only once")
+                configuration[field] = parsed_value
+                if field == "model_path" and not executable_present:
+                    option_only_model_seen = True
         else:
-            value: str | bool = True
-            if index + 1 < len(tokens) and not tokens[index + 1].startswith("-"):
+            value: str | bool = True if inline_value is None else inline_value
+            if (
+                inline_value is None
+                and index + 1 < len(tokens)
+                and not tokens[index + 1].startswith("-")
+            ):
                 index += 1
                 value = tokens[index]
             advanced = configuration["advanced"]
@@ -212,8 +251,8 @@ def render_command(
     platform: str | None = None,
 ) -> str:
     """Render a readable, non-executed command from the structured profile."""
-    quote = _windows_quote if (platform or os.name) == "nt" else shlex.quote
-    arguments: list[str] = [quote(str(executable))]
+    selected_platform = platform or os.name
+    arguments: list[str] = [str(executable)]
     for option in profile.options():
         arguments.append(f"--{option.name.removeprefix('--')}")
         if option.value is not True:
@@ -222,12 +261,45 @@ def render_command(
                 if isinstance(option.value, bool)
                 else str(option.value)
             )
-            arguments.append(quote(value) if any(char.isspace() for char in value) else value)
-    return " ".join(arguments)
+            arguments.append(value)
+    if selected_platform == "nt":
+        return subprocess.list2cmdline(arguments)
+    return " ".join(shlex.quote(argument) for argument in arguments)
 
 
-def _windows_quote(value: str) -> str:
-    return '"' + value.replace('"', '\\"') + '"'
+def _split_windows_command_line(command: str) -> list[str]:
+    """Split a Windows CRT-style command line without invoking a shell."""
+    arguments: list[str] = []
+    length = len(command)
+    index = 0
+    while index < length:
+        while index < length and command[index] in " \t\r\n":
+            index += 1
+        if index >= length:
+            break
+        value: list[str] = []
+        quoted = False
+        while index < length and (quoted or command[index] not in " \t\r\n"):
+            backslashes = 0
+            while index < length and command[index] == "\\":
+                backslashes += 1
+                index += 1
+            if index < length and command[index] == '"':
+                value.extend("\\" for _ in range(backslashes // 2))
+                if backslashes % 2:
+                    value.append('"')
+                else:
+                    quoted = not quoted
+                index += 1
+                continue
+            value.extend("\\" for _ in range(backslashes))
+            if index < length and (quoted or command[index] not in " \t\r\n"):
+                value.append(command[index])
+                index += 1
+        if quoted:
+            raise ValueError("command contains an unterminated quoted argument")
+        arguments.append("".join(value))
+    return arguments
 
 
 def write_preset_atomic(
