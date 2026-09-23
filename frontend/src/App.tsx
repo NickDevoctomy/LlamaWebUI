@@ -330,7 +330,7 @@ function ModelsPanel({ models, logicalModels, profiles, onConfigure, onDiscover,
     setReconciling(true)
     try {
       const result = await api.reconcileLibrary()
-      setReconcileResult(`${result.valid_models} valid model(s), ${result.invalid_jobs} invalid job(s), ${result.stray_gguf_files} stray GGUF file(s), ${result.logical_models} logical record(s).`)
+      setReconcileResult(`${result.valid_models} valid model(s), ${result.invalid_jobs} invalid job(s), ${result.stray_gguf_files} stray GGUF file(s), ${result.logical_models} logical record(s), ${result.missing_logical_models} missing logical model(s), ${result.linked_logical_models} linked logical model(s).`)
       await Promise.all([queryClient.invalidateQueries({ queryKey: ['library'] }), queryClient.invalidateQueries({ queryKey: ['logical-library'] })])
     } finally {
       setReconciling(false)

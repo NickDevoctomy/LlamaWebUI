@@ -1,7 +1,9 @@
 import hashlib
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
 from llamawebui.app import create_app
 from llamawebui.config import Settings
@@ -9,6 +11,7 @@ from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.domain.download_job import DownloadState
 from llamawebui.domain.model_manifest import GgufGroup, HubFile
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
+from llamawebui.models import LogicalModelProfileRecord, ModelProfileRecord
 from llamawebui.services.download_registry import DownloadRegistry
 from llamawebui.services.huggingface_catalog import RepositoryManifest
 from llamawebui.services.logical_model_registry import LogicalModelRegistry
@@ -385,6 +388,26 @@ def test_logical_model_registry_marks_unseen_models_missing(tmp_path: Path) -> N
     assert updated[0].validation_state == "missing"
 
 
+def test_logical_model_registry_repairs_missing_model_at_same_path(tmp_path: Path) -> None:
+    database = tmp_path / "app.db"
+    upgrade_database(database)
+    engine = create_database_engine(database)
+    registry = DownloadRegistry(engine, tmp_path)
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"gguf")
+    logical = LogicalModelRegistry(engine)
+    record = logical.reconcile_discovered(ModelLibrary(registry, tmp_path).discover())[0]
+    model.unlink()
+    logical.reconcile_discovered(())
+
+    model.write_bytes(b"repaired gguf")
+    repaired = logical.reconcile_discovered(ModelLibrary(registry, tmp_path).discover())
+
+    assert repaired[0].id == record.id
+    assert repaired[0].validation_state == "valid"
+    assert repaired[0].primary_path == model
+
+
 def test_logical_model_registry_removes_unlinked_missing_model(tmp_path: Path) -> None:
     database = tmp_path / "app.db"
     upgrade_database(database)
@@ -400,6 +423,48 @@ def test_logical_model_registry_removes_unlinked_missing_model(tmp_path: Path) -
     logical.remove_missing(record.id)
 
     assert logical.list() == ()
+
+
+def test_logical_model_registry_rejects_removing_valid_or_linked_records(tmp_path: Path) -> None:
+    database = tmp_path / "app.db"
+    upgrade_database(database)
+    engine = create_database_engine(database)
+    registry = DownloadRegistry(engine, tmp_path)
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"gguf")
+    logical = LogicalModelRegistry(engine)
+    record = logical.reconcile_discovered(ModelLibrary(registry, tmp_path).discover())[0]
+
+    with pytest.raises(ValueError, match="only missing"):
+        logical.remove_missing(record.id)
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO runtimes (id, name, executable_path, devices, options, help_sha256) "
+            "VALUES ('runtime-1', 'CPU', 'cpu.exe', '[]', '[\"model\"]', '')"
+        )
+    model.unlink()
+    logical.reconcile_discovered(())
+    with Session(engine) as session:
+        session.add(
+            ModelProfileRecord(
+                id="profile-1",
+                alias="model",
+                runtime_id="runtime-1",
+                model_path=str(model),
+                configuration={},
+                preset="",
+                enabled=False,
+            )
+        )
+        session.commit()
+        session.add(
+            LogicalModelProfileRecord(logical_model_id=record.id, profile_id="profile-1")
+        )
+        session.commit()
+
+    with pytest.raises(ValueError, match="still linked"):
+        logical.remove_missing(record.id)
 
 
 def test_library_import_creates_disabled_profile_for_discovered_model(tmp_path: Path) -> None:
@@ -444,6 +509,58 @@ def test_library_import_creates_disabled_profile_for_discovered_model(tmp_path: 
     assert logical.json()[0]["primary_path"] == str(model)
     assert reconciliation.status_code == 200
     assert reconciliation.json()["logical_models"] == 1
+
+
+def test_logical_model_delete_guards_missing_links_and_cleans_up_profile_links(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model_root = tmp_path / "data" / "models" / "external"
+    model_root.mkdir(parents=True)
+    model = model_root / "external-Q4.gguf"
+    model.write_bytes(b"gguf")
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(options=frozenset({"model"}), raw_help="help"),
+            devices_output=None,
+            errors=(),
+        )
+
+    app = create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
+    with TestClient(app) as client:
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        discovered = client.get("/api/library/discover").json()[0]
+        profile = client.post(
+            "/api/library/import",
+            json={
+                "primary_path": discovered["primary_path"],
+                "runtime_id": runtime_id,
+                "alias": "external-model",
+            },
+        ).json()
+        logical = client.get("/api/library/logical").json()[0]
+        model.unlink()
+
+        assert client.delete(f"/api/library/logical/{logical['id']}").status_code == 409
+        assert client.delete("/api/library/logical/not-found").status_code == 404
+        assert client.delete(f"/api/profiles/{profile['id']}").status_code == 204
+
+        missing = client.get("/api/library/logical").json()[0]
+        assert missing["validation_state"] == "missing"
+        assert missing["profile_ids"] == []
+        assert client.delete(f"/api/library/logical/{logical['id']}").status_code == 204
+
+        reconciliation = client.post("/api/library/reconcile").json()
+
+    assert reconciliation["logical_models"] == 0
+    assert reconciliation["missing_logical_models"] == 0
+    assert reconciliation["linked_logical_models"] == 0
 
 
 def test_library_delete_preserves_profile_and_exposes_redownload(tmp_path: Path) -> None:

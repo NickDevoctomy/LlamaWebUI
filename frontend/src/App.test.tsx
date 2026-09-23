@@ -16,6 +16,7 @@ const responses: Record<string, unknown> = {
   '/api/tokens': [],
   '/api/downloads': [],
   '/api/library': [],
+  '/api/library/logical': [],
 }
 
 afterEach(() => {
@@ -28,6 +29,7 @@ function renderApp({
   tokenList = [],
   downloadList = [],
   libraryList = [],
+  logicalLibraryList = [],
   profileList = [],
   serverStatus = responses['/api/server/status'],
   repositoryGroups = [{ key: 'model-Q4_K_M', quantization: 'Q4_K_M', total_size: 4_200_000_000, complete: true, files: [{ path: 'model-Q4_K_M.gguf', size: 4_200_000_000 }] }],
@@ -36,6 +38,7 @@ function renderApp({
   tokenList?: unknown[]
   downloadList?: unknown[] | (() => unknown[])
   libraryList?: unknown[]
+  logicalLibraryList?: unknown[]
   profileList?: unknown[]
   serverStatus?: unknown
   repositoryGroups?: unknown[]
@@ -56,6 +59,8 @@ function renderApp({
           ? { id: 'token-1', name: 'OpenCode', token: 'lwui_once_only', last_four: 'only', expiry_note: 'Rotate monthly', enabled: true, created_at: '2026-09-19T12:00:00' }
         : path === '/api/downloads'
           ? { id: 'download-1', repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), group_key: 'model-Q4_K_M', files: [{ path: 'model-Q4_K_M.gguf', size: 4_200_000_000 }], destination: 'E:\\models\\owner--model-GGUF', total_bytes: 4_200_000_000, completed_bytes: 0, state: 'queued', error: null }
+        : path === '/api/library/reconcile'
+          ? { managed_jobs: 0, valid_models: 0, invalid_jobs: 0, stray_gguf_files: 0, logical_models: logicalLibraryList.length, missing_logical_models: 1, linked_logical_models: 1 }
         : path.endsWith('/resume')
           ? { ...(typeof downloadList === 'function' ? downloadList()[0] : downloadList[0]) as object, state: 'queued' }
         : { id: 'profile-1', alias: 'qwen-local', runtime_id: 'runtime-1', model_path: 'E:\\models\\qwen.gguf', configuration: {}, enabled: true }
@@ -69,6 +74,8 @@ function renderApp({
             ? typeof downloadList === 'function' ? downloadList() : downloadList
             : path === '/api/library'
               ? libraryList
+            : path === '/api/library/logical'
+              ? logicalLibraryList
           : path === '/api/server/status'
             ? serverStatus
             : path === '/api/huggingface/models'
@@ -122,6 +129,35 @@ describe('App', () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/library', expect.anything())
     })
+  })
+
+  it('shows logical model validity, profile links, and removable missing records', async () => {
+    const logicalModels = [
+      { id: 'valid-1', primary_path: 'E:\\models\\valid.gguf', files: ['valid.gguf'], metadata: { 'general.name': 'Valid model' }, validation_state: 'valid', profile_ids: ['profile-1'] },
+      { id: 'missing-1', primary_path: 'E:\\models\\missing.gguf', files: ['missing.gguf'], metadata: {}, validation_state: 'missing', profile_ids: [] },
+      { id: 'linked-missing', primary_path: 'E:\\models\\linked.gguf', files: ['linked.gguf'], metadata: {}, validation_state: 'missing', profile_ids: ['profile-2'] },
+    ]
+    renderApp({ logicalLibraryList: logicalModels })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
+
+    expect(await screen.findByText('Valid model')).toBeInTheDocument()
+    expect(screen.getByText('Valid')).toBeInTheDocument()
+    expect(screen.getAllByText('Missing')).toHaveLength(2)
+    expect(screen.getByText('E:\\models\\valid.gguf').closest('tr')).toHaveTextContent('1')
+    const removableRow = screen.getByText('E:\\models\\missing.gguf').closest('tr')
+    expect(within(removableRow!).getByRole('button', { name: 'Remove record' })).toBeEnabled()
+    const linkedRow = screen.getByText('E:\\models\\linked.gguf').closest('tr')
+    expect(linkedRow?.querySelectorAll('td')[3]).toHaveTextContent('1')
+    expect(within(linkedRow!).getByRole('button', { name: 'Remove record' })).toBeDisabled()
+  })
+
+  it('includes missing and linked logical-model totals after reconciliation', async () => {
+    renderApp({ logicalLibraryList: [{ id: 'missing-1', primary_path: 'missing.gguf', files: [], metadata: {}, validation_state: 'missing', profile_ids: [] }] })
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Reconcile library' }))
+
+    expect(await screen.findByText(/1 missing logical model\(s\), 1 linked logical model\(s\)/)).toBeInTheDocument()
   })
 
   it('refreshes library and live models when a download completes', async () => {

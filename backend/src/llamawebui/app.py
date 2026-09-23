@@ -1328,7 +1328,9 @@ def create_app(
                 {**configuration, "alias": alias, "runtime_id": runtime_id, "enabled": enabled}
             )
             registry = cast(ProfileRegistry, request.app.state.profile_registry)
-            profile = registry.create(profile=profile_request.to_domain(), runtime_id=runtime_id, enabled=enabled)
+            profile = registry.create(
+                profile=profile_request.to_domain(), runtime_id=runtime_id, enabled=enabled
+            )
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ProfileAliasExistsError as error:
