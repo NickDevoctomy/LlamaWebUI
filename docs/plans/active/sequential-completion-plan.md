@@ -142,7 +142,7 @@ The baseline contains known stale statements in older planning documents. This p
 
 ## Phase 3 — Local library and profiles completion
 
-**Status:** In progress — begin with slice 3.1 after the Phase 2 gate.
+**Status:** Complete — slices 3.1–3.3 and the Phase 3 gate are accepted. Detailed evidence is in `notes/0009-phase-3-1-logical-model-lifecycle.md`, `notes/0010-phase-3-2-profile-round-trip.md`, and `notes/0011-phase-3-3-profile-gate-acceptance.md`.
 
 ### 3.1 Logical-model lifecycle completion
 
@@ -158,16 +158,16 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### 3.3 Phase 3 gate evidence
 
-- [ ] Logical-model lifecycle behavior is covered.
-- [ ] Command import/export round-trip is accepted.
-- [ ] Profile data remains unchanged on validation/import errors.
-- [ ] Frontend desktop and mobile profile workflows are accepted.
+- [x] Logical-model lifecycle behavior is covered.
+- [x] Command import/export round-trip is accepted.
+- [x] Profile data remains unchanged on validation/import errors.
+- [x] Frontend desktop and mobile profile workflows are accepted. The user accepted the supplied screenshots and desktop workflow; responsive layout defects remain explicitly deferred in [`../../tech-debt/profile-panel-responsive-layout.md`](../../tech-debt/profile-panel-responsive-layout.md). This records acceptance of the current workflow with known UI debt, not a claim that mobile layout is clean.
 
 ### Phase 3 gate
 
-- [ ] All Phase 3 slices complete.
-- [ ] Round-trip acceptance evidence recorded.
-- [ ] No known stale Phase 3 statements remain in the progress document.
+- [x] All Phase 3 slices complete.
+- [x] Round-trip acceptance evidence recorded.
+- [x] No known stale Phase 3 statements remain in the progress document.
 
 ## Phase 4 — Server lifecycle completion
 
@@ -305,4 +305,4 @@ Release is complete only when every phase gate above is checked and the followin
 - No required acceptance step depends on the 93.7 GB routine-download target.
 - A suggested release commit/tag message is recorded.
 
-**Current next action:** Begin Phase 3.1 — logical-model lifecycle completion. Do not begin Phase 3.2 until Phase 3.1 passes its acceptance criteria.
+**Current next action:** Begin Phase 4.1 — real-runtime lifecycle acceptance. Do not begin Phase 4.2 until Phase 4.1 passes its acceptance criteria.
