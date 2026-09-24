@@ -24,6 +24,7 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 - Phase 3.1 - see `notes/0009-phase-3-1-logical-model-lifecycle.md`.
 - Phase 3.2 - see `notes/0010-phase-3-2-profile-round-trip.md`.
 - Phase 3.3 - see `notes/0011-phase-3-3-profile-gate-acceptance.md`.
+- Phase 4.1 - see `notes/0012-phase-4-1-real-runtime-lifecycle.md`.
 
 ## Phase gates
 
@@ -31,7 +32,7 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 - Phase 1: Complete — slices 1.1 through 1.4 and the Phase 1 gate pass.
 - Phase 2: Complete — slices 2.1 and 2.2 pass; all Phase 2 gate criteria pass.
 - Phase 3: Complete — slices 3.1–3.3 accepted. User confirmed the desktop Profiles workflow is usable and accepted screenshot-evidenced responsive defects as deferred technical debt; see `notes/0011-phase-3-3-profile-gate-acceptance.md` and [`../../tech-debt/profile-panel-responsive-layout.md`](../../tech-debt/profile-panel-responsive-layout.md). No repeat manual test requested. The active plan was not modified.
-- Phase 4: In progress — begin with slice 4.1.
+- Phase 4: In progress — slice 4.1 complete; see `notes/0012-phase-4-1-real-runtime-lifecycle.md`.
 - Phase 5: Not started.
 - Phase 6: Not started.
 - Phase 7: Not started.
@@ -56,9 +57,10 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 | 2026-09-23 | Phase 3.1 logical-model lifecycle | 246 backend tests passed at 90.30% branch coverage; Ruff, strict mypy, 22 frontend tests, production build, and `git diff --check` passed. Combined final-gate run 28.839s (`12:43:08.4298249Z`–`12:43:37.2688123Z`); backend pytest 20.58s. Browser smoke checked the Models empty state using isolated temporary data; details in `notes/0009-phase-3-1-logical-model-lifecycle.md` |
 | 2026-09-23 | Phase 3.2 profile round-trip | 252 backend tests passed at 90.22% branch coverage; Ruff, strict mypy, 23 frontend tests, production build, and `git diff --check` passed. Combined final gate 26.997s (`13:07:25.7270033Z`–`13:07:52.7240345Z`); backend pytest 19.53s. Windows short-option import/export preserves typed options, advanced options, quoting, shard paths, generated preset, and disabled state; details in `notes/0010-phase-3-2-profile-round-trip.md` |
 | 2026-09-24 | Phase 3.3 gate acceptance | User accepted desktop Profiles workflow and explicitly deferred responsive issues shown in supplied screenshots to [`../../tech-debt/profile-panel-responsive-layout.md`](../../tech-debt/profile-panel-responsive-layout.md). No repeat acceptance requested. Earlier slice evidence covers logical-model lifecycle, Windows command round-trip, and no profile mutation on import/validation errors. Phase 3 accepted; active plan unchanged. Details: `notes/0011-phase-3-3-profile-gate-acceptance.md`. |
+| 2026-09-24 | Phase 4.1 real-runtime lifecycle | Complete; see `notes/0012-phase-4-1-real-runtime-lifecycle.md`. |
 
 ## Next action
 
-Begin Phase 4 slice 4.1 — real-runtime lifecycle acceptance. Do not begin Phase 5 until the Phase 4 gate passes.
+Begin Phase 4 slice 4.2 — real-runtime model-event capture. Do not begin Phase 5 until the Phase 4 gate passes.
 
-Suggested commit: `docs: record Phase 3 gate acceptance and Phase 4 handoff`.
+Suggested commit: `test: record Qwen3.5-9B lifecycle acceptance`.
