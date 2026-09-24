@@ -4,8 +4,8 @@
 **Execution plan:** [sequential-completion-plan.md](sequential-completion-plan.md)
 **Requirements reference:** [../llama-web-ui-plan.md](../llama-web-ui-plan.md)
 **Updated:** 2026-09-24
-**Current phase:** Phase 4 — Server lifecycle completion
-**Current slice:** 4.1 — Real-runtime lifecycle acceptance
+**Current phase:** Phase 5 — Hugging Face and downloads completion
+**Current slice:** 5.1 — General library reconciliation
 
 ## Operating rule
 
@@ -25,6 +25,7 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 - Phase 3.2 - see `notes/0010-phase-3-2-profile-round-trip.md`.
 - Phase 3.3 - see `notes/0011-phase-3-3-profile-gate-acceptance.md`.
 - Phase 4.1 - see `notes/0012-phase-4-1-real-runtime-lifecycle.md`.
+- Phase 4.2 - see `notes/0013-phase-4-2-real-runtime-model-events.md`.
 
 ## Phase gates
 
@@ -32,7 +33,7 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 - Phase 1: Complete — slices 1.1 through 1.4 and the Phase 1 gate pass.
 - Phase 2: Complete — slices 2.1 and 2.2 pass; all Phase 2 gate criteria pass.
 - Phase 3: Complete — slices 3.1–3.3 accepted. User confirmed the desktop Profiles workflow is usable and accepted screenshot-evidenced responsive defects as deferred technical debt; see `notes/0011-phase-3-3-profile-gate-acceptance.md` and [`../../tech-debt/profile-panel-responsive-layout.md`](../../tech-debt/profile-panel-responsive-layout.md). No repeat manual test requested. The active plan was not modified.
-- Phase 4: In progress — slice 4.1 complete; see `notes/0012-phase-4-1-real-runtime-lifecycle.md`.
+- Phase 4: Complete — slices 4.1–4.2 accepted; see `notes/0012-phase-4-1-real-runtime-lifecycle.md` and `notes/0013-phase-4-2-real-runtime-model-events.md`.
 - Phase 5: Not started.
 - Phase 6: Not started.
 - Phase 7: Not started.
@@ -58,9 +59,10 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 | 2026-09-23 | Phase 3.2 profile round-trip | 252 backend tests passed at 90.22% branch coverage; Ruff, strict mypy, 23 frontend tests, production build, and `git diff --check` passed. Combined final gate 26.997s (`13:07:25.7270033Z`–`13:07:52.7240345Z`); backend pytest 19.53s. Windows short-option import/export preserves typed options, advanced options, quoting, shard paths, generated preset, and disabled state; details in `notes/0010-phase-3-2-profile-round-trip.md` |
 | 2026-09-24 | Phase 3.3 gate acceptance | User accepted desktop Profiles workflow and explicitly deferred responsive issues shown in supplied screenshots to [`../../tech-debt/profile-panel-responsive-layout.md`](../../tech-debt/profile-panel-responsive-layout.md). No repeat acceptance requested. Earlier slice evidence covers logical-model lifecycle, Windows command round-trip, and no profile mutation on import/validation errors. Phase 3 accepted; active plan unchanged. Details: `notes/0011-phase-3-3-profile-gate-acceptance.md`. |
 | 2026-09-24 | Phase 4.1 real-runtime lifecycle | Complete; see `notes/0012-phase-4-1-real-runtime-lifecycle.md`. |
+| 2026-09-24 | Phase 4.2 real-runtime model-event capture | CUDA b11060 emitted native `status_change` SSE frames for load (`loading`) and unload; profile restored to unloaded, durable run stopped without error, managed port released. 38 focused tests passed. Details: `notes/0013-phase-4-2-real-runtime-model-events.md`. |
 
 ## Next action
 
-Begin Phase 4 slice 4.2 — real-runtime model-event capture. Do not begin Phase 5 until the Phase 4 gate passes.
+Begin Phase 5 slice 5.1 — general library reconciliation. Do not begin Phase 6 until the Phase 5 gate passes.
 
-Suggested commit: `test: record Qwen3.5-9B lifecycle acceptance`.
+Suggested commit: `test: record native model lifecycle events`.

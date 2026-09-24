@@ -5,6 +5,7 @@
 - Read `docs/plans/active/README.md` first, then read `docs/plans/active/sequential-progress.md` and the latest completed/current slice note under `docs/plans/active/notes/`. Treat `docs/plans/llama-web-ui-plan.md` as the authoritative overall design and requirements document.
 - Run `git status --short` and `git log -3 --oneline --decorate` before editing. Preserve user changes and never reset or overwrite work that is not yours.
 - Continue from the single current next action in `sequential-progress.md`. The numbered notes are the slice handoff/evidence; do not invent another handoff source. Do not expand backend or frontend scope beyond what is needed to complete that slice.
+- Proactively start stopped local development/control-plane services and registered managed runtimes when they are required for the current slice's acceptance. Do not ask the user for permission solely because an in-scope service is stopped. Existing validated models may be loaded/unloaded when explicitly required by the current acceptance; restore their original state and verify managed cleanup afterward. Ask first only for out-of-scope destructive actions, secret creation, or large downloads/transfers.
 - The current slice is not complete unless every required gate passes. If any focused test, frontend test, build, lint, type check, coverage check, or required manual check fails, keep the slice BLOCKED and stop. Do not advance the phase, mark it complete, or write a success-style handoff.
 - Never overwrite a failed validation with a later progress update. Record one concise numbered note under `docs/plans/active/notes/` only after the slice is complete; keep `sequential-progress.md` to current status, blocker, next action, and links.
 - Do not modify README files or planning instructions during a feature slice unless the current slice explicitly requires documentation changes. Do not add narrative, retrospective, or commit-history material to progress documents. Do not add a current-slice section to the active README; slice state belongs in `sequential-progress.md` and numbered notes.
@@ -82,7 +83,7 @@ npm run dev -- --host 127.0.0.1
 - Never download the 93.7 GB `unsloth/Qwen3.8-Flash-Next-GGUF` group during routine development.
 - This development machine has an RTX 4090 and 128 GB RAM. Register a CUDA llama.cpp build before evaluating GPU behavior; the currently registered Vulkan runtime reports no devices here.
 - The recommended first real acceptance artifact is `unsloth/Qwen3.5-9B-GGUF`, revision `3885219b6810b007914f3a7950a8d1b469d598a5`, group `Qwen3.5-9B-Q4_K_M`, 5.29 GiB.
-- Do not create real download jobs or tokens during automated acceptance. Ask the user to perform intentional large/download or secret-creating actions, then continue verification from the resulting state.
+- Do not create real download jobs or tokens during automated acceptance. Do not initiate large downloads/transfers or secret-creating actions without explicit user direction; continue verification from state the user intentionally creates.
 
 ## Definition Of Done
 

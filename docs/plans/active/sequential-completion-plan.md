@@ -171,14 +171,18 @@ The baseline contains known stale statements in older planning documents. This p
 
 ## Phase 4 — Server lifecycle completion
 
-**Status:** Core implementation complete; live acceptance remains. Start only after Phase 3 gate.
+**Status:** Complete — slices 4.1–4.2 and the Phase 4 gate pass. Start Phase 5 only after this gate.
 
 ### 4.1 Real-runtime lifecycle acceptance
+
+**Status:** Complete — evidence is recorded in `notes/0012-phase-4-1-real-runtime-lifecycle.md`.
 
 - Using an existing small/validated model and registered runtime, verify start, readiness, authenticated model list, load, inference, unload, restart, and stop.
 - Verify no orphaned workers or occupied managed ports remain.
 
 ### 4.2 Real-runtime model-event capture
+
+**Status:** Complete — evidence is recorded in `notes/0013-phase-4-2-real-runtime-model-events.md`.
 
 - Capture at least one native model-event frame using a bounded client.
 - Record whether the selected runtime emits events for load/unload/status transitions.
@@ -186,9 +190,12 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### Phase 4 gate
 
-- [ ] Repeated lifecycle acceptance passes.
-- [ ] At least one real native model-event frame is captured or a runtime limitation is documented.
-- [ ] Logs and durable run history remain consistent after each operation.
+- [x] All Phase 4 slices complete.
+- [x] Repeated lifecycle acceptance passes.
+- [x] Real native model-event frames are captured for load and unload transitions.
+- [x] Logs and durable run history remain consistent after each operation.
+- [x] Lifecycle and native model-event acceptance evidence recorded.
+- [x] Focused deterministic SSE tests pass.
 
 ## Phase 5 — Hugging Face and downloads completion
 
@@ -305,4 +312,4 @@ Release is complete only when every phase gate above is checked and the followin
 - No required acceptance step depends on the 93.7 GB routine-download target.
 - A suggested release commit/tag message is recorded.
 
-**Current next action:** Begin Phase 4.1 — real-runtime lifecycle acceptance. Do not begin Phase 4.2 until Phase 4.1 passes its acceptance criteria.
+**Current next action:** Begin Phase 5.1 — general library reconciliation. Do not begin Phase 6 until the Phase 5 gate passes.
