@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Build and test (headless)
+    name: Build and Test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

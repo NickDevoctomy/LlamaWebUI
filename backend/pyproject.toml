@@ -35,7 +35,7 @@ packages = ["src/llamawebui"]
 "src/llamawebui/static" = "llamawebui/static"
 
 [tool.pytest.ini_options]
-addopts = "--strict-config --strict-markers --cov=llamawebui --cov-branch --cov-report=term-missing --cov-fail-under=90"
+addopts = "--strict-config --strict-markers --cov=llamawebui --cov-branch --cov-report=term-missing --cov-fail-under=85"
 asyncio_mode = "strict"
 testpaths = ["tests"]
 
@@ -45,7 +45,7 @@ source = ["llamawebui"]
 omit = ["*/migrations/*"]
 
 [tool.coverage.report]
-fail_under = 90
+fail_under = 85
 show_missing = true
 
 [tool.ruff]

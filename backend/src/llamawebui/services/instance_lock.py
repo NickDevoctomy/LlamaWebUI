@@ -7,7 +7,7 @@ import os
 from contextlib import suppress
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, cast
+from typing import Any, BinaryIO, cast
 
 import psutil  # type: ignore[import-untyped]
 
@@ -96,28 +96,32 @@ class InstanceLock:
         if os.name == "nt":
             import msvcrt
 
+            msvcrt_api = cast(Any, msvcrt)
             file.seek(0, os.SEEK_END)
             if file.tell() == 0:
                 file.write(b" ")
                 file.flush()
             file.seek(0)
             try:
-                msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt_api.locking(file.fileno(), msvcrt_api.LK_NBLCK, 1)
             except PermissionError as error:
                 raise BlockingIOError from error
         else:
             import fcntl
 
-            fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+            fcntl_api = cast(Any, fcntl)
+            fcntl_api.flock(file.fileno(), fcntl_api.LOCK_EX | fcntl_api.LOCK_NB)
 
     @staticmethod
     def _unlock_file(file: BinaryIO) -> None:
         if os.name == "nt":
             import msvcrt
 
+            msvcrt_api = cast(Any, msvcrt)
             file.seek(0)
-            msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)
+            msvcrt_api.locking(file.fileno(), msvcrt_api.LK_UNLCK, 1)
         else:
             import fcntl
 
-            fcntl.flock(file.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+            fcntl_api = cast(Any, fcntl)
+            fcntl_api.flock(file.fileno(), fcntl_api.LOCK_UN)
