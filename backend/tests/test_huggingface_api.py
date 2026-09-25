@@ -55,6 +55,7 @@ class FakeCatalog:
                     complete=True,
                 ),
             ),
+            readme="# Model card\n\nRepository description.",
         )
 
 
@@ -74,6 +75,7 @@ def test_huggingface_search_and_repository_endpoints(tmp_path: Path) -> None:
     assert catalog.search_call == ("qwen", "downloads", 10)
     assert repository.status_code == 200
     assert repository.json()["revision"] == "abc123"
+    assert repository.json()["readme"] == "# Model card\n\nRepository description."
     assert repository.json()["groups"][0]["files"] == [
         {"path": "model-Q4_K_M.gguf", "size": 42}
     ]

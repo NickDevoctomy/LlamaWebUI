@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Download, FileArchive, FileCog, Heart, LoaderCircle, Pause, Play, Search, Trash2, X } from 'lucide-react'
-import { FormEvent, useState } from 'react'
+import { FormEvent, Suspense, lazy, useState } from 'react'
 import { api, type DownloadJob, type LibraryModel, type ModelSearchResult } from './api'
+
+const MarkdownContent = lazy(() => import('./MarkdownContent').then(({ MarkdownContent }) => ({ default: MarkdownContent })))
 
 function formatBytes(bytes: number) {
   if (!bytes) return '0 B'
@@ -52,54 +54,67 @@ export function DiscoverPanel({ jobs, library, onQueued }: {
   }
 
   return (
-    <div className="discover-layout">
-      <section className="data-panel discover-results">
-        <div className="panel-heading discover-heading">
-          <div><h2>Hugging Face catalog</h2><p>Search public GGUF repositories without leaving the control plane.</p></div>
-        </div>
-        <form className="catalog-search" onSubmit={submit}>
-          <label><span className="sr-only">Search models</span><Search size={16} /><input onChange={(event) => setInput(event.target.value)} placeholder="Search models, authors, or architectures" value={input} /></label>
-          <select aria-label="Sort search results" onChange={(event) => setSort(event.target.value)} value={sort}>
-            <option value="downloads">Most downloaded</option>
-            <option value="likes">Most liked</option>
-            <option value="last_modified">Recently updated</option>
-            <option value="trending_score">Trending</option>
-          </select>
-          <button className="button primary" disabled={!input.trim() || search.isFetching} type="submit">{search.isFetching ? <LoaderCircle className="spin" size={15} /> : <Search size={15} />} Search</button>
-        </form>
-        {search.error && <div className="form-error"><AlertCircle size={15} /> {search.error.message}</div>}
-        {!query ? <div className="empty catalog-empty"><Search size={28} /><strong>Find a GGUF model</strong><span>Results stay idle until you search. No model is downloaded automatically.</span></div>
-          : search.isLoading ? <div className="empty catalog-empty"><LoaderCircle className="spin" size={28} /><strong>Searching Hugging Face</strong></div>
-            : search.data?.length ? <div className="catalog-list">{search.data.map((result) => (
-              <button className={selected?.repo_id === result.repo_id ? 'catalog-row selected' : 'catalog-row'} key={result.repo_id} onClick={() => setSelected(result)} type="button">
-                <span className="record-icon"><FileArchive size={17} /></span>
-                <span className="catalog-copy"><strong>{result.repo_id}</strong><small>{result.tags.slice(0, 4).join(' · ') || 'GGUF repository'}</small></span>
-                <span className="catalog-stat"><Download size={13} /> {formatCount(result.downloads)}</span>
-                <span className="catalog-stat"><Heart size={13} /> {formatCount(result.likes)}</span>
-              </button>
-            ))}</div> : <div className="empty catalog-empty"><Search size={28} /><strong>No GGUF repositories found</strong><span>Try a broader model or author name.</span></div>}
-      </section>
+    <div className="discover-page">
+      <div className="discover-layout">
+        <section className="data-panel discover-results">
+          <div className="panel-heading discover-heading">
+            <div><h2>Hugging Face catalog</h2><p>Search public GGUF repositories without leaving the control plane.</p></div>
+          </div>
+          <form className="catalog-search" onSubmit={submit}>
+            <label><span className="sr-only">Search models</span><Search size={16} /><input onChange={(event) => setInput(event.target.value)} placeholder="Search models, authors, or architectures" value={input} /></label>
+            <select aria-label="Sort search results" onChange={(event) => setSort(event.target.value)} value={sort}>
+              <option value="downloads">Most downloaded</option>
+              <option value="likes">Most liked</option>
+              <option value="last_modified">Recently updated</option>
+              <option value="trending_score">Trending</option>
+            </select>
+            <button className="button primary" disabled={!input.trim() || search.isFetching} type="submit">{search.isFetching ? <LoaderCircle className="spin" size={15} /> : <Search size={15} />} Search</button>
+          </form>
+          {search.error && <div className="form-error"><AlertCircle size={15} /> {search.error.message}</div>}
+          {!query ? <div className="empty catalog-empty"><Search size={28} /><strong>Find a GGUF model</strong><span>Results stay idle until you search. No model is downloaded automatically.</span></div>
+            : search.isLoading ? <div className="empty catalog-empty"><LoaderCircle className="spin" size={28} /><strong>Searching Hugging Face</strong></div>
+              : search.data?.length ? <div className="catalog-list">{search.data.map((result) => (
+                <button className={selected?.repo_id === result.repo_id ? 'catalog-row selected' : 'catalog-row'} key={result.repo_id} onClick={() => setSelected(result)} type="button">
+                  <span className="record-icon"><FileArchive size={17} /></span>
+                  <span className="catalog-copy"><strong>{result.repo_id}</strong><small>{result.tags.slice(0, 4).join(' · ') || 'GGUF repository'}</small></span>
+                  <span className="catalog-stat"><Download size={13} /> {formatCount(result.downloads)}</span>
+                  <span className="catalog-stat"><Heart size={13} /> {formatCount(result.likes)}</span>
+                </button>
+              ))}</div> : <div className="empty catalog-empty"><Search size={28} /><strong>No GGUF repositories found</strong><span>Try a broader model or author name.</span></div>}
+        </section>
 
-      <section className="data-panel repository-panel">
-        <div className="panel-heading"><div><h2>Quantizations</h2><p>{selected ? selected.repo_id : 'Select a repository to inspect its files.'}</p></div></div>
-        {!selected ? <div className="empty catalog-empty"><FileArchive size={28} /><strong>No repository selected</strong><span>Choose a search result to inspect complete GGUF groups and exact sizes.</span></div>
-          : manifest.isLoading ? <div className="empty catalog-empty"><LoaderCircle className="spin" size={28} /><strong>Reading repository manifest</strong></div>
-            : manifest.error ? <div className="integration-empty error-state"><AlertCircle size={25} /><strong>Manifest unavailable</strong><span>{manifest.error.message}</span></div>
-              : <div className="quant-list">{manifest.data?.groups.map((group) => {
-                const matches = (item: { repo_id: string; revision: string; group_key: string }) =>
-                  item.repo_id === manifest.data!.repo_id
-                  && item.revision === manifest.data!.revision
-                  && item.group_key === group.key
-                const downloaded = library.some(matches)
-                const activeJob = jobs.find((job) => matches(job) && ['queued', 'downloading', 'paused'].includes(job.state))
-                const actionLabel = downloaded ? 'Downloaded' : activeJob ? stateLabel(activeJob.state) : 'Download'
-                return <article className="quant-row" key={group.key}>
-                  <div><strong>{group.quantization ?? group.key}</strong><span>{group.files.length} {group.files.length === 1 ? 'file' : 'files'} · {formatBytes(group.total_size)}</span></div>
-                  <span className={`state-pill ${group.complete ? 'ready' : 'error'}`}>{group.complete ? 'All shards available' : 'Missing shards'}</span>
-                  <button className="button secondary compact" disabled={!group.complete || downloaded || Boolean(activeJob) || create.isPending} onClick={() => create.mutate({ groupKey: group.key, revision: manifest.data!.revision })} type="button"><Download size={14} /> {actionLabel}</button>
-                </article>
-              })}{!manifest.data?.groups.length && <div className="empty catalog-empty"><FileArchive size={28} /><strong>No GGUF groups found</strong></div>}</div>}
-        {create.error && <div className="form-error"><AlertCircle size={15} /> {create.error.message}</div>}
+        <section className="data-panel repository-panel">
+          <div className="panel-heading"><div><h2>Quantizations</h2><p>{selected ? selected.repo_id : 'Select a repository to inspect its files.'}</p></div></div>
+          {!selected ? <div className="empty catalog-empty"><FileArchive size={28} /><strong>No repository selected</strong><span>Choose a search result to inspect complete GGUF groups and exact sizes.</span></div>
+            : manifest.isLoading ? <div className="empty catalog-empty"><LoaderCircle className="spin" size={28} /><strong>Reading repository manifest</strong></div>
+              : manifest.error ? <div className="integration-empty error-state"><AlertCircle size={25} /><strong>Manifest unavailable</strong><span>{manifest.error.message}</span></div>
+                : <div className="quant-list">{manifest.data?.groups.map((group) => {
+                  const matches = (item: { repo_id: string; revision: string; group_key: string }) =>
+                    item.repo_id === manifest.data!.repo_id
+                    && item.revision === manifest.data!.revision
+                    && item.group_key === group.key
+                  const downloaded = library.some(matches)
+                  const activeJob = jobs.find((job) => matches(job) && ['queued', 'downloading', 'paused'].includes(job.state))
+                  const actionLabel = downloaded ? 'Downloaded' : activeJob ? stateLabel(activeJob.state) : 'Download'
+                  return <article className="quant-row" key={group.key}>
+                    <div><strong>{group.quantization ?? group.key}</strong><span>{group.files.length} {group.files.length === 1 ? 'file' : 'files'} · {formatBytes(group.total_size)}</span></div>
+                    <span className={`state-pill ${group.complete ? 'ready' : 'error'}`}>{group.complete ? 'All shards available' : 'Missing shards'}</span>
+                    <button className="button secondary compact" disabled={!group.complete || downloaded || Boolean(activeJob) || create.isPending} onClick={() => create.mutate({ groupKey: group.key, revision: manifest.data!.revision })} type="button"><Download size={14} /> {actionLabel}</button>
+                  </article>
+                })}{!manifest.data?.groups.length && <div className="empty catalog-empty"><FileArchive size={28} /><strong>No GGUF groups found</strong></div>}</div>}
+          {create.error && <div className="form-error"><AlertCircle size={15} /> {create.error.message}</div>}
+        </section>
+      </div>
+
+      <section className="data-panel model-card-panel">
+        <div className="panel-heading">
+          <div><h2>Model card</h2><p>{selected ? `README.md · ${selected.repo_id}` : 'Select a repository to review its model details.'}</p></div>
+        </div>
+        {!selected ? <div className="empty catalog-empty"><FileArchive size={28} /><strong>No model card selected</strong><span>Choose a repository to read its formatted README before downloading.</span></div>
+          : manifest.isLoading ? <div className="empty catalog-empty"><LoaderCircle className="spin" size={28} /><strong>Loading model card</strong></div>
+            : manifest.error ? <div className="integration-empty error-state"><AlertCircle size={25} /><strong>Model card unavailable</strong><span>{manifest.error.message}</span></div>
+              : manifest.data?.readme ? <div className="model-card-content"><Suspense fallback={<p>Formatting model card…</p>}><MarkdownContent content={manifest.data.readme} /></Suspense></div>
+                : <div className="empty catalog-empty"><FileArchive size={28} /><strong>No README available</strong><span>This repository does not contain a README.md model card.</span></div>}
       </section>
     </div>
   )

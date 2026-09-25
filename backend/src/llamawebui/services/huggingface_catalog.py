@@ -6,9 +6,11 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Protocol
 
 from huggingface_hub import HfApi
+from huggingface_hub.errors import EntryNotFoundError
 
 from llamawebui.domain.model_manifest import GgufGroup, HubFile, group_gguf_files
 
@@ -29,6 +31,7 @@ class RepositoryManifest:
     repo_id: str
     revision: str
     groups: tuple[GgufGroup, ...]
+    readme: str | None = None
 
 
 class Catalog(Protocol):
@@ -94,6 +97,22 @@ class HuggingFaceCatalog:
             repo_id=model.id,
             revision=model.sha,
             groups=group_gguf_files(files),
+            readme=await self._readme(repo_id, model.sha),
+        )
+
+    async def _readme(self, repo_id: str, revision: str) -> str | None:
+        try:
+            content = await asyncio.to_thread(
+                self._api.hf_hub_download,
+                repo_id,
+                "README.md",
+                revision=revision,
+                repo_type="model",
+            )
+        except EntryNotFoundError:
+            return None
+        return await asyncio.to_thread(
+            Path(content).read_text, encoding="utf-8", errors="replace"
         )
 
 

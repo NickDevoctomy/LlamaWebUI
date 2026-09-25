@@ -107,6 +107,7 @@ export interface GgufGroup {
 export interface RepositoryManifest {
   repo_id: string
   revision: string
+  readme: string | null
   groups: GgufGroup[]
 }
 

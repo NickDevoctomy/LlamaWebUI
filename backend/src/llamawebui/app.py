@@ -1410,6 +1410,7 @@ def create_app(
         return {
             "repo_id": manifest.repo_id,
             "revision": manifest.revision,
+            "readme": manifest.readme,
             "groups": [
                 {
                     "key": group.key,
