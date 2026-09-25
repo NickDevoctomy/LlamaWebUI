@@ -210,7 +210,7 @@ A profile binds:
 - Additional advanced arguments for flags not yet represented by typed controls.
 - Optional notes and tags.
 
-Profiles support clone, rename, import command, export command, reset to runtime defaults, and dry-run validation.
+- Profiles support clone, rename, import command, export command, reset to runtime defaults, and dry-run validation. The current implementation includes saved-profile inspection/editing and disabled-copy cloning; command import/export and reset/dry-run workflows remain future slices.
 
 ### 7.2 Command import/export
 
@@ -274,11 +274,15 @@ The Python service owns one active router process in the first release:
 
 The main dashboard is an operational workspace, not a landing page. It includes:
 
-- Persistent left navigation: Models, Discover, Downloads, Server, Profiles, Access, Runtimes, Settings.
+- Persistent left navigation: Dashboard, Models, Discover, Downloads, Server, Profiles, Access, Runtimes, Settings.
 - Top status strip for router state, endpoint, active runtime, loaded model count, and current throughput/activity.
+- Dashboard is the primary operational summary: CPU, RAM, network, disk I/O, and—when available—separate GPU processing utilization and VRAM usage gauges. Metrics must show unavailable/unsupported states clearly rather than inventing values. The implementation uses `nvidia-smi` when available; unsupported GPU environments remain explicitly unavailable.
 - Model table with quant, size, profile, loaded/loading/sleeping/error state, and load/unload actions.
-- Server page with start/stop/restart, endpoint copy action, health, process details, arguments, log stream, and recent failures.
-- Profile editor with Basic and Advanced tabs, inline capability validation, and an unsaved-change guard.
+- Server page with start/stop/restart, endpoint copy action, health, selected profile details, effective runtime and launch arguments, log stream, and recent failures.
+- Server monitoring shows current and peak tokens per second, prompt-processing throughput, decode throughput, active task number, current-task elapsed time, and context usage when those values are available from llama.cpp timing/status output.
+- Server log presentation is newest-first with a bounded tail; users should not need to scroll through the entire retained log to see the latest output. Raw chronological logs remain available for diagnostics/export.
+- Timing lines such as `prompt processing`, `n_gen`, `tg`, `tg_3s`, and task identifiers are parsed into structured monitoring samples instead of being displayed only as unstructured text.
+- Profile editor with Basic and Advanced tabs, inline capability validation, saved-profile inspection/editing, and an unsaved-change guard.
 - Download drawer that remains visible across navigation.
 - Responsive layouts usable on a laptop and phone without hiding critical state or actions.
 

@@ -1,0 +1,1662 @@
+"""FastAPI application factory."""
+
+import asyncio
+import json
+import logging
+import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Literal, cast
+
+from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from huggingface_hub.errors import HfHubHTTPError
+from pydantic import BaseModel, Field, field_validator
+
+from llamawebui.config import Settings
+from llamawebui.database import create_database_engine, upgrade_database
+from llamawebui.domain.model_profile import (
+    AdvancedOption,
+    ModelProfile,
+    ProfileValidationError,
+    parse_command,
+    render_command,
+    validate_profile,
+    write_combined_preset_atomic,
+)
+from llamawebui.domain.router_lifecycle import RouterLaunch, RouterState
+from llamawebui.domain.runtime_capabilities import RuntimeCapabilities
+from llamawebui.models import (
+    AccessTokenRecord,
+    DownloadJobRecord,
+    ModelProfileRecord,
+    RuntimeRecord,
+    ServerRunRecord,
+)
+from llamawebui.services.diagnostics import DiagnosticsExporter
+from llamawebui.services.download_coordinator import DownloadCoordinator
+from llamawebui.services.download_registry import (
+    DownloadJobNotFoundError,
+    DownloadPlanError,
+    DownloadRegistry,
+)
+from llamawebui.services.download_worker import (
+    DownloadWorker,
+    FileTransfer,
+    HuggingFaceFileTransfer,
+)
+from llamawebui.services.event_broker import (
+    ControlEvent,
+    EventBroker,
+    EventCursorError,
+)
+from llamawebui.services.huggingface_catalog import Catalog, HuggingFaceCatalog
+from llamawebui.services.llama_release_installer import (
+    GitHubReleaseClient,
+    ReleaseInstallError,
+    RuntimeInstaller,
+    group_runtime_assets,
+)
+from llamawebui.services.logical_model_registry import LogicalModelRegistry
+from llamawebui.services.model_artifact_registry import ModelArtifactError, ModelArtifactRegistry
+from llamawebui.services.model_event_stream import stream_model_events
+from llamawebui.services.model_library import ModelLibrary
+from llamawebui.services.profile_registry import (
+    ProfileAliasExistsError,
+    ProfileNotFoundError,
+    ProfileRegistry,
+)
+from llamawebui.services.router_client import (
+    HttpRouterClient,
+    RouterAPIError,
+    RouterClient,
+    RouterModel,
+    RouterModelEvent,
+)
+from llamawebui.services.router_event_sync import RouterEventSynchronizer
+from llamawebui.services.router_port import RouterPortProbe, probe_router_port
+from llamawebui.services.router_supervisor import RouterRestartPolicy, RouterSupervisor
+from llamawebui.services.runtime_probe import RuntimeProber, probe_runtime
+from llamawebui.services.runtime_registry import (
+    RuntimeAlreadyRegisteredError,
+    RuntimeInUseError,
+    RuntimeNotFoundError,
+    RuntimeRegistry,
+)
+from llamawebui.services.server_run_registry import ServerRunRegistry
+from llamawebui.services.system_metrics import collect_system_metrics
+from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRegistry
+
+MODEL_EVENT_KEEPALIVE_SECONDS = 15.0
+LOGGER = logging.getLogger("llamawebui.app")
+
+
+class RuntimeRegistrationRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    executable_path: str
+    backend: str | None = Field(default=None, max_length=50)
+
+
+class RuntimeInstallRequest(BaseModel):
+    tag: str = Field(min_length=1, max_length=100)
+    asset_name: str = Field(min_length=1, max_length=300)
+    backend: str | None = Field(default=None, max_length=50)
+
+
+class AdvancedOptionRequest(BaseModel):
+    name: str
+    value: str | int | bool = True
+
+
+class ProfileCreateRequest(BaseModel):
+    alias: str
+    runtime_id: str
+    model_path: str
+    enabled: bool = True
+    no_reasoning_preserve: bool = False
+    n_gpu_layers: int | None = None
+    ctx_size: int | None = None
+    flash_attn: str | None = None
+    load_mode: str | None = None
+    lazy_mode: str | None = None
+    cache_ram: int | None = None
+    fit: str | None = None
+    override_tensor: tuple[str, ...] = ()
+    cache_type_k: str | None = None
+    cache_type_v: str | None = None
+    threads: int | None = None
+    batch_size: int | None = None
+    ubatch_size: int | None = None
+    advanced: tuple[AdvancedOptionRequest, ...] = ()
+
+    def to_domain(self) -> ModelProfile:
+        return ModelProfile(
+            alias=self.alias,
+            model_path=Path(self.model_path),
+            no_reasoning_preserve=self.no_reasoning_preserve,
+            n_gpu_layers=self.n_gpu_layers,
+            ctx_size=self.ctx_size,
+            flash_attn=self.flash_attn,
+            load_mode=self.load_mode,
+            lazy_mode=self.lazy_mode,
+            cache_ram=self.cache_ram,
+            fit=self.fit,
+            override_tensor=self.override_tensor,
+            cache_type_k=self.cache_type_k,
+            cache_type_v=self.cache_type_v,
+            threads=self.threads,
+            batch_size=self.batch_size,
+            ubatch_size=self.ubatch_size,
+            advanced=tuple(AdvancedOption(option.name, option.value) for option in self.advanced),
+        )
+
+
+class ProfileImportRequest(BaseModel):
+    document: dict[str, object]
+    alias: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class ProfileCommandImportRequest(BaseModel):
+    command: str = Field(min_length=1, max_length=10000)
+    alias: str = Field(min_length=1, max_length=64)
+    runtime_id: str
+    enabled: bool = False
+
+
+class ExternalModelImportRequest(BaseModel):
+    primary_path: str
+    runtime_id: str
+    alias: str
+
+
+class DownloadCreateRequest(BaseModel):
+    repo_id: str = Field(min_length=3, max_length=400)
+    group_key: str = Field(min_length=1)
+    revision: str | None = Field(default=None, max_length=100)
+    include_projector: bool = False
+
+
+class ServerStartRequest(BaseModel):
+    runtime_id: str
+
+
+class ServerRestartRequest(BaseModel):
+    runtime_id: str | None = None
+
+
+class RouterModelRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=400)
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("model ID must not be empty")
+        return value
+
+
+class AccessTokenCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    expiry_note: str | None = Field(default=None, max_length=500)
+
+
+class ProfileCloneRequest(BaseModel):
+    alias: str = Field(min_length=1, max_length=64)
+
+
+def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
+    probe_errors = tuple(runtime.probe_error.splitlines()) if runtime.probe_error else ()
+    version_errors = tuple(
+        error for error in probe_errors if error.startswith(("version probe", "help probe"))
+    )
+    device_errors = tuple(error for error in probe_errors if error.startswith("devices probe"))
+    missing_router_options = () if "models-preset" in runtime.options else ("models-preset",)
+    if device_errors:
+        device_status = "unavailable"
+    elif runtime.devices:
+        device_status = "available"
+    else:
+        device_status = "none"
+    diagnostics = list(probe_errors)
+    diagnostics.extend(f"runtime does not support --{option}" for option in missing_router_options)
+    return {
+        "id": runtime.id,
+        "name": runtime.name,
+        "executable_path": runtime.executable_path,
+        "build": runtime.build,
+        "commit": runtime.commit,
+        "backend": runtime.backend,
+        "devices": runtime.devices,
+        "options": runtime.options,
+        "usable": bool(runtime.options) and not version_errors,
+        "probe_error": runtime.probe_error,
+        "probe_errors": list(probe_errors),
+        "device_status": device_status,
+        "router_compatible": not missing_router_options and not version_errors,
+        "missing_router_options": list(missing_router_options),
+        "diagnostics": diagnostics,
+        "help_sha256": runtime.help_sha256,
+    }
+
+
+def _router_diagnostics(runtime: RuntimeRecord) -> tuple[str, ...]:
+    diagnostics: list[str] = []
+    if runtime.probe_error:
+        diagnostics.extend(
+            error
+            for error in runtime.probe_error.splitlines()
+            if error.startswith(("version probe", "help probe"))
+        )
+    if "models-preset" not in runtime.options:
+        diagnostics.append("runtime does not support --models-preset")
+    return tuple(diagnostics)
+
+
+def _profile_payload(
+    profile: ModelProfileRecord, artifacts: ModelArtifactRegistry | None = None
+) -> dict[str, object]:
+    source = artifacts.source_for_profile(profile) if artifacts is not None else None
+    available = artifacts.profile_available(profile) if artifacts is not None else True
+    return {
+        "id": profile.id,
+        "alias": profile.alias,
+        "runtime_id": profile.runtime_id,
+        "model_path": profile.model_path,
+        "configuration": profile.configuration,
+        "preset": profile.preset,
+        "enabled": profile.enabled,
+        "validation_state": "available" if available else "broken",
+        "source_download": (
+            {
+                "id": source.download_id,
+                "repo_id": source.repo_id,
+                "revision": source.revision,
+                "group_key": source.group_key,
+                "file_count": source.file_count,
+                "total_bytes": source.total_bytes,
+            }
+            if source is not None
+            else None
+        ),
+    }
+
+
+def _download_payload(job: DownloadJobRecord) -> dict[str, object]:
+    return {
+        "id": job.id,
+        "repo_id": job.repo_id,
+        "revision": job.revision,
+        "group_key": job.group_key,
+        "files": job.files,
+        "destination": job.destination,
+        "total_bytes": job.total_bytes,
+        "completed_bytes": job.completed_bytes,
+        "state": job.state,
+        "error": job.error,
+    }
+
+
+def _server_payload(supervisor: RouterSupervisor, settings: Settings) -> dict[str, object]:
+    return {
+        "state": supervisor.state,
+        "pid": supervisor.pid,
+        "last_exit_code": supervisor.last_exit_code,
+        "endpoint": f"http://{settings.router_host}:{settings.router_port}",
+        "logs": supervisor.logs,
+        "timing": supervisor.timing,
+        "arguments": supervisor.launch_arguments,
+        "system": _system_metrics(settings.data_dir),
+    }
+
+
+def _system_metrics(data_dir: Path) -> dict[str, object]:
+    return collect_system_metrics(data_dir)
+
+
+def _server_run_payload(run: ServerRunRecord) -> dict[str, object]:
+    return {
+        "id": run.id,
+        "runtime_id": run.runtime_id,
+        "endpoint": run.endpoint,
+        "state": run.state,
+        "pid": run.pid,
+        "exit_code": run.exit_code,
+        "error": run.error,
+        "started_at": run.started_at,
+        "ended_at": run.ended_at,
+    }
+
+
+def _router_model_payload(model: RouterModel) -> dict[str, object]:
+    return {
+        "id": model.id,
+        "path": model.path,
+        "status": model.status,
+        "metadata": model.metadata,
+    }
+
+
+def _access_token_payload(token: AccessTokenRecord) -> dict[str, object]:
+    return {
+        "id": token.id,
+        "name": token.name,
+        "last_four": token.last_four,
+        "expiry_note": token.expiry_note,
+        "enabled": token.enabled,
+        "created_at": token.created_at,
+        "revoked_at": token.revoked_at,
+    }
+
+
+def _router_model_event_sse(event: RouterModelEvent) -> str:
+    payload = json.dumps(
+        {"model": event.model, "event": event.event, "data": event.data},
+        separators=(",", ":"),
+    )
+    return f"event: {event.event}\ndata: {payload}\n\n"
+
+
+def _control_event_sse(event: ControlEvent) -> str:
+    payload = json.dumps(event.data, separators=(",", ":"))
+    return f"id: {event.id}\nevent: {event.type}\ndata: {payload}\n\n"
+
+
+def _event_cursor(request: Request, after: int | None) -> int | None:
+    header = request.headers.get("last-event-id")
+    if header is None:
+        return after
+    try:
+        header_cursor = int(header)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Last-Event-ID must be a non-negative integer",
+        ) from error
+    if header_cursor < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Last-Event-ID must be a non-negative integer",
+        )
+    if after is not None and after != header_cursor:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="after and Last-Event-ID cursors must match",
+        )
+    return header_cursor
+
+
+def _require_running_router(supervisor: RouterSupervisor) -> None:
+    if supervisor.state not in {RouterState.READY, RouterState.DEGRADED}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"router model operations are unavailable while {supervisor.state}",
+        )
+
+
+def _router_api_error(error: RouterAPIError) -> HTTPException:
+    status_code = error.status_code if 400 <= error.status_code < 500 else 502
+    return HTTPException(status_code=status_code, detail=str(error))
+
+
+def _hub_error(error: HfHubHTTPError) -> HTTPException:
+    response_status = error.response.status_code if error.response is not None else None
+    status_code = (
+        status.HTTP_404_NOT_FOUND if response_status == 404 else status.HTTP_502_BAD_GATEWAY
+    )
+    return HTTPException(status_code=status_code, detail="Hugging Face request failed")
+
+
+def create_app(
+    settings: Settings | None = None,
+    *,
+    runtime_prober: RuntimeProber = probe_runtime,
+    catalog: Catalog | None = None,
+    file_transfer: FileTransfer | None = None,
+    router_supervisor: RouterSupervisor | None = None,
+    router_port_probe: RouterPortProbe = probe_router_port,
+    router_client: RouterClient | None = None,
+    static_dir: Path | None = None,
+) -> FastAPI:
+    app_settings = settings or Settings()
+    packaged_static_dir = static_dir or Path(__file__).parent / "static"
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        LOGGER.info(
+            "application_starting",
+            extra={
+                "component": "application",
+                "event": "startup",
+                "host": app_settings.host,
+                "port": app_settings.port,
+                "hf_token_configured": app_settings.hf_token is not None,
+            },
+        )
+        app_settings.data_dir.mkdir(parents=True, exist_ok=True)
+        upgrade_database(app_settings.database_path)
+        engine = create_database_engine(app_settings.database_path)
+        app.state.runtime_registry = RuntimeRegistry(engine, prober=runtime_prober)
+        app.state.release_client = GitHubReleaseClient()
+        app.state.runtime_installer = RuntimeInstaller(
+            app_settings.data_dir,
+            prober=runtime_prober,
+            releases=app.state.release_client,
+        )
+        app.state.profile_registry = ProfileRegistry(engine)
+        app.state.token_registry = TokenRegistry(engine, app_settings.data_dir)
+        app.state.download_registry = DownloadRegistry(engine, app_settings.data_dir / "models")
+        app.state.model_library = ModelLibrary(
+            app.state.download_registry, app_settings.data_dir / "models"
+        )
+        app.state.logical_model_registry = LogicalModelRegistry(engine)
+        app.state.model_artifact_registry = ModelArtifactRegistry(
+            app.state.download_registry, app_settings.data_dir / "models"
+        )
+        app.state.event_broker = EventBroker(app_settings.event_history_capacity)
+        token = app_settings.hf_token.get_secret_value() if app_settings.hf_token else None
+        app.state.huggingface_catalog = catalog or HuggingFaceCatalog(token)
+        transfer = file_transfer or HuggingFaceFileTransfer(token)
+        app.state.download_coordinator = DownloadCoordinator(
+            app.state.download_registry,
+            DownloadWorker(app.state.download_registry, transfer),
+            event_broker=app.state.event_broker,
+        )
+        app.state.download_coordinator.start_pending()
+        app.state.router_supervisor = router_supervisor or RouterSupervisor(
+            restart_policy=RouterRestartPolicy(
+                max_attempts=app_settings.router_restart_max_attempts,
+                window_seconds=app_settings.router_restart_window_seconds,
+                delay_seconds=app_settings.router_restart_delay_seconds,
+                ready_timeout_seconds=app_settings.router_ready_timeout_seconds,
+            )
+        )
+        app.state.router_client = router_client or HttpRouterClient(
+            app_settings.router_host,
+            app_settings.router_port,
+            api_key_provider=app.state.token_registry.control_token,
+        )
+        app.state.router_event_synchronizer = RouterEventSynchronizer(
+            app.state.router_client, app.state.event_broker
+        )
+        app.state.server_run_registry = ServerRunRegistry(engine)
+        app.state.diagnostics_exporter = DiagnosticsExporter(app_settings, engine)
+        app.state.active_server_run_id = None
+        app.state.router_lifecycle_lock = asyncio.Lock()
+
+        def record_router_state(
+            state: RouterState, pid: int | None, exit_code: int | None
+        ) -> None:
+            LOGGER.info(
+                "router_state_changed",
+                extra={
+                    "component": "router",
+                    "event": "state_changed",
+                    "state": state.value,
+                    "pid": pid,
+                    "exit_code": exit_code,
+                },
+            )
+            run_id = cast(str | None, app.state.active_server_run_id)
+            if run_id is not None:
+                previous_run = app.state.server_run_registry.get(run_id)
+                if state is RouterState.STARTING and previous_run.state in {
+                    RouterState.STOPPED,
+                    RouterState.CRASHED,
+                }:
+                    retry = app.state.server_run_registry.create(
+                        previous_run.runtime_id, previous_run.endpoint
+                    )
+                    app.state.active_server_run_id = retry.id
+                    run_id = retry.id
+                app.state.server_run_registry.update(
+                    run_id, state, pid=pid, exit_code=exit_code
+                )
+            app.state.event_broker.publish(
+                "router.state",
+                {"state": state, "pid": pid, "exit_code": exit_code},
+            )
+            if state is RouterState.READY:
+                app.state.router_event_synchronizer.start()
+            elif state is not RouterState.DEGRADED:
+                app.state.router_event_synchronizer.deactivate()
+
+        app.state.router_supervisor.set_state_observer(record_router_state)
+        LOGGER.info(
+            "application_started",
+            extra={"component": "application", "event": "started"},
+        )
+        try:
+            yield
+        finally:
+            LOGGER.info(
+                "application_stopping",
+                extra={"component": "application", "event": "shutdown"},
+            )
+            async with app.state.router_lifecycle_lock:
+                await app.state.router_supervisor.stop()
+            app.state.router_supervisor.set_state_observer(None)
+            await app.state.router_event_synchronizer.shutdown()
+            await app.state.download_coordinator.shutdown()
+            engine.dispose()
+            LOGGER.info(
+                "application_stopped",
+                extra={"component": "application", "event": "stopped"},
+            )
+
+    app = FastAPI(title="LlamaWebUI", version="0.1.0", lifespan=lifespan)
+
+    async def start_router(runtime_id: str, request: Request) -> dict[str, object]:
+        runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        profiles = cast(ProfileRegistry, request.app.state.profile_registry)
+        tokens = cast(TokenRegistry, request.app.state.token_registry)
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        run_registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"router cannot start while {supervisor.state}",
+            )
+        try:
+            runtime = runtimes.get(runtime_id)
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        router_diagnostics = _router_diagnostics(runtime)
+        if router_diagnostics:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="; ".join(router_diagnostics),
+            )
+        enabled_profiles = profiles.list_enabled(runtime.id)
+        if not enabled_profiles:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="runtime has no enabled model profiles",
+            )
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        broken = tuple(
+            profile.alias
+            for profile in enabled_profiles
+            if not artifacts.profile_available(profile)
+        )
+        if broken:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"enabled model profiles are broken: {', '.join(broken)}",
+            )
+
+        preset_path = app_settings.data_dir / "generated" / "llama-models.ini"
+        write_combined_preset_atomic(
+            preset_path, tuple(profile.preset for profile in enabled_profiles)
+        )
+        launch = RouterLaunch(
+            executable=Path(runtime.executable_path),
+            preset_path=preset_path,
+            host=app_settings.router_host,
+            port=app_settings.router_port,
+            api_key_file=tokens.key_file if tokens.has_enabled() else None,
+        )
+        supervisor.record_log("llama-server router command: " + " ".join(launch.arguments()))
+        for profile in enabled_profiles:
+            profile_request = ProfileCreateRequest.model_validate(
+                {
+                    **profile.configuration,
+                    "alias": profile.alias,
+                    "runtime_id": profile.runtime_id,
+                    "model_path": profile.model_path,
+                }
+            )
+            supervisor.record_log(
+                "llama-server model command (preset equivalent): "
+                + render_command(profile_request.to_domain(), Path(runtime.executable_path))
+            )
+        endpoint = f"http://{app_settings.router_host}:{app_settings.router_port}"
+        run = run_registry.create(runtime.id, endpoint)
+        request.app.state.active_server_run_id = run.id
+        if not await router_port_probe(app_settings.router_host, app_settings.router_port):
+            detail = (
+                "router port is already in use: "
+                f"{app_settings.router_host}:{app_settings.router_port}"
+            )
+            run_registry.update(
+                run.id,
+                RouterState.CRASHED,
+                pid=None,
+                exit_code=None,
+                error=detail,
+            )
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+        try:
+            await supervisor.start(launch)
+            await supervisor.wait_until_ready(
+                launch, timeout_seconds=app_settings.router_ready_timeout_seconds
+            )
+        except TimeoutError as error:
+            run_registry.update(
+                run.id,
+                supervisor.state,
+                pid=supervisor.pid,
+                exit_code=supervisor.last_exit_code,
+                error=str(error),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(error)
+            ) from error
+        except (OSError, RuntimeError) as error:
+            run_registry.update(
+                run.id,
+                supervisor.state,
+                pid=supervisor.pid,
+                exit_code=supervisor.last_exit_code,
+                error=str(error),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)
+            ) from error
+        except ValueError as error:
+            run_registry.update(
+                run.id,
+                supervisor.state,
+                pid=supervisor.pid,
+                exit_code=supervisor.last_exit_code,
+                error=str(error),
+            )
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return _server_payload(supervisor, app_settings)
+
+    @app.get("/api/health")
+    async def health() -> dict[str, object]:
+        return {
+            "status": "ok",
+            "data_dir": str(app_settings.data_dir),
+            "database_path": str(app_settings.database_path),
+            "hugging_face_token_configured": app_settings.hf_token is not None,
+        }
+
+    @app.post("/api/diagnostics/export")
+    async def export_diagnostics(request: Request) -> dict[str, object]:
+        exporter = cast(DiagnosticsExporter, request.app.state.diagnostics_exporter)
+        path = exporter.export(
+            runtimes=cast(RuntimeRegistry, request.app.state.runtime_registry),
+            profiles=cast(ProfileRegistry, request.app.state.profile_registry),
+            artifacts=cast(ModelArtifactRegistry, request.app.state.model_artifact_registry),
+            supervisor=cast(RouterSupervisor, request.app.state.router_supervisor),
+            server_runs=cast(ServerRunRegistry, request.app.state.server_run_registry),
+            downloads=cast(DownloadRegistry, request.app.state.download_registry),
+        )
+        LOGGER.info(
+            "diagnostics_exported",
+            extra={"component": "diagnostics", "event": "exported"},
+        )
+        return {"path": str(path), "format": 1}
+
+    @app.get("/api/events")
+    async def stream_events(
+        request: Request,
+        after: int | None = Query(default=None, ge=0),
+    ) -> StreamingResponse:
+        broker = cast(EventBroker, request.app.state.event_broker)
+        cursor = _event_cursor(request, after)
+        try:
+            subscription = broker.subscribe(cursor)
+        except EventCursorError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": str(error),
+                    "reconcile": "/api/server/status",
+                    "oldest_event_id": error.oldest,
+                    "latest_event_id": error.latest,
+                },
+            ) from error
+
+        async def event_stream() -> AsyncIterator[str]:
+            try:
+                async for event in subscription:
+                    yield _control_event_sse(event)
+            except EventCursorError as error:
+                payload = json.dumps(
+                    {
+                        "message": str(error),
+                        "reconcile": "/api/server/status",
+                        "oldest_event_id": error.oldest,
+                        "latest_event_id": error.latest,
+                    },
+                    separators=(",", ":"),
+                )
+                yield f"event: reconcile\ndata: {payload}\n\n"
+            finally:
+                subscription.close()
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/server/status")
+    async def server_status(request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        return _server_payload(supervisor, app_settings)
+
+    @app.get("/api/server/runs")
+    async def list_server_runs(request: Request) -> list[dict[str, object]]:
+        registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
+        return [_server_run_payload(run) for run in registry.list()]
+
+    @app.post("/api/server/start")
+    async def start_server(
+        start_request: ServerStartRequest, request: Request
+    ) -> dict[str, object]:
+        lock = cast(asyncio.Lock, request.app.state.router_lifecycle_lock)
+        async with lock:
+            return await start_router(start_request.runtime_id, request)
+
+    @app.post("/api/server/stop")
+    async def stop_server(request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        lock = cast(asyncio.Lock, request.app.state.router_lifecycle_lock)
+        async with lock:
+            try:
+                await supervisor.stop()
+            except (RuntimeError, ValueError) as error:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT, detail=str(error)
+                ) from error
+        return _server_payload(supervisor, app_settings)
+
+    @app.post("/api/server/restart")
+    async def restart_server(
+        request: Request, restart_request: ServerRestartRequest | None = None
+    ) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        run_registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
+        lock = cast(asyncio.Lock, request.app.state.router_lifecycle_lock)
+        async with lock:
+            run_id = cast(str | None, request.app.state.active_server_run_id)
+            if run_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="router has no previous runtime selection",
+                )
+            runtime_id = restart_request.runtime_id if restart_request else None
+            runtime_id = runtime_id or run_registry.get(run_id).runtime_id
+            if runtime_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="previous router runtime is no longer registered",
+                )
+            try:
+                await supervisor.stop()
+            except (RuntimeError, ValueError) as error:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT, detail=str(error)
+                ) from error
+            return await start_router(runtime_id, request)
+
+    @app.post("/api/server/rollback")
+    async def rollback_server(request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        run_registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
+        lock = cast(asyncio.Lock, request.app.state.router_lifecycle_lock)
+        async with lock:
+            if supervisor.state not in {RouterState.READY, RouterState.DEGRADED}:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="router must be running before rollback",
+                )
+            run_id = cast(str | None, request.app.state.active_server_run_id)
+            if run_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="router has no active runtime selection",
+                )
+            current_runtime_id = run_registry.get(run_id).runtime_id
+            previous_runtime_id = run_registry.previous_runtime_id(run_id)
+            if not current_runtime_id or not previous_runtime_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="no previous runtime is available for rollback",
+                )
+            runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
+            profiles = cast(ProfileRegistry, request.app.state.profile_registry)
+            artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+            try:
+                candidate = runtimes.get(previous_runtime_id)
+            except RuntimeNotFoundError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT, detail=str(error)
+                ) from error
+            router_diagnostics = _router_diagnostics(candidate)
+            if router_diagnostics:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="; ".join(router_diagnostics),
+                )
+            candidate_profiles = profiles.list_enabled(previous_runtime_id)
+            broken = tuple(
+                profile.alias
+                for profile in candidate_profiles
+                if not artifacts.profile_available(profile)
+            )
+            if not candidate_profiles:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="previous runtime has no enabled model profiles",
+                )
+            if broken:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"previous runtime profiles are broken: {', '.join(broken)}",
+                )
+            try:
+                await supervisor.stop()
+                return await start_router(previous_runtime_id, request)
+            except HTTPException as error:
+                try:
+                    await start_router(current_runtime_id, request)
+                except HTTPException as restore_error:
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=(
+                            f"rollback failed: {error.detail}; "
+                            f"restoring current runtime failed: {restore_error.detail}"
+                        ),
+                    ) from restore_error
+                raise error
+
+    @app.get("/api/server/models")
+    async def list_router_models(
+        request: Request, reload: bool = False
+    ) -> list[dict[str, object]]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        client = cast(RouterClient, request.app.state.router_client)
+        _require_running_router(supervisor)
+        try:
+            models = await client.list_models(reload=reload)
+        except RouterAPIError as error:
+            raise _router_api_error(error) from error
+        return [_router_model_payload(model) for model in models]
+
+    @app.get("/api/server/models/events")
+    async def stream_router_model_events(request: Request) -> StreamingResponse:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        client = cast(RouterClient, request.app.state.router_client)
+        _require_running_router(supervisor)
+
+        return StreamingResponse(
+            stream_model_events(client, keepalive_seconds=MODEL_EVENT_KEEPALIVE_SECONDS),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/api/server/models/load")
+    async def load_router_model(
+        model_request: RouterModelRequest, request: Request
+    ) -> dict[str, bool]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        client = cast(RouterClient, request.app.state.router_client)
+        _require_running_router(supervisor)
+        try:
+            await client.load_model(model_request.model)
+        except RouterAPIError as error:
+            raise _router_api_error(error) from error
+        return {"success": True}
+
+    @app.post("/api/server/models/unload")
+    async def unload_router_model(
+        model_request: RouterModelRequest, request: Request
+    ) -> dict[str, bool]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        client = cast(RouterClient, request.app.state.router_client)
+        _require_running_router(supervisor)
+        try:
+            await client.unload_model(model_request.model)
+        except RouterAPIError as error:
+            raise _router_api_error(error) from error
+        return {"success": True}
+
+    @app.get("/api/tokens")
+    async def list_access_tokens(request: Request) -> list[dict[str, object]]:
+        registry = cast(TokenRegistry, request.app.state.token_registry)
+        return [_access_token_payload(token) for token in registry.list()]
+
+    @app.post("/api/tokens", status_code=status.HTTP_201_CREATED)
+    async def create_access_token(
+        token_request: AccessTokenCreateRequest, request: Request
+    ) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="stop the router before changing access tokens",
+            )
+        registry = cast(TokenRegistry, request.app.state.token_registry)
+        try:
+            created = registry.create(token_request.name, token_request.expiry_note)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
+        return {**_access_token_payload(created.record), "token": created.token}
+
+    @app.delete("/api/tokens/{token_id}")
+    async def revoke_access_token(token_id: str, request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="stop the router before changing access tokens",
+            )
+        registry = cast(TokenRegistry, request.app.state.token_registry)
+        try:
+            return _access_token_payload(registry.revoke(token_id))
+        except AccessTokenNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    @app.get("/api/integrations/opencode")
+    async def opencode_configuration(request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        client = cast(RouterClient, request.app.state.router_client)
+        _require_running_router(supervisor)
+        try:
+            models = await client.list_models()
+        except RouterAPIError as error:
+            raise _router_api_error(error) from error
+        host = app_settings.router_host
+        if host in {"0.0.0.0", "::"}:
+            host = "127.0.0.1"
+        formatted_host = f"[{host}]" if ":" in host else host
+        return {
+            "$schema": "https://opencode.ai/config.json",
+            "provider": {
+                "llama-web-ui": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": "Local llama.cpp",
+                    "options": {
+                        "baseURL": f"http://{formatted_host}:{app_settings.router_port}/v1",
+                        "apiKey": "{env:LLAMA_WEB_UI_API_KEY}",
+                    },
+                    "models": {model.id: {"name": model.id} for model in models},
+                }
+            },
+        }
+
+    @app.get("/api/runtimes")
+    async def list_runtimes(request: Request) -> list[dict[str, object]]:
+        registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        return [_runtime_payload(runtime) for runtime in registry.list()]
+
+    @app.get("/api/runtimes/releases/{tag}")
+    async def get_runtime_release(tag: str, request: Request) -> dict[str, object]:
+        client = cast(GitHubReleaseClient, request.app.state.release_client)
+        try:
+            release = await client.release(tag)
+        except ReleaseInstallError as error:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)
+            ) from error
+        return {
+            "tag": release.tag,
+            "stable_tag": release.stable_tag,
+            "assets": [
+                {"name": asset.name, "url": asset.url, "size": asset.size, "digest": asset.digest}
+                for asset in release.assets
+            ],
+            "groups": [
+                {
+                    "key": group.key,
+                    "primary": group.primary.name,
+                    "companions": [asset.name for asset in group.companions],
+                }
+                for group in group_runtime_assets(release.assets)
+            ],
+        }
+
+    @app.post("/api/runtimes/install", status_code=status.HTTP_201_CREATED)
+    async def install_runtime(
+        install_request: RuntimeInstallRequest, request: Request
+    ) -> dict[str, object]:
+        installer = cast(RuntimeInstaller, request.app.state.runtime_installer)
+        registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        try:
+            destination = await installer.install(
+                tag=install_request.tag,
+                asset_name=install_request.asset_name,
+                backend=install_request.backend,
+            )
+            executable_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
+            executable = next(destination.rglob(executable_name), None)
+            if executable is None:
+                raise ReleaseInstallError("installed runtime executable was not found")
+            runtime = await registry.register(
+                name=f"{install_request.tag} {install_request.backend or 'auto'}",
+                executable_path=executable,
+                backend=install_request.backend,
+            )
+        except ReleaseInstallError as error:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)
+            ) from error
+        except (FileNotFoundError, RuntimeAlreadyRegisteredError) as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return _runtime_payload(runtime)
+
+    @app.get("/api/runtimes/{runtime_id}")
+    async def get_runtime(runtime_id: str, request: Request) -> dict[str, object]:
+        registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        try:
+            return _runtime_payload(registry.get(runtime_id))
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    @app.post("/api/runtimes", status_code=status.HTTP_201_CREATED)
+    async def register_runtime(
+        registration: RuntimeRegistrationRequest, request: Request
+    ) -> dict[str, object]:
+        registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        try:
+            runtime = await registry.register(
+                name=registration.name,
+                executable_path=registration.executable_path,
+                backend=registration.backend,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except RuntimeAlreadyRegisteredError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return _runtime_payload(runtime)
+
+    @app.post("/api/runtimes/{runtime_id}/probe")
+    async def reprobe_runtime(runtime_id: str, request: Request) -> dict[str, object]:
+        registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        try:
+            return _runtime_payload(await registry.reprobe(runtime_id))
+        except (FileNotFoundError, RuntimeNotFoundError) as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    @app.delete("/api/runtimes/{runtime_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def remove_runtime(runtime_id: str, request: Request) -> None:
+        registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        run_registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        active_run_id = cast(str | None, request.app.state.active_server_run_id)
+        active_runtime_id = None
+        if active_run_id is not None:
+            active_runtime_id = run_registry.get(active_run_id).runtime_id
+        guarded_active_runtime = (
+            active_runtime_id
+            if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}
+            else None
+        )
+        try:
+            registry.remove(runtime_id, active_runtime_id=guarded_active_runtime)
+        except RuntimeInUseError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    @app.get("/api/profiles")
+    async def list_profiles(request: Request) -> list[dict[str, object]]:
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return [_profile_payload(profile, artifacts) for profile in registry.list()]
+
+    @app.post("/api/profiles", status_code=status.HTTP_201_CREATED)
+    async def create_profile(
+        profile_request: ProfileCreateRequest, request: Request
+    ) -> dict[str, object]:
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        try:
+            profile = registry.create(
+                profile=profile_request.to_domain(),
+                runtime_id=profile_request.runtime_id,
+                enabled=profile_request.enabled,
+            )
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ProfileAliasExistsError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except ProfileValidationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
+            ) from error
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(profile, artifacts)
+
+    @app.put("/api/profiles/{profile_id}")
+    async def update_profile(
+        profile_id: str, profile_request: ProfileCreateRequest, request: Request
+    ) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="stop the router before editing a profile",
+            )
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        try:
+            profile = registry.update(
+                profile_id,
+                profile=profile_request.to_domain(),
+                runtime_id=profile_request.runtime_id,
+                enabled=profile_request.enabled,
+            )
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileAliasExistsError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ProfileValidationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
+            ) from error
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(profile, artifacts)
+
+    @app.post("/api/profiles/{profile_id}/clone", status_code=status.HTTP_201_CREATED)
+    async def clone_profile(
+        profile_id: str, clone_request: ProfileCloneRequest, request: Request
+    ) -> dict[str, object]:
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        try:
+            profile = registry.clone(profile_id, clone_request.alias)
+        except ProfileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileAliasExistsError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(profile, artifacts)
+
+    @app.delete("/api/profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def remove_profile(profile_id: str, request: Request) -> None:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="stop the router before deleting a model profile",
+            )
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        try:
+            registry.remove(profile_id)
+        except ProfileNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    @app.post("/api/profiles/{profile_id}/validate")
+    async def validate_profile_configuration(
+        profile_id: str, request: Request
+    ) -> dict[str, object]:
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        profile = next((item for item in registry.list() if item.id == profile_id), None)
+        if profile is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="model profile not found"
+            )
+        runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        try:
+            runtime = runtimes.get(profile.runtime_id)
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        try:
+            configuration = dict(profile.configuration)
+            configuration["alias"] = profile.alias
+            configuration["runtime_id"] = profile.runtime_id
+            validated = ProfileCreateRequest.model_validate(configuration).to_domain()
+            errors = list(validate_profile(
+                validated, RuntimeCapabilities(options=frozenset(runtime.options), raw_help="")
+            ))
+            errors.extend(_router_diagnostics(runtime))
+        except ProfileValidationError as error:
+            errors = list(error.errors)
+        return {"valid": not errors, "errors": list(errors), "preset": profile.preset}
+
+    @app.post("/api/profiles/{profile_id}/reset")
+    async def reset_profile_configuration(profile_id: str, request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=409, detail="stop the router before resetting a profile"
+            )
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        try:
+            profile = registry.reset(profile_id)
+        except ProfileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(profile, artifacts)
+
+    @app.get("/api/profiles/{profile_id}/export", response_class=PlainTextResponse)
+    async def export_profile(profile_id: str, request: Request) -> PlainTextResponse:
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        profile = next((item for item in registry.list() if item.id == profile_id), None)
+        if profile is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="model profile not found"
+            )
+        payload = json.dumps(
+            {
+                "format": "llamawebui-profile-v1",
+                "alias": profile.alias,
+                "runtime_id": profile.runtime_id,
+                "enabled": profile.enabled,
+                "configuration": profile.configuration,
+                "preset": profile.preset,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        return PlainTextResponse(
+            payload,
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{profile.alias}.json"'},
+        )
+
+    @app.get("/api/profiles/{profile_id}/command", response_class=PlainTextResponse)
+    async def export_profile_command(profile_id: str, request: Request) -> PlainTextResponse:
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        profile = next((item for item in registry.list() if item.id == profile_id), None)
+        if profile is None:
+            raise HTTPException(status_code=404, detail="model profile not found")
+        runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
+        try:
+            runtime = runtimes.get(profile.runtime_id)
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        command = render_command(
+            ProfileCreateRequest.model_validate(
+                {
+                    **profile.configuration,
+                    "alias": profile.alias,
+                    "runtime_id": profile.runtime_id,
+                    "model_path": profile.model_path,
+                }
+            ).to_domain(),
+            Path(runtime.executable_path),
+        )
+        return PlainTextResponse(command, media_type="text/plain")
+
+    @app.post("/api/profiles/import", status_code=status.HTTP_201_CREATED)
+    async def import_profile(
+        import_request: ProfileImportRequest, request: Request
+    ) -> dict[str, object]:
+        document = import_request.document
+        if document.get("format") != "llamawebui-profile-v1":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="unsupported profile export format",
+            )
+        configuration = document.get("configuration")
+        if not isinstance(configuration, dict):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="profile export configuration is invalid",
+            )
+        runtime_id = document.get("runtime_id")
+        alias = import_request.alias or document.get("alias")
+        enabled = document.get("enabled", False)
+        if not isinstance(runtime_id, str) or not isinstance(alias, str):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="profile export is missing runtime_id or alias",
+            )
+        if not isinstance(enabled, bool):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="profile export enabled value is invalid",
+            )
+        try:
+            imported_model_path = configuration.get("model_path")
+            if not isinstance(imported_model_path, str) or not Path(imported_model_path).is_file():
+                registry = cast(ProfileRegistry, request.app.state.profile_registry)
+                profile = registry.create_unresolved_import(
+                    alias=alias,
+                    runtime_id=runtime_id,
+                    configuration=configuration,
+                )
+                artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+                return _profile_payload(profile, artifacts)
+            profile_request = ProfileCreateRequest.model_validate(
+                {**configuration, "alias": alias, "runtime_id": runtime_id, "enabled": enabled}
+            )
+            registry = cast(ProfileRegistry, request.app.state.profile_registry)
+            profile = registry.create(
+                profile=profile_request.to_domain(), runtime_id=runtime_id, enabled=enabled
+            )
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileAliasExistsError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ProfileValidationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
+            ) from error
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(profile, artifacts)
+
+    @app.post("/api/profiles/import-command", status_code=status.HTTP_201_CREATED)
+    async def import_profile_command(
+        import_request: ProfileCommandImportRequest, request: Request
+    ) -> dict[str, object]:
+        try:
+            configuration = parse_command(import_request.command)
+            profile_request = ProfileCreateRequest.model_validate(
+                {
+                    **configuration,
+                    "alias": import_request.alias,
+                    "runtime_id": import_request.runtime_id,
+                    "enabled": import_request.enabled,
+                }
+            )
+            registry = cast(ProfileRegistry, request.app.state.profile_registry)
+            profile = registry.create(
+                profile=profile_request.to_domain(),
+                runtime_id=import_request.runtime_id,
+                enabled=False,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileAliasExistsError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ProfileValidationError as error:
+            raise HTTPException(status_code=422, detail=list(error.errors)) from error
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(profile, artifacts)
+
+    @app.get("/api/huggingface/models")
+    async def search_huggingface_models(
+        request: Request,
+        q: str = Query(min_length=1, max_length=200),
+        sort: Literal["downloads", "likes", "last_modified", "trending_score"] | None = None,
+        limit: int = Query(default=25, ge=1, le=100),
+    ) -> list[dict[str, object]]:
+        hub = cast(Catalog, request.app.state.huggingface_catalog)
+        try:
+            results = await hub.search(q, sort=sort, limit=limit)
+        except HfHubHTTPError as error:
+            raise _hub_error(error) from error
+        return [
+            {
+                "repo_id": result.repo_id,
+                "downloads": result.downloads,
+                "likes": result.likes,
+                "last_modified": result.last_modified,
+                "gated": result.gated,
+                "private": result.private,
+                "tags": result.tags,
+            }
+            for result in results
+        ]
+
+    @app.get("/api/huggingface/repositories/{repo_id:path}")
+    async def get_huggingface_repository(
+        repo_id: str, request: Request, revision: str | None = None
+    ) -> dict[str, object]:
+        hub = cast(Catalog, request.app.state.huggingface_catalog)
+        try:
+            manifest = await hub.repository(repo_id, revision=revision)
+        except HfHubHTTPError as error:
+            raise _hub_error(error) from error
+        return {
+            "repo_id": manifest.repo_id,
+            "revision": manifest.revision,
+            "groups": [
+                {
+                    "key": group.key,
+                    "quantization": group.quantization,
+                    "total_size": group.total_size,
+                    "complete": group.complete,
+                    "files": [
+                        {
+                            "path": file.path,
+                            "size": file.size,
+                            **({"sha256": file.sha256} if file.sha256 else {}),
+                            **({"etag": file.etag} if file.etag else {}),
+                        }
+                        for file in group.files
+                    ],
+                    "projectors": [
+                        {"path": file.path, "size": file.size}
+                        for file in group.projector_files
+                    ],
+                }
+                for group in manifest.groups
+            ],
+        }
+
+    @app.get("/api/downloads")
+    async def list_downloads(request: Request) -> list[dict[str, object]]:
+        registry = cast(DownloadRegistry, request.app.state.download_registry)
+        return [_download_payload(job) for job in registry.list()]
+
+    @app.delete("/api/downloads/terminal")
+    async def clear_terminal_downloads(request: Request) -> dict[str, int]:
+        registry = cast(DownloadRegistry, request.app.state.download_registry)
+        return {"cleared": registry.clear_terminal()}
+
+    @app.get("/api/library")
+    async def list_library_models(request: Request) -> list[dict[str, object]]:
+        library = cast(ModelLibrary, request.app.state.model_library)
+        logical_models = cast(LogicalModelRegistry, request.app.state.logical_model_registry)
+        logical_models.reconcile_discovered(library.discover())
+        logical_models.reconcile_profile_links(
+            tuple(cast(ProfileRegistry, request.app.state.profile_registry).list())
+        )
+        return [
+            {
+                "download_id": model.download_id,
+                "repo_id": model.repo_id,
+                "revision": model.revision,
+                "group_key": model.group_key,
+                "primary_path": str(model.primary_path),
+                "file_count": model.file_count,
+                "total_bytes": model.total_bytes,
+            }
+            for model in library.list()
+        ]
+
+    @app.get("/api/library/logical")
+    async def list_logical_library_models(request: Request) -> list[dict[str, object]]:
+        library = cast(ModelLibrary, request.app.state.model_library)
+        registry = cast(LogicalModelRegistry, request.app.state.logical_model_registry)
+        registry.reconcile_discovered(library.discover())
+        registry.reconcile_profile_links(
+            tuple(cast(ProfileRegistry, request.app.state.profile_registry).list())
+        )
+        return [
+            {
+                "id": model.id,
+                "primary_path": str(model.primary_path),
+                "files": [str(path) for path in model.files],
+                "metadata": model.metadata,
+                "validation_state": model.validation_state,
+                "profile_ids": registry.profile_ids(model.id),
+            }
+            for model in registry.list()
+        ]
+
+    @app.delete("/api/library/logical/{logical_model_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def remove_missing_logical_model(logical_model_id: str, request: Request) -> None:
+        registry = cast(LogicalModelRegistry, request.app.state.logical_model_registry)
+        try:
+            registry.remove_missing(logical_model_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="logical model not found") from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post("/api/library/reconcile")
+    async def reconcile_library(request: Request) -> dict[str, int]:
+        library = cast(ModelLibrary, request.app.state.model_library)
+        registry = cast(LogicalModelRegistry, request.app.state.logical_model_registry)
+        result = library.reconcile()
+        logical = registry.reconcile_discovered(library.discover())
+        registry.reconcile_profile_links(
+            tuple(cast(ProfileRegistry, request.app.state.profile_registry).list())
+        )
+        return {
+            "managed_jobs": result.managed_jobs,
+            "valid_models": result.valid_models,
+            "invalid_jobs": result.invalid_jobs,
+            "stray_gguf_files": result.stray_gguf_files,
+            "logical_models": len(logical),
+            "missing_logical_models": sum(
+                model.validation_state == "missing" for model in logical
+            ),
+            "linked_logical_models": sum(
+                bool(registry.profile_ids(model.id)) for model in logical
+            ),
+        }
+
+    @app.get("/api/library/discover")
+    async def discover_library_models(request: Request) -> list[dict[str, object]]:
+        library = cast(ModelLibrary, request.app.state.model_library)
+        return [
+            {
+                "primary_path": str(model.primary_path),
+                "files": [str(path) for path in model.files],
+                "total_bytes": model.total_bytes,
+                "model_name": model.model_name,
+                "metadata": model.metadata,
+            }
+            for model in library.discover()
+        ]
+
+    @app.post("/api/library/import", status_code=status.HTTP_201_CREATED)
+    async def import_external_model(
+        import_request: ExternalModelImportRequest, request: Request
+    ) -> dict[str, object]:
+        library = cast(ModelLibrary, request.app.state.model_library)
+        candidate = next(
+            (
+                item
+                for item in library.discover()
+                if str(item.primary_path) == import_request.primary_path
+            ),
+            None,
+        )
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="complete external model was not found")
+        profile = ProfileCreateRequest(
+            alias=import_request.alias,
+            runtime_id=import_request.runtime_id,
+            model_path=str(candidate.primary_path),
+            enabled=False,
+        )
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        try:
+            created = registry.create(
+                profile=profile.to_domain(), runtime_id=profile.runtime_id, enabled=False
+            )
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileAliasExistsError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ProfileValidationError as error:
+            raise HTTPException(status_code=422, detail=list(error.errors)) from error
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(created, artifacts)
+
+    @app.delete("/api/library/{download_id}")
+    async def delete_library_model(download_id: str, request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="stop the router before deleting a model artifact",
+            )
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        try:
+            return _download_payload(artifacts.delete(download_id))
+        except DownloadJobNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ModelArtifactError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    @app.post("/api/downloads/{job_id}/redownload")
+    async def redownload_model(job_id: str, request: Request) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="stop the router before re-downloading a model artifact",
+            )
+        coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
+        try:
+            return _download_payload(coordinator.redownload(job_id))
+        except DownloadJobNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    @app.post("/api/downloads", status_code=status.HTTP_201_CREATED)
+    async def create_download(
+        download: DownloadCreateRequest, request: Request
+    ) -> dict[str, object]:
+        hub = cast(Catalog, request.app.state.huggingface_catalog)
+        registry = cast(DownloadRegistry, request.app.state.download_registry)
+        try:
+            manifest = await hub.repository(download.repo_id, revision=download.revision)
+            job = registry.create(
+                manifest,
+                download.group_key,
+                include_projector=download.include_projector,
+            )
+            payload = _download_payload(job)
+            coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
+            coordinator.start(job.id)
+            return payload
+        except HfHubHTTPError as error:
+            raise _hub_error(error) from error
+        except DownloadPlanError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
+
+    @app.post("/api/downloads/{job_id}/cancel")
+    async def cancel_download(job_id: str, request: Request) -> dict[str, object]:
+        coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
+        try:
+            return _download_payload(await coordinator.cancel(job_id))
+        except DownloadJobNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    @app.post("/api/downloads/{job_id}/pause")
+    async def pause_download(job_id: str, request: Request) -> dict[str, object]:
+        coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
+        try:
+            return _download_payload(await coordinator.pause(job_id))
+        except DownloadJobNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    @app.post("/api/downloads/{job_id}/resume")
+    async def resume_download(job_id: str, request: Request) -> dict[str, object]:
+        coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
+        try:
+            return _download_payload(coordinator.resume(job_id))
+        except DownloadJobNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    if packaged_static_dir.is_dir():
+        app.mount("/", StaticFiles(directory=packaged_static_dir, html=True), name="frontend")
+
+    return app
+
+
+app = create_app()
