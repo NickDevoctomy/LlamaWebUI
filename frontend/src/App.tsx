@@ -9,6 +9,7 @@ import {
   Cpu,
   Database,
   Download,
+  FileSearch,
   FolderCog,
   KeyRound,
   Library,
@@ -65,6 +66,7 @@ function formatBytes(bytes: number) {
 
 function App() {
   const [section, setSection] = useState('Dashboard')
+  const [discoveryRepository, setDiscoveryRepository] = useState<string>()
   const [selectedRuntime, setSelectedRuntime] = useState('')
   const [profileSeed, setProfileSeed] = useState<LibraryModel>()
   const queryClient = useQueryClient()
@@ -148,7 +150,10 @@ function App() {
               aria-label={label}
               className={section === label ? 'nav-item active' : 'nav-item'}
               key={label}
-              onClick={() => setSection(label)}
+              onClick={() => {
+                setSection(label)
+                if (label === 'Discover') setDiscoveryRepository(undefined)
+              }}
               type="button"
             >
               <Icon size={17} />
@@ -238,7 +243,8 @@ function App() {
               logicalModels={logicalLibrary.data ?? []}
               profiles={profiles.data ?? []}
               onConfigure={(model) => { setProfileSeed(model); setSection('Profiles') }}
-              onDiscover={() => setSection('Discover')}
+              onDiscover={() => { setDiscoveryRepository(undefined); setSection('Discover') }}
+              onDiscoverRepository={(repoId) => { setDiscoveryRepository(repoId); setSection('Discover') }}
               onRefresh={() => { void refreshModels() }}
               running={running}
             />
@@ -251,7 +257,7 @@ function App() {
           ) : section === 'Access' ? (
             <AccessPanel running={running} tokens={tokens.data ?? []} />
           ) : section === 'Discover' ? (
-            <DiscoverPanel jobs={downloads.data ?? []} library={library.data ?? []} onQueued={() => setSection('Downloads')} />
+            <DiscoverPanel jobs={downloads.data ?? []} library={library.data ?? []} initialRepoId={discoveryRepository} onQueued={() => setSection('Downloads')} />
           ) : section === 'Downloads' ? (
             <DownloadsPanel jobs={downloads.data ?? []} library={library.data ?? []} onCreateProfile={(model) => { setProfileSeed(model); setSection('Profiles') }} />
           ) : (
@@ -284,12 +290,13 @@ function GaugeCard({ label, value, suffix, detail }: { label: string; value: num
   return <div className="gauge-card"><div className="gauge-ring" style={{ '--gauge-value': `${percentage * 3.6}deg` } as React.CSSProperties}><div><strong>{value == null ? '—' : `${value}${suffix}`}</strong><small>{label}</small></div></div>{detail && <span>{detail}</span>}</div>
 }
 
-function ModelsPanel({ models, logicalModels, profiles, onConfigure, onDiscover, onRefresh, running }: {
+function ModelsPanel({ models, logicalModels, profiles, onConfigure, onDiscover, onDiscoverRepository, onRefresh, running }: {
   models: LibraryModel[]
   logicalModels: LogicalModel[]
   profiles: Profile[]
   onConfigure: (model: LibraryModel) => void
   onDiscover: () => void
+  onDiscoverRepository: (repoId: string) => void
   onRefresh: () => void
   running: boolean
 }) {
@@ -365,7 +372,7 @@ function ModelsPanel({ models, logicalModels, profiles, onConfigure, onDiscover,
                   <td>{formatBytes(model.total_bytes)}</td>
                   <td>{model.file_count} {model.file_count === 1 ? 'file' : 'files'}</td>
                   <td className="mono" title={model.revision}>{model.revision.slice(0, 9)}</td>
-                  <td><div className="row-actions">{configured ? <span className="profile-tag">Configured</span> : <button className="button row-button" onClick={() => onConfigure(model)} type="button"><FolderCog size={13} /> Configure</button>}<button aria-label={`Delete ${model.repo_id} ${model.group_key}`} className="icon-button small danger-icon" disabled={running} onClick={() => setDeleting(model)} title="Delete downloaded model" type="button"><Trash2 size={15} /></button></div></td>
+                  <td><div className="row-actions">{configured ? <span className="profile-tag">Configured</span> : <button className="button row-button" onClick={() => onConfigure(model)} type="button"><FolderCog size={13} /> Configure</button>}<button aria-label={`View ${model.repo_id} on Discover`} className="icon-button small" onClick={() => onDiscoverRepository(model.repo_id)} title="View repository quants on Discover" type="button"><FileSearch size={15} /></button><button aria-label={`Delete ${model.repo_id} ${model.group_key}`} className="icon-button small danger-icon" disabled={running} onClick={() => setDeleting(model)} title="Delete downloaded model" type="button"><Trash2 size={15} /></button></div></td>
                 </tr>
               )
             })}

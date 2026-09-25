@@ -257,6 +257,22 @@ describe('App', () => {
     expect(screen.getByLabelText(/Primary GGUF file/i)).toHaveValue(model.primary_path)
   })
 
+  it('opens a downloaded model repository in Discover to inspect available quants', async () => {
+    const model = { download_id: 'download-1', repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), group_key: 'model-Q4_K_M', primary_path: 'E:\\models\\model.gguf', file_count: 1, total_bytes: 1000 }
+    const profile = { id: 'profile-1', alias: 'qwen-test', runtime_id: 'runtime-1', model_path: model.primary_path, configuration: {}, enabled: true }
+    const fetchMock = renderApp({ libraryList: [model], profileList: [profile] })
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
+    fireEvent.click(await screen.findByRole('button', { name: `View ${model.repo_id} on Discover` }))
+
+    expect(await screen.findByRole('heading', { name: 'Hugging Face catalog' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Quantizations' })).toBeInTheDocument()
+    expect(await screen.findByText('Q4_K_M')).toBeInTheDocument()
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      `/api/huggingface/repositories/${model.repo_id}`,
+      expect.anything(),
+    ))
+  })
+
   it('deletes a downloaded model without deleting its profile', async () => {
     const model = { download_id: 'download-1', repo_id: 'owner/Qwen-Test-GGUF', revision: 'a'.repeat(40), group_key: 'Q4/model-Q4', primary_path: 'E:\\models\\model.gguf', file_count: 1, total_bytes: 1000 }
     const profile = { id: 'profile-1', alias: 'qwen-test', runtime_id: 'runtime-1', model_path: model.primary_path, configuration: {}, enabled: true, validation_state: 'available', source_download: { id: model.download_id, repo_id: model.repo_id, revision: model.revision, group_key: model.group_key, file_count: 1, total_bytes: 1000 } }

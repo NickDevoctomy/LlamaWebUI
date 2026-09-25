@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Download, FileArchive, FileCog, Heart, LoaderCircle, Pause, Play, Search, Trash2, X } from 'lucide-react'
-import { FormEvent, Suspense, lazy, useState } from 'react'
+import { FormEvent, Suspense, lazy, useEffect, useState } from 'react'
 import { api, type DownloadJob, type LibraryModel, type ModelSearchResult } from './api'
 
 const MarkdownContent = lazy(() => import('./MarkdownContent').then(({ MarkdownContent }) => ({ default: MarkdownContent })))
@@ -16,9 +16,10 @@ function formatCount(value: number) {
   return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 }
 
-export function DiscoverPanel({ jobs, library, onQueued }: {
+export function DiscoverPanel({ jobs, library, initialRepoId, onQueued }: {
   jobs: DownloadJob[]
   library: LibraryModel[]
+  initialRepoId?: string
   onQueued: () => void
 }) {
   const queryClient = useQueryClient()
@@ -26,6 +27,20 @@ export function DiscoverPanel({ jobs, library, onQueued }: {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState('downloads')
   const [selected, setSelected] = useState<ModelSearchResult | null>(null)
+  useEffect(() => {
+    if (!initialRepoId) return
+    setInput(initialRepoId)
+    setQuery(initialRepoId)
+    setSelected({
+      repo_id: initialRepoId,
+      downloads: 0,
+      likes: 0,
+      last_modified: null,
+      gated: false,
+      private: false,
+      tags: [],
+    })
+  }, [initialRepoId])
   const search = useQuery({
     queryKey: ['huggingface-search', query, sort],
     queryFn: () => api.searchModels(query, sort),
