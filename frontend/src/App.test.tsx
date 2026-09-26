@@ -4,7 +4,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
 const responses: Record<string, unknown> = {
-  '/api/auth/me': { username: 'admin', default_credentials: false },
+  '/api/auth/me': { username: 'admin', default_credentials: false, description: null, role: 'Administrator', privileges: ['auth.read', 'auth.write'] },
+  '/api/auth/users': [{ id: 'admin-1', username: 'admin', description: null, role_id: 'administrator', role: 'Administrator', default_credentials: false }],
+  '/api/auth/roles': [{ id: 'administrator', name: 'Administrator', description: 'Full control', protected: true, privileges: ['auth.read', 'auth.write'], user_count: 1 }],
   '/api/server/status': {
     state: 'stopped',
     pid: null,

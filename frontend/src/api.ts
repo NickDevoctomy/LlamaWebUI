@@ -85,12 +85,27 @@ export interface AccessToken {
 export interface AuthUser {
   username: string
   default_credentials: boolean
+  description: string | null
+  role: string
+  privileges: string[]
 }
 
 export interface ManagedUser {
   id: string
   username: string
   default_credentials: boolean
+  description: string | null
+  role_id: string
+  role: string
+}
+
+export interface ManagedRole {
+  id: string
+  name: string
+  description: string | null
+  protected: boolean
+  privileges: string[]
+  user_count: number
 }
 
 export interface CreatedAccessToken extends AccessToken {
@@ -235,9 +250,20 @@ export const api = {
     body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
   }),
   users: () => request<ManagedUser[]>('/api/auth/users'),
-  createUser: (username: string, password: string) => request<ManagedUser>('/api/auth/users', {
+  roles: () => request<ManagedRole[]>('/api/auth/roles'),
+  createRole: (name: string, description: string, privileges: string[]) => request<ManagedRole>('/api/auth/roles', {
+    method: 'POST', body: JSON.stringify({ name, description: description || null, privileges }),
+  }),
+  updateRole: (id: string, name: string, description: string, privileges: string[]) => request<ManagedRole>(`/api/auth/roles/${id}`, {
+    method: 'PUT', body: JSON.stringify({ name, description: description || null, privileges }),
+  }),
+  deleteRole: (id: string) => request<void>(`/api/auth/roles/${id}`, { method: 'DELETE' }),
+  createUser: (username: string, password: string, description: string, roleId: string) => request<ManagedUser>('/api/auth/users', {
     method: 'POST',
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, description: description || null, role_id: roleId || null }),
+  }),
+  updateUser: (id: string, description: string, roleId: string) => request<ManagedUser>(`/api/auth/users/${id}`, {
+    method: 'PUT', body: JSON.stringify({ description: description || null, role_id: roleId }),
   }),
   serverStatus: () => request<ServerStatus>('/api/server/status'),
   runtimes: () => request<Runtime[]>('/api/runtimes'),

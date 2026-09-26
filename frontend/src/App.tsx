@@ -27,6 +27,8 @@ import {
   TerminalSquare,
   Trash2,
   UserRound,
+  Shield,
+  Pencil,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { AccessPanel } from './AccessPanel'
@@ -45,6 +47,7 @@ const navigation = [
   ['Runtimes', Cpu],
   ['Settings', Settings],
   ['Users', UserRound],
+  ['Roles', Shield],
 ] as const
 
 function stateLabel(value?: string) {
@@ -78,7 +81,7 @@ function App() {
     queryKey: ['auth-user'],
     queryFn: api.currentUser,
     retry: false,
-    placeholderData: { username: '', default_credentials: false },
+    placeholderData: { username: '', default_credentials: false, description: null, role: '', privileges: [] },
   })
   const logout = useMutation({
     mutationFn: api.logout,
@@ -143,6 +146,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
     enabled: authReady && running,
   })
   const users = useQuery({ queryKey: ['users'], queryFn: api.users, enabled: authReady })
+  const roles = useQuery({ queryKey: ['roles'], queryFn: api.roles, enabled: authReady })
   const previousDownloadStates = useRef<Map<string, string> | undefined>(undefined)
 
   useEffect(() => {
@@ -321,7 +325,9 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
           ) : section === 'Settings' ? (
             <AccountPanel user={user} />
           ) : section === 'Users' ? (
-            <UsersPanel users={users.data ?? []} />
+            <UsersPanel users={users.data ?? []} roles={roles.data ?? []} canManage={user.privileges?.includes('auth.write') ?? true} />
+          ) : section === 'Roles' ? (
+            <RolesPanel roles={roles.data ?? []} canManage={user.privileges?.includes('auth.write') ?? true} />
           ) : (
             <CollectionPanel section={section} runtimes={runtimes.data ?? []} profiles={profiles.data ?? []} tokens={tokens.data ?? []} />
           )}
@@ -518,26 +524,57 @@ function AccountPanel({ user }: { user: Awaited<ReturnType<typeof api.currentUse
   </section>
 }
 
-function UsersPanel({ users }: { users: Awaited<ReturnType<typeof api.users>> }) {
+function UsersPanel({ users, roles, canManage }: { users: Awaited<ReturnType<typeof api.users>>; roles: Awaited<ReturnType<typeof api.roles>>; canManage: boolean }) {
   const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<Awaited<ReturnType<typeof api.users>>[number]>()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [description, setDescription] = useState('')
+  const [roleId, setRoleId] = useState('')
   const queryClient = useQueryClient()
   const createUser = useMutation({
-    mutationFn: () => api.createUser(username, password),
+    mutationFn: () => api.createUser(username, password, description, roleId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['users'] })
       setOpen(false)
       setUsername('')
       setPassword('')
+      setDescription('')
+      setRoleId('')
     },
   })
+  const updateUser = useMutation({
+    mutationFn: () => api.updateUser(editing!.id, description, roleId),
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['users'] }); setEditing(undefined) },
+  })
+  const openCreate = () => { setRoleId(roles.find((role) => role.name === 'Administrator')?.id ?? roles[0]?.id ?? ''); setOpen(true) }
+  const openEdit = (user: typeof editing) => { setEditing(user); setDescription(user?.description ?? ''); setRoleId(user?.role_id ?? '') }
   return <section className="data-panel">
-    <div className="panel-heading"><div><h2>Users</h2><p>All accounts currently have administrator access.</p></div><button className="button primary compact" onClick={() => setOpen(true)} type="button"><UserRound size={14} /> Add user</button></div>
-    <div className="record-list">{users.map((managedUser) => <div className="record-row" key={managedUser.id}><span className="record-icon"><UserRound size={17} /></span><div className="record-copy"><strong>{managedUser.username}</strong><span>{managedUser.default_credentials ? 'Default credentials active' : 'Administrator'}</span></div><span className="profile-tag">Admin</span></div>)}</div>
+    <div className="panel-heading"><div><h2>Users</h2><p>Control-plane accounts and assigned roles.</p></div><button className="button primary compact" disabled={!canManage} onClick={openCreate} type="button"><UserRound size={14} /> Add user</button></div>
+    <div className="record-list">{users.map((managedUser) => <div className="record-row" key={managedUser.id}><span className="record-icon"><UserRound size={17} /></span><div className="record-copy"><strong>{managedUser.username}</strong><span>{managedUser.description || 'No description'}</span></div><span className="profile-tag">{managedUser.role}</span><button className="icon-button small" disabled={!canManage} aria-label={`Edit ${managedUser.username}`} onClick={() => openEdit(managedUser)} type="button"><Pencil size={14} /></button></div>)}</div>
     {!users.length && <div className="empty"><UserRound size={28} /><strong>No users found</strong><span>The account list is unavailable or empty.</span></div>}
-    <div className="panel-footer"><span>{users.length} account(s)</span><span>Roles and permissions are not yet separated.</span></div>
-    {open && <Dialog title="Add administrator" description="Create another account with full control-plane access." onClose={() => setOpen(false)}><form className="form-body" onSubmit={(event) => { event.preventDefault(); createUser.mutate() }}><label className="form-field"><span>Username</span><input autoFocus autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></label><label className="form-field"><span>Temporary password</span><input autoComplete="new-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /><small>The user can sign in immediately. Password reset management will be added with role separation.</small></label>{createUser.error && <div className="form-error"><AlertCircle size={15} /> {createUser.error.message}</div>}<footer className="dialog-actions"><button className="button secondary" onClick={() => setOpen(false)} type="button">Cancel</button><button className="button primary" disabled={createUser.isPending || username.trim().length < 1 || password.length < 8} type="submit">{createUser.isPending ? <LoaderCircle className="spin" size={15} /> : <UserRound size={15} />} Add administrator</button></footer></form></Dialog>}
+    <div className="panel-footer"><span>{users.length} account(s)</span><span>Descriptions and role assignments are editable.</span></div>
+    {open && <Dialog title="Add user" description="Create a control-plane account with a selected role." onClose={() => setOpen(false)}><form className="form-body" onSubmit={(event) => { event.preventDefault(); createUser.mutate() }}><label className="form-field"><span>Username</span><input autoFocus autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></label><label className="form-field"><span>Temporary password</span><input autoComplete="new-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label><label className="form-field"><span>Description <small>(optional)</small></span><input value={description} onChange={(event) => setDescription(event.target.value)} /></label><label className="form-field"><span>Role</span><select value={roleId} onChange={(event) => setRoleId(event.target.value)}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>{createUser.error && <div className="form-error"><AlertCircle size={15} /> {createUser.error.message}</div>}<footer className="dialog-actions"><button className="button secondary" onClick={() => setOpen(false)} type="button">Cancel</button><button className="button primary" disabled={createUser.isPending || !roleId || username.trim().length < 1 || password.length < 8} type="submit">{createUser.isPending ? <LoaderCircle className="spin" size={15} /> : <UserRound size={15} />} Add user</button></footer></form></Dialog>}
+    {editing && <Dialog title={`Edit ${editing.username}`} description="Update the account description and role." onClose={() => setEditing(undefined)}><form className="form-body" onSubmit={(event) => { event.preventDefault(); updateUser.mutate() }}><label className="form-field"><span>Description <small>(optional)</small></span><input autoFocus value={description} onChange={(event) => setDescription(event.target.value)} /></label><label className="form-field"><span>Role</span><select value={roleId} onChange={(event) => setRoleId(event.target.value)}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>{updateUser.error && <div className="form-error"><AlertCircle size={15} /> {updateUser.error.message}</div>}<footer className="dialog-actions"><button className="button secondary" onClick={() => setEditing(undefined)} type="button">Cancel</button><button className="button primary" disabled={updateUser.isPending || !roleId} type="submit">{updateUser.isPending ? <LoaderCircle className="spin" size={15} /> : <Pencil size={15} />} Save user</button></footer></form></Dialog>}
+  </section>
+}
+
+function RolesPanel({ roles, canManage }: { roles: Awaited<ReturnType<typeof api.roles>>; canManage: boolean }) {
+  const [editing, setEditing] = useState<Awaited<ReturnType<typeof api.roles>>[number]>()
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [privileges, setPrivileges] = useState<string[]>([])
+  const queryClient = useQueryClient()
+  const save = useMutation({ mutationFn: () => editing ? api.updateRole(editing.id, name, description, privileges) : api.createRole(name, description, privileges), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['roles'] }); setOpen(false); setEditing(undefined) } })
+  const remove = useMutation({ mutationFn: (id: string) => api.deleteRole(id), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['roles'] }) })
+  const allPrivileges = ['auth.read', 'auth.write', 'server.read', 'server.write', 'tokens.read', 'tokens.write', 'runtimes.read', 'runtimes.write', 'profiles.read', 'profiles.write', 'huggingface.read', 'huggingface.write', 'downloads.read', 'downloads.write', 'library.read', 'library.write', 'diagnostics.read', 'diagnostics.write', 'integrations.read', 'integrations.write', 'settings.read', 'settings.write']
+  const begin = (role?: typeof editing) => { setEditing(role); setName(role?.name ?? ''); setDescription(role?.description ?? ''); setPrivileges(role?.privileges ?? []); setOpen(true) }
+  return <section className="data-panel">
+    <div className="panel-heading"><div><h2>Roles</h2><p>Assign separate read and write privileges to control-plane accounts.</p></div><button className="button primary compact" disabled={!canManage} onClick={() => begin()} type="button"><Shield size={14} /> Add role</button></div>
+    <div className="record-list">{roles.map((role) => <div className="record-row" key={role.id}><span className="record-icon"><Shield size={17} /></span><div className="record-copy"><strong>{role.name}</strong><span>{role.description || 'No description'} · {role.user_count} user(s)</span></div><span className="profile-tag">{role.protected ? 'Protected' : `${role.privileges.length} privileges`}</span>{!role.protected && <><button className="icon-button small" disabled={!canManage} aria-label={`Edit ${role.name}`} onClick={() => begin(role)} type="button"><Pencil size={14} /></button><button className="icon-button small danger-icon" disabled={!canManage} aria-label={`Delete ${role.name}`} onClick={() => { if (window.confirm(`Delete role ${role.name}?`)) remove.mutate(role.id) }} type="button"><Trash2 size={14} /></button></>}</div>)}</div>
+    {!roles.length && <div className="empty"><Shield size={28} /><strong>No roles found</strong><span>The protected Administrator role should be present.</span></div>}
+    {open && <Dialog title={editing ? `Edit ${editing.name}` : 'Add role'} description="Choose the control-plane read and write privileges for this role." onClose={() => setOpen(false)}><form className="form-body" onSubmit={(event) => { event.preventDefault(); save.mutate() }}><label className="form-field"><span>Name</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label><label className="form-field"><span>Description <small>(optional)</small></span><input value={description} onChange={(event) => setDescription(event.target.value)} /></label><div className="privilege-grid">{allPrivileges.map((privilege) => <label className="check-row" key={privilege}><input type="checkbox" checked={privileges.includes(privilege)} onChange={(event) => setPrivileges(event.target.checked ? [...privileges, privilege] : privileges.filter((item) => item !== privilege))} /><span>{privilege}</span></label>)}</div>{save.error && <div className="form-error"><AlertCircle size={15} /> {save.error.message}</div>}<footer className="dialog-actions"><button className="button secondary" onClick={() => setOpen(false)} type="button">Cancel</button><button className="button primary" disabled={save.isPending || !name.trim()} type="submit">{save.isPending ? <LoaderCircle className="spin" size={15} /> : <Shield size={15} />} Save role</button></footer></form></Dialog>}
   </section>
 }
 
