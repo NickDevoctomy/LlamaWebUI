@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
 const responses: Record<string, unknown> = {
+  '/api/auth/me': { username: 'admin', default_credentials: false },
   '/api/server/status': {
     state: 'stopped',
     pid: null,
@@ -83,7 +84,9 @@ function renderApp({
               ? libraryList
             : path === '/api/library/logical'
               ? logicalLibraryList
-          : path === '/api/server/status'
+            : path === '/api/auth/me'
+              ? responses['/api/auth/me']
+            : path === '/api/server/status'
             ? serverStatus
             : path === '/api/huggingface/models'
               ? [{ repo_id: 'owner/model-GGUF', downloads: 1200, likes: 42, last_modified: '2026-09-19T00:00:00Z', gated: false, private: false, tags: ['gguf', 'qwen'] }]
@@ -283,7 +286,7 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: 'Delete downloaded model?' })).toBeInTheDocument()
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete model' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/library/download-1', { method: 'DELETE' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/library/download-1', expect.objectContaining({ method: 'DELETE' })))
     expect(fetchMock).not.toHaveBeenCalledWith('/api/profiles/profile-1', expect.anything())
   })
 
@@ -296,11 +299,11 @@ describe('App', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Broken' }))
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Re-download' }))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/download-1/redownload', { method: 'POST' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/download-1/redownload', expect.objectContaining({ method: 'POST' })))
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete profile qwen-test' }))
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete profile' }))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/profiles/profile-1', { method: 'DELETE' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/profiles/profile-1', expect.objectContaining({ method: 'DELETE' })))
   })
 
   it('registers and probes a local runtime', async () => {
@@ -372,7 +375,7 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: 'Revoke access key?' })).toBeInTheDocument()
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Revoke key' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/tokens/token-1', { method: 'DELETE' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/tokens/token-1', expect.objectContaining({ method: 'DELETE' })))
   })
 
   it('shows live OpenCode configuration without embedding a token', async () => {
@@ -482,7 +485,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Downloads' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Resume owner/model-GGUF' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/download-1/resume', { method: 'POST' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/download-1/resume', expect.objectContaining({ method: 'POST' })))
   })
 
   it('clears completed and cancelled download jobs', async () => {
@@ -493,7 +496,7 @@ describe('App', () => {
     await waitFor(() => expect(clearButton).toBeEnabled())
     fireEvent.click(clearButton)
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/terminal', { method: 'DELETE' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/terminal', expect.objectContaining({ method: 'DELETE' })))
   })
 
   it('prefills a profile from a validated completed download', async () => {

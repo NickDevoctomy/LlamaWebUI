@@ -14,6 +14,7 @@ import {
   KeyRound,
   Library,
   LoaderCircle,
+  LogOut,
   Play,
   RefreshCw,
   RotateCcw,
@@ -21,9 +22,11 @@ import {
   Server,
   Settings,
   ShieldCheck,
+  ShieldAlert,
   Square,
   TerminalSquare,
   Trash2,
+  UserRound,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { AccessPanel } from './AccessPanel'
@@ -70,26 +73,73 @@ function App() {
   const [selectedRuntime, setSelectedRuntime] = useState('')
   const [profileSeed, setProfileSeed] = useState<LibraryModel>()
   const queryClient = useQueryClient()
+  const auth = useQuery({
+    queryKey: ['auth-user'],
+    queryFn: api.currentUser,
+    retry: false,
+    placeholderData: { username: '', default_credentials: false },
+  })
+  const logout = useMutation({
+    mutationFn: api.logout,
+    onSuccess: () => { queryClient.setQueryData(['auth-user'], undefined) },
+  })
+  if (auth.isError) {
+    const authError = auth.error as Error & { status?: number }
+    if (authError.status === 401) return <LoginScreen onLoggedIn={(user) => queryClient.setQueryData(['auth-user'], user)} />
+    return <div className="auth-state"><AlertCircle size={20} /> Unable to check the control-plane session: {auth.error.message}</div>
+  }
+  return <AuthenticatedApp user={auth.data!} authReady={!auth.isPlaceholderData} onLogout={() => logout.mutate()} loggingOut={logout.isPending} />
+}
+
+function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: Awaited<ReturnType<typeof api.currentUser>>) => void }) {
+  const [username, setUsername] = useState('admin')
+  const [password, setPassword] = useState('')
+  const login = useMutation({ mutationFn: () => api.login(username, password), onSuccess: onLoggedIn })
+  return <main className="auth-shell">
+    <section className="auth-panel">
+      <div className="brand auth-brand"><div className="brand-mark"><Command size={17} strokeWidth={2.4} /></div><div><strong>Llama</strong><span>CONTROL</span></div></div>
+      <p className="eyebrow">Local control plane</p>
+      <h1>Sign in</h1>
+      <p className="auth-copy">Authenticate to manage runtimes, model profiles, downloads, and access keys.</p>
+      <form className="form-body auth-form" onSubmit={(event) => { event.preventDefault(); login.mutate() }}>
+        <label className="form-field"><span>Username</span><input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></label>
+        <label className="form-field"><span>Password</span><input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        {login.error && <div className="form-error"><AlertCircle size={15} /> {login.error.message}</div>}
+        <button className="button primary" disabled={login.isPending || !username || !password} type="submit">{login.isPending ? <LoaderCircle className="spin" size={15} /> : <ShieldCheck size={15} />} Sign in</button>
+      </form>
+      <p className="auth-footnote">Default local credentials: <span className="mono">admin / admin</span></p>
+    </section>
+  </main>
+}
+
+function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awaited<ReturnType<typeof api.currentUser>>; authReady: boolean; onLogout: () => void; loggingOut: boolean }) {
+  const [section, setSection] = useState('Dashboard')
+  const [discoveryRepository, setDiscoveryRepository] = useState<string>()
+  const [selectedRuntime, setSelectedRuntime] = useState('')
+  const [profileSeed, setProfileSeed] = useState<LibraryModel>()
+  const queryClient = useQueryClient()
   const status = useQuery({
     queryKey: ['server'],
     queryFn: api.serverStatus,
+    enabled: authReady,
     refetchInterval: (query) => query.state.data?.state === 'ready' ? 2000 : false,
   })
-  const runtimes = useQuery({ queryKey: ['runtimes'], queryFn: api.runtimes })
-  const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles })
-  const tokens = useQuery({ queryKey: ['tokens'], queryFn: api.tokens })
+  const runtimes = useQuery({ queryKey: ['runtimes'], queryFn: api.runtimes, enabled: authReady })
+  const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles, enabled: authReady })
+  const tokens = useQuery({ queryKey: ['tokens'], queryFn: api.tokens, enabled: authReady })
   const downloads = useQuery({
     queryKey: ['downloads'],
     queryFn: api.downloads,
+    enabled: authReady,
     refetchInterval: (query) => query.state.data?.some((job) => ['queued', 'downloading'].includes(job.state)) ? 2000 : false,
   })
-  const library = useQuery({ queryKey: ['library'], queryFn: api.library, refetchInterval: 5000 })
-  const logicalLibrary = useQuery({ queryKey: ['logical-library'], queryFn: api.logicalLibrary, refetchInterval: 5000 })
+  const library = useQuery({ queryKey: ['library'], queryFn: api.library, enabled: authReady, refetchInterval: 5000 })
+  const logicalLibrary = useQuery({ queryKey: ['logical-library'], queryFn: api.logicalLibrary, enabled: authReady, refetchInterval: 5000 })
   const running = status.data?.state === 'ready' || status.data?.state === 'degraded'
   const models = useQuery({
     queryKey: ['models'],
     queryFn: api.models,
-    enabled: running,
+    enabled: authReady && running,
   })
   const previousDownloadStates = useRef<Map<string, string> | undefined>(undefined)
 
@@ -163,6 +213,11 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-foot">
+          <div className="sidebar-user">
+            <UserRound size={15} />
+            <div><strong>{user.username}</strong>{user.default_credentials && <span className="default-warning">Default password active</span>}</div>
+            <button aria-label="Log out" className="icon-button small sidebar-logout" disabled={loggingOut} onClick={onLogout} title="Log out" type="button"><LogOut size={15} /></button>
+          </div>
           <div className="local-badge"><ShieldCheck size={15} /> Local control plane</div>
           <span>v0.1 alpha</span>
         </div>
@@ -260,6 +315,8 @@ function App() {
             <DiscoverPanel jobs={downloads.data ?? []} library={library.data ?? []} initialRepoId={discoveryRepository} onQueued={() => setSection('Downloads')} />
           ) : section === 'Downloads' ? (
             <DownloadsPanel jobs={downloads.data ?? []} library={library.data ?? []} onCreateProfile={(model) => { setProfileSeed(model); setSection('Profiles') }} />
+          ) : section === 'Settings' ? (
+            <AccountPanel user={user} />
           ) : (
             <CollectionPanel section={section} runtimes={runtimes.data ?? []} profiles={profiles.data ?? []} tokens={tokens.data ?? []} />
           )}
@@ -422,6 +479,38 @@ function CollectionPanel({ section, runtimes, profiles, tokens }: {
         ? tokens.map((item) => ({ title: item.name, meta: `Key ending ${item.last_four}`, state: item.enabled ? 'Active' : 'Revoked' }))
         : []
   return <section className="data-panel"><div className="panel-heading"><div><h2>{section}</h2><p>Local control-plane records and configuration.</p></div></div>{items.length ? <div className="collection">{items.map((item) => <div className="collection-row" key={`${item.title}-${item.meta}`}><div><strong>{item.title}</strong><span>{item.meta}</span></div><span className="profile-tag">{item.state}</span></div>)}</div> : <div className="empty"><Database size={28} /><strong>No {section.toLowerCase()} to show</strong><span>This workspace will populate as items are configured.</span></div>}</section>
+}
+
+function AccountPanel({ user }: { user: Awaited<ReturnType<typeof api.currentUser>> }) {
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmation, setConfirmation] = useState('')
+  const changePassword = useMutation({
+    mutationFn: () => api.changePassword(currentPassword, newPassword),
+    onSuccess: () => {
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmation('Password changed. Other sessions have been signed out.')
+    },
+  })
+  const valid = currentPassword.length > 0 && newPassword.length >= 8 && newPassword === confirmation
+  return <section className="settings-grid">
+    <section className="data-panel account-panel">
+      <div className="panel-heading"><div><h2>Account</h2><p>Manage the signed-in control-plane administrator.</p></div><UserRound size={20} /></div>
+      <div className="account-summary"><span className="metric-icon"><UserRound size={18} /></span><div><small>Signed in as</small><strong>{user.username}</strong></div>{user.default_credentials && <span className="profile-tag warning-tag">Default password active</span>}</div>
+      {user.default_credentials && <div className="inline-notice"><ShieldAlert size={15} /> Change the default password before exposing the control plane beyond this local machine.</div>}
+      <form className="form-body" onSubmit={(event) => { event.preventDefault(); changePassword.mutate() }}>
+        <label className="form-field"><span>Current password</span><input autoComplete="current-password" type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
+        <label className="form-field"><span>New password</span><input autoComplete="new-password" type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /><small>Use at least 8 characters. Existing passwords are never displayed.</small></label>
+        <label className="form-field"><span>Confirm new password</span><input autoComplete="new-password" type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} aria-invalid={confirmation.length > 0 && confirmation !== newPassword} /></label>
+        {changePassword.error && <div className="form-error"><AlertCircle size={15} /> {changePassword.error.message}</div>}
+        {confirmation && <div className={confirmation === newPassword ? 'form-success' : 'form-error'}>{confirmation === newPassword ? 'Passwords match.' : 'Passwords do not match.'}</div>}
+        {changePassword.isSuccess && <div className="form-success">{changePassword.data.changed ? 'Password changed successfully.' : ''}</div>}
+        <button className="button primary" disabled={!valid || changePassword.isPending} type="submit">{changePassword.isPending ? <LoaderCircle className="spin" size={15} /> : <ShieldCheck size={15} />} Change password</button>
+      </form>
+      {changePassword.isSuccess && <div className="panel-footer"><span>{confirmation}</span></div>}
+    </section>
+  </section>
 }
 
 export default App

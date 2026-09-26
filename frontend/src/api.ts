@@ -82,6 +82,11 @@ export interface AccessToken {
   created_at: string
 }
 
+export interface AuthUser {
+  username: string
+  default_credentials: boolean
+}
+
 export interface CreatedAccessToken extends AccessToken {
   token: string
 }
@@ -190,20 +195,39 @@ export interface ProfileCreate {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = init?.method?.toUpperCase() ?? 'GET'
+  const stateChanging = !['GET', 'HEAD', 'OPTIONS'].includes(method)
   const response = await fetch(path, {
     ...init,
-    headers: init?.body ? { 'Content-Type': 'application/json', ...init.headers } : init?.headers,
+    credentials: 'same-origin',
+    headers: {
+      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(stateChanging ? { 'X-Requested-With': 'LlamaWebUI' } : {}),
+      ...init?.headers,
+    },
   })
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null
     const detail = typeof payload?.detail === 'string' ? payload.detail : response.statusText
-    throw new Error(detail || 'Request failed')
+    const error = new Error(detail || 'Request failed') as Error & { status?: number }
+    error.status = response.status
+    throw error
   }
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
 }
 
 export const api = {
+  currentUser: () => request<AuthUser>('/api/auth/me'),
+  login: (username: string, password: string) => request<AuthUser>('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  }),
+  logout: () => request<{ logged_out: boolean }>('/api/auth/logout', { method: 'POST' }),
+  changePassword: (currentPassword: string, newPassword: string) => request<{ changed: boolean }>('/api/auth/password', {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  }),
   serverStatus: () => request<ServerStatus>('/api/server/status'),
   runtimes: () => request<Runtime[]>('/api/runtimes'),
   reprobeRuntime: (runtimeId: string) => request<Runtime>(`/api/runtimes/${runtimeId}/probe`, { method: 'POST' }),
