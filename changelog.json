@@ -1,0 +1,14 @@
+{
+  "versions": [
+    {
+      "version": "0.1.0",
+      "release_date": "2026-09-26",
+      "changes": [
+        {
+          "type": "feat",
+          "description": "First release of LlamaWebUI."
+        }
+      ]
+    }
+  ]
+}

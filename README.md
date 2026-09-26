@@ -277,6 +277,33 @@ Updates replace package files only after the application is stopped. Runtime
 upgrades remain explicit registration/install operations; an application update
 must never silently replace an installed or in-use llama.cpp runtime.
 
+## Publish a GitHub release
+
+Releases are tag-driven. Update `changelog.json` first, adding exactly one
+entry whose `version` matches the tag without the leading `v`, then commit and
+push the tag from `main`:
+
+```powershell
+git switch main
+git pull --ff-only
+# Edit changelog.json and set the release date and typed changes.
+git add changelog.json
+git commit -m "docs: prepare release v0.1.0"
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin main --follow-tags
+```
+
+The `Release` workflow checks out the tag, runs the complete quality gates,
+builds the Windows one-folder package, creates
+`llamawebui-v0.1.0-windows-x64.zip`, generates release notes from the matching
+`changelog.json` entry, and publishes the GitHub release. The package contains
+the application only; user data, models, access keys, backups, and registered
+runtimes remain external.
+
+To rerun a release workflow manually, use **Actions → Release → Run workflow**
+and provide an existing version tag. The workflow requires exactly one matching
+changelog version entry and will not publish a release for an undocumented tag.
+
 ## Operator checklist
 
 ### First run

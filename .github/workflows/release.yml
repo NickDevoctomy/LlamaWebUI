@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag to package, for example v0.1.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-release:
+    name: Windows package and GitHub release
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CI: true
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: python -m pip install -e ".[dev]"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run release quality gates
+        shell: pwsh
+        run: |
+          Push-Location frontend
+          npm test
+          npm run build
+          Pop-Location
+          Push-Location backend
+          python -m pytest
+          python -m ruff check .
+          python -m mypy src/llamawebui
+          Pop-Location
+
+      - name: Validate tag changelog entry
+        shell: pwsh
+        run: |
+          $tag = '${{ inputs.tag || github.ref_name }}'
+          python packaging/generate-release-notes.py --tag $tag --output release-notes.md
+
+      - name: Build Windows one-folder package
+        shell: pwsh
+        run: .\packaging\build-windows.ps1 -Output dist
+
+      - name: Create package archive
+        shell: pwsh
+        run: Compress-Archive -Path dist\llamawebui -DestinationPath llamawebui-${{ inputs.tag || github.ref_name }}-windows-x64.zip
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = '${{ inputs.tag || github.ref_name }}'
+          gh release create $tag llamawebui-$tag-windows-x64.zip --title "LlamaWebUI $tag" --notes-file release-notes.md --verify-tag
