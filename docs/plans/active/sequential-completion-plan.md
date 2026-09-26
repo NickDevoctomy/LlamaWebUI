@@ -228,7 +228,7 @@ The baseline contains known stale statements in older planning documents. This p
 
 ## Phase 6 — Tokens and client onboarding completion
 
-**Status:** In progress — Phases 0–5 are gated; slice 6.1 is the current next action.
+**Status:** In progress — slices 6.1–6.2 passed; slice 6.3 is the current next action.
 
 ### 6.1 Authenticated connection tests
 
@@ -239,7 +239,7 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### 6.2 Live authenticated acceptance
 
-**Status:** In progress — begin after slice 6.1 passed.
+**Status:** Complete — live evidence is recorded in `notes/0019-phase-6-2-live-authenticated-acceptance.md`.
 
 - With an existing validated model/profile and registered runtime:
   - Create a token and use it for authenticated model listing.
@@ -252,7 +252,7 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### 6.3 Onboarding documentation
 
-**Status:** Not started — begin only after slice 6.2 passes.
+**Status:** In progress — begin after slice 6.2 passed.
 
 - Verify generated OpenCode/curl/OpenAI SDK configuration examples contain only placeholders, not raw secrets.
 - Document restart requirements and local-only control-plane behavior.
@@ -319,4 +319,4 @@ Release is complete only when every phase gate above is checked and the followin
 - No required acceptance step depends on the 93.7 GB routine-download target.
 - A suggested release commit/tag message is recorded.
 
-**Current next action:** Begin Phase 6.2 — live authenticated acceptance. Do not begin Phase 6.3 until the live authenticated acceptance gate passes.
+**Current next action:** Begin Phase 6.3 — onboarding documentation. Do not begin Phase 7 until the Phase 6 gate passes.
