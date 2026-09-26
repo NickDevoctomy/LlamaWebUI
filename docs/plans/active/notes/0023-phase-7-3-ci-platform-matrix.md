@@ -5,14 +5,14 @@
 
 ## Implementation
 
-- Updated `.github/workflows/ci.yml` to run the existing frontend/backend quality workflow on a matrix of `ubuntu-latest` and `windows-latest`.
-- Kept macOS out of the matrix because the project does not support macOS builds, per the release scope.
+- Updated `.github/workflows/ci.yml` to run the existing frontend/backend quality workflow on a matrix of `ubuntu-latest`, `windows-latest`, and `macos-latest`.
+- macOS is validated only by GitHub Actions; this development machine cannot execute the macOS job locally.
 - Preserved dependency caching, frontend tests/build, backend pytest/coverage, Ruff, and mypy steps on both operating systems.
 - No live model downloads, runtime installation, tokens, or llama-server processes were added to CI.
 
 ## Validation
 
-- Matrix definition checked for both `ubuntu-latest` and `windows-latest`; no macOS runner configured.
+- Matrix definition checked for `ubuntu-latest`, `windows-latest`, and `macos-latest`.
 - Local frontend tests: **27 passed**.
 - Local frontend production build: passed.
 - Local backend tests: **294 passed, 1 skipped**.
