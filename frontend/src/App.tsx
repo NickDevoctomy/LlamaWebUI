@@ -200,6 +200,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
           {navigation.map(([label, Icon]) => (
             <button
               aria-label={label}
+              aria-current={section === label ? 'page' : undefined}
               className={section === label ? 'nav-item active' : 'nav-item'}
               key={label}
               onClick={() => {
