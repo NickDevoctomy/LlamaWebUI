@@ -228,7 +228,7 @@ The baseline contains known stale statements in older planning documents. This p
 
 ## Phase 6 — Tokens and client onboarding completion
 
-**Status:** In progress — slices 6.1–6.2 passed; slice 6.3 is the current next action.
+**Status:** Complete — slices 6.1–6.3 and the Phase 6 gate pass. Start Phase 7 only after this gate.
 
 ### 6.1 Authenticated connection tests
 
@@ -252,19 +252,19 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### 6.3 Onboarding documentation
 
-**Status:** In progress — begin after slice 6.2 passed.
+**Status:** Complete — evidence is recorded in `notes/0020-phase-6-3-onboarding-documentation.md`.
 
 - Verify generated OpenCode/curl/OpenAI SDK configuration examples contain only placeholders, not raw secrets.
 - Document restart requirements and local-only control-plane behavior.
 
 ### Phase 6 gate
 
-- [ ] Valid token succeeds.
-- [ ] Random token fails with 401.
-- [ ] Non-streaming and streaming visible output succeed.
-- [ ] Tool-call response is parseable.
-- [ ] Revoked token fails after the confirmed restart/reload behavior.
-- [ ] Onboarding documentation is updated.
+- [x] Valid token succeeds.
+- [x] Random token fails with 401.
+- [x] Non-streaming and streaming visible output succeed.
+- [x] Tool-call response is parseable.
+- [x] Revoked token fails after the confirmed restart/reload behavior.
+- [x] Onboarding documentation is updated.
 
 ## Phase 7 — Hardening and release
 
@@ -319,4 +319,4 @@ Release is complete only when every phase gate above is checked and the followin
 - No required acceptance step depends on the 93.7 GB routine-download target.
 - A suggested release commit/tag message is recorded.
 
-**Current next action:** Begin Phase 6.3 — onboarding documentation. Do not begin Phase 7 until the Phase 6 gate passes.
+**Current next action:** Begin Phase 7.1 — backup and restore. Do not begin Phase 7.2 until the backup/restore gate passes.

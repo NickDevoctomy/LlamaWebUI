@@ -203,6 +203,60 @@ opencode
 
 For a remote client, use the router host address and the model alias returned by `/v1/models`, not a local GGUF filesystem path.
 
+## Connect with curl or an OpenAI-compatible SDK
+
+The managed router exposes the native OpenAI-compatible API directly. Keep the
+access key in an environment variable and never place the raw value in a
+script, configuration file, screenshot, or committed command history.
+
+```powershell
+$env:LLAMA_WEB_UI_API_KEY = 'YOUR_ACCESS_TOKEN'
+$headers = @{ Authorization = "Bearer $env:LLAMA_WEB_UI_API_KEY" }
+
+Invoke-RestMethod `
+  http://127.0.0.1:1234/v1/models `
+  -Headers $headers
+```
+
+For an OpenAI-compatible Python client, use the router's `/v1` base URL and a
+placeholder environment lookup:
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(
+   base_url="http://127.0.0.1:1234/v1",
+   api_key=os.environ["LLAMA_WEB_UI_API_KEY"],
+)
+response = client.chat.completions.create(
+   model="MODEL_ALIAS_FROM_V1_MODELS",
+   messages=[{"role": "user", "content": "Reply with exactly HELLO_WORLD."}],
+   max_tokens=64,
+)
+print(response.choices[0].message.content)
+```
+
+Replace only the model alias placeholder with an ID returned by `GET /v1/models`.
+Do not use a local GGUF path as the API model name.
+
+## Access-key lifecycle and restart behavior
+
+1. Create an access key in the **Access** view and copy it once. The raw key is
+  shown only at creation time.
+2. Set `LLAMA_WEB_UI_API_KEY` in the process environment used by curl,
+  OpenCode, or the SDK.
+3. Start or restart the managed router after creating or revoking keys. The
+  native `llama-server` process reads the generated key file at startup; it
+  does not reload in-place key-file changes.
+4. Revoke the key in **Access**, stop/restart the router as required, and verify
+  clients receive HTTP 401. Never print the key while testing revocation.
+
+The control plane is local-first and defaults to loopback. If either service is
+bound beyond loopback, place it behind HTTPS and a trusted network boundary;
+credentials and session cookies must not travel over plain HTTP. Do not expose
+the native router or control plane to an untrusted network.
+
 ## Test and quality checks
 
 Run backend checks from `backend/`:
