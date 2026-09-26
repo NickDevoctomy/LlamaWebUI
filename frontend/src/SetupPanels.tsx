@@ -15,7 +15,7 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import { type ChangeEvent, type FormEvent, useEffect, useState } from 'react'
+import { type ChangeEvent, type FormEvent, useEffect, useId, useState } from 'react'
 import { api, type LibraryModel, type Profile, type ProfileCreate, type Runtime, type RuntimeRelease } from './api'
 
 function optionalNumber(value: string) {
@@ -60,13 +60,16 @@ export function Dialog({ title, description, onClose, children }: {
   onClose: () => void
   children: React.ReactNode
 }) {
+  const dialogId = useId()
+  const titleId = `${dialogId}-title`
+  const descriptionId = `${dialogId}-description`
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose()
     }}>
-      <section aria-describedby="dialog-description" aria-labelledby="dialog-title" aria-modal="true" className="dialog" role="dialog">
+      <section aria-describedby={descriptionId} aria-labelledby={titleId} aria-modal="true" className="dialog" role="dialog">
         <header className="dialog-header">
-          <div><p className="eyebrow">Configuration</p><h2 id="dialog-title">{title}</h2><p id="dialog-description">{description}</p></div>
+          <div><p className="eyebrow">Configuration</p><h2 id={titleId}>{title}</h2><p id={descriptionId}>{description}</p></div>
           <button aria-label="Close" className="icon-button" onClick={onClose} type="button"><X size={18} /></button>
         </header>
         {children}

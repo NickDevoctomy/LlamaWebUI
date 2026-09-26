@@ -9,10 +9,12 @@ import {
   Cpu,
   Database,
   Download,
+  FileSearch,
   FolderCog,
   KeyRound,
   Library,
   LoaderCircle,
+  LogOut,
   Play,
   RefreshCw,
   RotateCcw,
@@ -20,9 +22,11 @@ import {
   Server,
   Settings,
   ShieldCheck,
+  ShieldAlert,
   Square,
   TerminalSquare,
   Trash2,
+  UserRound,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { AccessPanel } from './AccessPanel'
@@ -40,6 +44,7 @@ const navigation = [
   ['Access', KeyRound],
   ['Runtimes', Cpu],
   ['Settings', Settings],
+  ['Users', UserRound],
 ] as const
 
 function stateLabel(value?: string) {
@@ -65,30 +70,79 @@ function formatBytes(bytes: number) {
 
 function App() {
   const [section, setSection] = useState('Dashboard')
+  const [discoveryRepository, setDiscoveryRepository] = useState<string>()
+  const [selectedRuntime, setSelectedRuntime] = useState('')
+  const [profileSeed, setProfileSeed] = useState<LibraryModel>()
+  const queryClient = useQueryClient()
+  const auth = useQuery({
+    queryKey: ['auth-user'],
+    queryFn: api.currentUser,
+    retry: false,
+    placeholderData: { username: '', default_credentials: false },
+  })
+  const logout = useMutation({
+    mutationFn: api.logout,
+    onSuccess: () => { queryClient.setQueryData(['auth-user'], undefined) },
+  })
+  if (auth.isError) {
+    const authError = auth.error as Error & { status?: number }
+    if (authError.status === 401) return <LoginScreen onLoggedIn={(user) => queryClient.setQueryData(['auth-user'], user)} />
+    return <div className="auth-state"><AlertCircle size={20} /> Unable to check the control-plane session: {auth.error.message}</div>
+  }
+  return <AuthenticatedApp user={auth.data!} authReady={!auth.isPlaceholderData} onLogout={() => logout.mutate()} loggingOut={logout.isPending} />
+}
+
+function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: Awaited<ReturnType<typeof api.currentUser>>) => void }) {
+  const [username, setUsername] = useState('admin')
+  const [password, setPassword] = useState('')
+  const login = useMutation({ mutationFn: () => api.login(username, password), onSuccess: onLoggedIn })
+  return <main className="auth-shell">
+    <section className="auth-panel">
+      <div className="brand auth-brand"><div className="brand-mark"><Command size={17} strokeWidth={2.4} /></div><div><strong>Llama</strong><span>CONTROL</span></div></div>
+      <p className="eyebrow">Local control plane</p>
+      <h1>Sign in</h1>
+      <p className="auth-copy">Authenticate to manage runtimes, model profiles, downloads, and access keys.</p>
+      <form className="form-body auth-form" onSubmit={(event) => { event.preventDefault(); login.mutate() }}>
+        <label className="form-field"><span>Username</span><input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></label>
+        <label className="form-field"><span>Password</span><input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        {login.error && <div className="form-error"><AlertCircle size={15} /> {login.error.message}</div>}
+        <button className="button primary" disabled={login.isPending || !username || !password} type="submit">{login.isPending ? <LoaderCircle className="spin" size={15} /> : <ShieldCheck size={15} />} Sign in</button>
+      </form>
+      <p className="auth-footnote">Default local credentials: <span className="mono">admin / admin</span></p>
+    </section>
+  </main>
+}
+
+function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awaited<ReturnType<typeof api.currentUser>>; authReady: boolean; onLogout: () => void; loggingOut: boolean }) {
+  const [section, setSection] = useState('Dashboard')
+  const [discoveryRepository, setDiscoveryRepository] = useState<string>()
   const [selectedRuntime, setSelectedRuntime] = useState('')
   const [profileSeed, setProfileSeed] = useState<LibraryModel>()
   const queryClient = useQueryClient()
   const status = useQuery({
     queryKey: ['server'],
     queryFn: api.serverStatus,
+    enabled: authReady,
     refetchInterval: (query) => query.state.data?.state === 'ready' ? 2000 : false,
   })
-  const runtimes = useQuery({ queryKey: ['runtimes'], queryFn: api.runtimes })
-  const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles })
-  const tokens = useQuery({ queryKey: ['tokens'], queryFn: api.tokens })
+  const runtimes = useQuery({ queryKey: ['runtimes'], queryFn: api.runtimes, enabled: authReady })
+  const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles, enabled: authReady })
+  const tokens = useQuery({ queryKey: ['tokens'], queryFn: api.tokens, enabled: authReady })
   const downloads = useQuery({
     queryKey: ['downloads'],
     queryFn: api.downloads,
+    enabled: authReady,
     refetchInterval: (query) => query.state.data?.some((job) => ['queued', 'downloading'].includes(job.state)) ? 2000 : false,
   })
-  const library = useQuery({ queryKey: ['library'], queryFn: api.library, refetchInterval: 5000 })
-  const logicalLibrary = useQuery({ queryKey: ['logical-library'], queryFn: api.logicalLibrary, refetchInterval: 5000 })
+  const library = useQuery({ queryKey: ['library'], queryFn: api.library, enabled: authReady, refetchInterval: 5000 })
+  const logicalLibrary = useQuery({ queryKey: ['logical-library'], queryFn: api.logicalLibrary, enabled: authReady, refetchInterval: 5000 })
   const running = status.data?.state === 'ready' || status.data?.state === 'degraded'
   const models = useQuery({
     queryKey: ['models'],
     queryFn: api.models,
-    enabled: running,
+    enabled: authReady && running,
   })
+  const users = useQuery({ queryKey: ['users'], queryFn: api.users, enabled: authReady })
   const previousDownloadStates = useRef<Map<string, string> | undefined>(undefined)
 
   useEffect(() => {
@@ -146,9 +200,13 @@ function App() {
           {navigation.map(([label, Icon]) => (
             <button
               aria-label={label}
+              aria-current={section === label ? 'page' : undefined}
               className={section === label ? 'nav-item active' : 'nav-item'}
               key={label}
-              onClick={() => setSection(label)}
+              onClick={() => {
+                setSection(label)
+                if (label === 'Discover') setDiscoveryRepository(undefined)
+              }}
               type="button"
             >
               <Icon size={17} />
@@ -158,6 +216,11 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-foot">
+          <div className="sidebar-user">
+            <UserRound size={15} />
+            <div><strong>{user.username}</strong>{user.default_credentials && <span className="default-warning">Default password active</span>}</div>
+            <button aria-label="Log out" className="icon-button small sidebar-logout" disabled={loggingOut} onClick={onLogout} title="Log out" type="button"><LogOut size={15} /></button>
+          </div>
           <div className="local-badge"><ShieldCheck size={15} /> Local control plane</div>
           <span>v0.1 alpha</span>
         </div>
@@ -238,7 +301,8 @@ function App() {
               logicalModels={logicalLibrary.data ?? []}
               profiles={profiles.data ?? []}
               onConfigure={(model) => { setProfileSeed(model); setSection('Profiles') }}
-              onDiscover={() => setSection('Discover')}
+              onDiscover={() => { setDiscoveryRepository(undefined); setSection('Discover') }}
+              onDiscoverRepository={(repoId) => { setDiscoveryRepository(repoId); setSection('Discover') }}
               onRefresh={() => { void refreshModels() }}
               running={running}
             />
@@ -251,9 +315,13 @@ function App() {
           ) : section === 'Access' ? (
             <AccessPanel running={running} tokens={tokens.data ?? []} />
           ) : section === 'Discover' ? (
-            <DiscoverPanel jobs={downloads.data ?? []} library={library.data ?? []} onQueued={() => setSection('Downloads')} />
+            <DiscoverPanel jobs={downloads.data ?? []} library={library.data ?? []} initialRepoId={discoveryRepository} onQueued={() => setSection('Downloads')} />
           ) : section === 'Downloads' ? (
             <DownloadsPanel jobs={downloads.data ?? []} library={library.data ?? []} onCreateProfile={(model) => { setProfileSeed(model); setSection('Profiles') }} />
+          ) : section === 'Settings' ? (
+            <AccountPanel user={user} />
+          ) : section === 'Users' ? (
+            <UsersPanel users={users.data ?? []} />
           ) : (
             <CollectionPanel section={section} runtimes={runtimes.data ?? []} profiles={profiles.data ?? []} tokens={tokens.data ?? []} />
           )}
@@ -284,12 +352,13 @@ function GaugeCard({ label, value, suffix, detail }: { label: string; value: num
   return <div className="gauge-card"><div className="gauge-ring" style={{ '--gauge-value': `${percentage * 3.6}deg` } as React.CSSProperties}><div><strong>{value == null ? '—' : `${value}${suffix}`}</strong><small>{label}</small></div></div>{detail && <span>{detail}</span>}</div>
 }
 
-function ModelsPanel({ models, logicalModels, profiles, onConfigure, onDiscover, onRefresh, running }: {
+function ModelsPanel({ models, logicalModels, profiles, onConfigure, onDiscover, onDiscoverRepository, onRefresh, running }: {
   models: LibraryModel[]
   logicalModels: LogicalModel[]
   profiles: Profile[]
   onConfigure: (model: LibraryModel) => void
   onDiscover: () => void
+  onDiscoverRepository: (repoId: string) => void
   onRefresh: () => void
   running: boolean
 }) {
@@ -365,7 +434,7 @@ function ModelsPanel({ models, logicalModels, profiles, onConfigure, onDiscover,
                   <td>{formatBytes(model.total_bytes)}</td>
                   <td>{model.file_count} {model.file_count === 1 ? 'file' : 'files'}</td>
                   <td className="mono" title={model.revision}>{model.revision.slice(0, 9)}</td>
-                  <td><div className="row-actions">{configured ? <span className="profile-tag">Configured</span> : <button className="button row-button" onClick={() => onConfigure(model)} type="button"><FolderCog size={13} /> Configure</button>}<button aria-label={`Delete ${model.repo_id} ${model.group_key}`} className="icon-button small danger-icon" disabled={running} onClick={() => setDeleting(model)} title="Delete downloaded model" type="button"><Trash2 size={15} /></button></div></td>
+                  <td><div className="row-actions">{configured ? <span className="profile-tag">Configured</span> : <button className="button row-button" onClick={() => onConfigure(model)} type="button"><FolderCog size={13} /> Configure</button>}<button aria-label={`View ${model.repo_id} on Discover`} className="icon-button small" onClick={() => onDiscoverRepository(model.repo_id)} title="View repository quants on Discover" type="button"><FileSearch size={15} /></button><button aria-label={`Delete ${model.repo_id} ${model.group_key}`} className="icon-button small danger-icon" disabled={running} onClick={() => setDeleting(model)} title="Delete downloaded model" type="button"><Trash2 size={15} /></button></div></td>
                 </tr>
               )
             })}
@@ -415,6 +484,61 @@ function CollectionPanel({ section, runtimes, profiles, tokens }: {
         ? tokens.map((item) => ({ title: item.name, meta: `Key ending ${item.last_four}`, state: item.enabled ? 'Active' : 'Revoked' }))
         : []
   return <section className="data-panel"><div className="panel-heading"><div><h2>{section}</h2><p>Local control-plane records and configuration.</p></div></div>{items.length ? <div className="collection">{items.map((item) => <div className="collection-row" key={`${item.title}-${item.meta}`}><div><strong>{item.title}</strong><span>{item.meta}</span></div><span className="profile-tag">{item.state}</span></div>)}</div> : <div className="empty"><Database size={28} /><strong>No {section.toLowerCase()} to show</strong><span>This workspace will populate as items are configured.</span></div>}</section>
+}
+
+function AccountPanel({ user }: { user: Awaited<ReturnType<typeof api.currentUser>> }) {
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmation, setConfirmation] = useState('')
+  const changePassword = useMutation({
+    mutationFn: () => api.changePassword(currentPassword, newPassword),
+    onSuccess: () => {
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmation('Password changed. Other sessions have been signed out.')
+    },
+  })
+  const valid = currentPassword.length > 0 && newPassword.length >= 8 && newPassword === confirmation
+  return <section className="settings-grid">
+    <section className="data-panel account-panel">
+      <div className="panel-heading"><div><h2>Account</h2><p>Manage the signed-in control-plane administrator.</p></div><UserRound size={20} /></div>
+      <div className="account-summary"><span className="metric-icon"><UserRound size={18} /></span><div><small>Signed in as</small><strong>{user.username}</strong></div>{user.default_credentials && <span className="profile-tag warning-tag">Default password active</span>}</div>
+      {user.default_credentials && <div className="inline-notice"><ShieldAlert size={15} /> Change the default password before exposing the control plane beyond this local machine.</div>}
+      <form className="form-body" onSubmit={(event) => { event.preventDefault(); changePassword.mutate() }}>
+        <label className="form-field"><span>Current password</span><input autoComplete="current-password" type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
+        <label className="form-field"><span>New password</span><input autoComplete="new-password" type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /><small>Use at least 8 characters. Existing passwords are never displayed.</small></label>
+        <label className="form-field"><span>Confirm new password</span><input autoComplete="new-password" type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} aria-invalid={confirmation.length > 0 && confirmation !== newPassword} /></label>
+        {changePassword.error && <div className="form-error"><AlertCircle size={15} /> {changePassword.error.message}</div>}
+        {confirmation && <div className={confirmation === newPassword ? 'form-success' : 'form-error'}>{confirmation === newPassword ? 'Passwords match.' : 'Passwords do not match.'}</div>}
+        {changePassword.isSuccess && <div className="form-success">{changePassword.data.changed ? 'Password changed successfully.' : ''}</div>}
+        <button className="button primary" disabled={!valid || changePassword.isPending} type="submit">{changePassword.isPending ? <LoaderCircle className="spin" size={15} /> : <ShieldCheck size={15} />} Change password</button>
+      </form>
+      {changePassword.isSuccess && <div className="panel-footer"><span>{confirmation}</span></div>}
+    </section>
+  </section>
+}
+
+function UsersPanel({ users }: { users: Awaited<ReturnType<typeof api.users>> }) {
+  const [open, setOpen] = useState(false)
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const queryClient = useQueryClient()
+  const createUser = useMutation({
+    mutationFn: () => api.createUser(username, password),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['users'] })
+      setOpen(false)
+      setUsername('')
+      setPassword('')
+    },
+  })
+  return <section className="data-panel">
+    <div className="panel-heading"><div><h2>Users</h2><p>All accounts currently have administrator access.</p></div><button className="button primary compact" onClick={() => setOpen(true)} type="button"><UserRound size={14} /> Add user</button></div>
+    <div className="record-list">{users.map((managedUser) => <div className="record-row" key={managedUser.id}><span className="record-icon"><UserRound size={17} /></span><div className="record-copy"><strong>{managedUser.username}</strong><span>{managedUser.default_credentials ? 'Default credentials active' : 'Administrator'}</span></div><span className="profile-tag">Admin</span></div>)}</div>
+    {!users.length && <div className="empty"><UserRound size={28} /><strong>No users found</strong><span>The account list is unavailable or empty.</span></div>}
+    <div className="panel-footer"><span>{users.length} account(s)</span><span>Roles and permissions are not yet separated.</span></div>
+    {open && <Dialog title="Add administrator" description="Create another account with full control-plane access." onClose={() => setOpen(false)}><form className="form-body" onSubmit={(event) => { event.preventDefault(); createUser.mutate() }}><label className="form-field"><span>Username</span><input autoFocus autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></label><label className="form-field"><span>Temporary password</span><input autoComplete="new-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /><small>The user can sign in immediately. Password reset management will be added with role separation.</small></label>{createUser.error && <div className="form-error"><AlertCircle size={15} /> {createUser.error.message}</div>}<footer className="dialog-actions"><button className="button secondary" onClick={() => setOpen(false)} type="button">Cancel</button><button className="button primary" disabled={createUser.isPending || username.trim().length < 1 || password.length < 8} type="submit">{createUser.isPending ? <LoaderCircle className="spin" size={15} /> : <UserRound size={15} />} Add administrator</button></footer></form></Dialog>}
+  </section>
 }
 
 export default App

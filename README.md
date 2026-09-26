@@ -88,7 +88,7 @@ To bind both services to a specific address, pass an IPv4 address or `0.0.0.0`:
 .\start.ps1 0.0.0.0
 ```
 
-The backend listens on port `18080` and the frontend on port `5173`. Use the machine's LAN address in a browser when connecting from another device. Binding beyond loopback requires an API key for the managed router; do not expose it to an untrusted network.
+The backend listens on port `18080` and the frontend on port `5173`. Use the machine's LAN address in a browser when connecting from another device. The control-plane login protects management endpoints, but credentials and session cookies must be transported over HTTPS whenever the control plane is reachable beyond loopback. Binding beyond loopback requires an API key for the managed router; do not expose either service to an untrusted network.
 
 ## Start the frontend
 
@@ -203,7 +203,165 @@ opencode
 
 For a remote client, use the router host address and the model alias returned by `/v1/models`, not a local GGUF filesystem path.
 
+## Connect with curl or an OpenAI-compatible SDK
+
+The managed router exposes the native OpenAI-compatible API directly. Keep the
+access key in an environment variable and never place the raw value in a
+script, configuration file, screenshot, or committed command history.
+
+```powershell
+$env:LLAMA_WEB_UI_API_KEY = 'YOUR_ACCESS_TOKEN'
+$headers = @{ Authorization = "Bearer $env:LLAMA_WEB_UI_API_KEY" }
+
+Invoke-RestMethod `
+  http://127.0.0.1:1234/v1/models `
+  -Headers $headers
+```
+
+For an OpenAI-compatible Python client, use the router's `/v1` base URL and a
+placeholder environment lookup:
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(
+   base_url="http://127.0.0.1:1234/v1",
+   api_key=os.environ["LLAMA_WEB_UI_API_KEY"],
+)
+response = client.chat.completions.create(
+   model="MODEL_ALIAS_FROM_V1_MODELS",
+   messages=[{"role": "user", "content": "Reply with exactly HELLO_WORLD."}],
+   max_tokens=64,
+)
+print(response.choices[0].message.content)
+```
+
+Replace only the model alias placeholder with an ID returned by `GET /v1/models`.
+Do not use a local GGUF path as the API model name.
+
+## Access-key lifecycle and restart behavior
+
+1. Create an access key in the **Access** view and copy it once. The raw key is
+  shown only at creation time.
+2. Set `LLAMA_WEB_UI_API_KEY` in the process environment used by curl,
+  OpenCode, or the SDK.
+3. Start or restart the managed router after creating or revoking keys. The
+  native `llama-server` process reads the generated key file at startup; it
+  does not reload in-place key-file changes.
+4. Revoke the key in **Access**, stop/restart the router as required, and verify
+  clients receive HTTP 401. Never print the key while testing revocation.
+
+The control plane is local-first and defaults to loopback. If either service is
+bound beyond loopback, place it behind HTTPS and a trusted network boundary;
+credentials and session cookies must not travel over plain HTTP. Do not expose
+the native router or control plane to an untrusted network.
+
 ## Test and quality checks
+
+## Build the Windows one-folder package
+
+The release package target is Windows x64. Build it from the repository root:
+
+```powershell
+.\packaging\build-windows.ps1
+```
+
+This produces `dist\llamawebui\` with the Python control plane and compiled
+static frontend. Keep `data/`, model files, generated keys, backups, and
+registered llama.cpp runtimes outside the package directory. Set
+`LLAMAWEBUI_DATA_DIR` to the external data directory when launching the
+packaged executable so replacing the package does not replace user state.
+
+Updates replace package files only after the application is stopped. Runtime
+upgrades remain explicit registration/install operations; an application update
+must never silently replace an installed or in-use llama.cpp runtime.
+
+## Publish a GitHub release
+
+Releases are tag-driven. Update `changelog.json` first, adding exactly one
+entry whose `version` matches the tag without the leading `v`, then commit and
+push the tag from `main`:
+
+```powershell
+git switch main
+git pull --ff-only
+# Edit changelog.json and set the release date and typed changes.
+git add changelog.json
+git commit -m "docs: prepare release v0.1.0"
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin main --follow-tags
+```
+
+The `Release` workflow checks out the tag, runs the complete quality gates,
+builds the Windows one-folder package, creates
+`llamawebui-v0.1.0-windows-x64.zip`, generates release notes from the matching
+`changelog.json` entry, and publishes the GitHub release. The package contains
+the application only; user data, models, access keys, backups, and registered
+runtimes remain external.
+
+To rerun a release workflow manually, use **Actions → Release → Run workflow**
+and provide an existing version tag. The workflow requires exactly one matching
+changelog version entry and will not publish a release for an undocumented tag.
+
+## Operator checklist
+
+### First run
+
+1. Register an existing `llama-server` runtime in **Runtimes**, or install a
+   published build through the runtime installer.
+2. Open **Discover**, search for a GGUF repository, inspect the revision,
+   quantization, file count, and size, then explicitly select **Download**.
+3. Confirm the completed artifact appears in **Models** and reconcile the
+   library after importing files from an external managed directory.
+4. Create or import a profile, select the runtime and model alias, validate it,
+   and enable it only after validation succeeds.
+5. Start the router from **Dashboard** or **Server**, wait for `Ready`, then
+   use `/v1/models` to select the model alias for clients.
+6. Create an access key in **Access** and configure clients through the
+   environment-variable examples in this document.
+
+### Routine operations
+
+- Use **Server** to start, restart, stop, and inspect router logs and telemetry.
+- Use **Models** to reconcile local files, inspect logical-model state, and
+  remove only application-managed completed artifacts.
+- Use **Profiles** to validate configuration after changing runtimes or model
+  paths. A `Broken` profile indicates a missing or unavailable model and must
+  be repaired or disabled before starting the router.
+- Use **Access** to revoke keys. Stop/restart the router after key changes
+  because the native key file is read at router startup.
+- Use **Settings** and diagnostics export when collecting support information;
+  never include raw keys, `.env` contents, or generated key-file contents.
+
+### Safe update and recovery rules
+
+- Stop the application before replacing the Windows package.
+- Keep `data/`, backups, models, generated keys, and registered runtimes outside
+  the package directory.
+- Database backups are created under `data/backups/` before migrations and are
+  retained to a bounded count. Do not delete the current database or backups
+  during routine updates.
+- Runtime updates are explicit and side-by-side. Do not overwrite an in-use
+  runtime; register or install a new build, validate profiles, then switch
+  deliberately.
+- Do not start multiple copies of the application. Reuse the existing backend
+  and frontend service pair, or stop the workspace-owned pair before restarting.
+
+### Troubleshooting quick reference
+
+| Symptom | Check | Safe action |
+| --- | --- | --- |
+| Login required or session expired | Control-plane session cookie | Sign in again; do not expose the cookie. |
+| Router will not start | Runtime probe, enabled profiles, and profile validation state | Fix runtime/profile diagnostics, then retry. |
+| Profile is `Broken` | Model path and completed download validity | Re-download the known source or update the profile path. |
+| API returns 401 | Bearer key, router restart after key change, and model alias | Use an active key from the environment and restart after revocation/creation. |
+| Download is paused or failed | Download job error and available disk space | Resume or retry; never manually publish partial files. |
+| Hub is unavailable | Cached metadata and local Models state | Continue using known local models; retry discovery later. |
+| UI has stale state | Browser session and control-plane health | Refresh the page and check `/api/health`. |
+
+Support bundles and logs must be reviewed for secrets before sharing. Redaction
+does not make it safe to publish raw environment files or native key files.
 
 Run backend checks from `backend/`:
 

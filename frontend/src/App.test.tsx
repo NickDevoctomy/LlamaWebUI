@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
 const responses: Record<string, unknown> = {
+  '/api/auth/me': { username: 'admin', default_credentials: false },
   '/api/server/status': {
     state: 'stopped',
     pid: null,
@@ -35,6 +36,7 @@ function renderApp({
   commandResponse = '',
   serverStatus = responses['/api/server/status'],
   repositoryGroups = [{ key: 'model-Q4_K_M', quantization: 'Q4_K_M', total_size: 4_200_000_000, complete: true, files: [{ path: 'model-Q4_K_M.gguf', size: 4_200_000_000 }] }],
+  repositoryReadme = '# Qwen model card\n\nUseful model details.',
 }: {
   runtimeList?: unknown[]
   tokenList?: unknown[]
@@ -46,6 +48,7 @@ function renderApp({
   commandResponse?: string
   serverStatus?: unknown
   repositoryGroups?: unknown[]
+  repositoryReadme?: string | null
 } = {}) {
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const rawPath = typeof input === 'string'
@@ -81,12 +84,14 @@ function renderApp({
               ? libraryList
             : path === '/api/library/logical'
               ? logicalLibraryList
-          : path === '/api/server/status'
+            : path === '/api/auth/me'
+              ? responses['/api/auth/me']
+            : path === '/api/server/status'
             ? serverStatus
             : path === '/api/huggingface/models'
               ? [{ repo_id: 'owner/model-GGUF', downloads: 1200, likes: 42, last_modified: '2026-09-19T00:00:00Z', gated: false, private: false, tags: ['gguf', 'qwen'] }]
                 : path === '/api/huggingface/repositories/owner/model-GGUF'
-                  ? { repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), groups: repositoryGroups }
+                  ? { repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), readme: repositoryReadme, groups: repositoryGroups }
             : path === '/api/integrations/opencode'
               ? { provider: { 'llama-web-ui': { options: { apiKey: '{env:LLAMA_WEB_UI_API_KEY}' }, models: { 'qwen-local': { name: 'qwen-local' } } } } }
               : path === '/api/server/models'
@@ -255,6 +260,22 @@ describe('App', () => {
     expect(screen.getByLabelText(/Primary GGUF file/i)).toHaveValue(model.primary_path)
   })
 
+  it('opens a downloaded model repository in Discover to inspect available quants', async () => {
+    const model = { download_id: 'download-1', repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), group_key: 'model-Q4_K_M', primary_path: 'E:\\models\\model.gguf', file_count: 1, total_bytes: 1000 }
+    const profile = { id: 'profile-1', alias: 'qwen-test', runtime_id: 'runtime-1', model_path: model.primary_path, configuration: {}, enabled: true }
+    const fetchMock = renderApp({ libraryList: [model], profileList: [profile] })
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
+    fireEvent.click(await screen.findByRole('button', { name: `View ${model.repo_id} on Discover` }))
+
+    expect(await screen.findByRole('heading', { name: 'Hugging Face catalog' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Quantizations' })).toBeInTheDocument()
+    expect(await screen.findByText('Q4_K_M')).toBeInTheDocument()
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      `/api/huggingface/repositories/${model.repo_id}`,
+      expect.anything(),
+    ))
+  })
+
   it('deletes a downloaded model without deleting its profile', async () => {
     const model = { download_id: 'download-1', repo_id: 'owner/Qwen-Test-GGUF', revision: 'a'.repeat(40), group_key: 'Q4/model-Q4', primary_path: 'E:\\models\\model.gguf', file_count: 1, total_bytes: 1000 }
     const profile = { id: 'profile-1', alias: 'qwen-test', runtime_id: 'runtime-1', model_path: model.primary_path, configuration: {}, enabled: true, validation_state: 'available', source_download: { id: model.download_id, repo_id: model.repo_id, revision: model.revision, group_key: model.group_key, file_count: 1, total_bytes: 1000 } }
@@ -265,7 +286,7 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: 'Delete downloaded model?' })).toBeInTheDocument()
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete model' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/library/download-1', { method: 'DELETE' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/library/download-1', expect.objectContaining({ method: 'DELETE' })))
     expect(fetchMock).not.toHaveBeenCalledWith('/api/profiles/profile-1', expect.anything())
   })
 
@@ -278,11 +299,11 @@ describe('App', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Broken' }))
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Re-download' }))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/download-1/redownload', { method: 'POST' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/download-1/redownload', expect.objectContaining({ method: 'POST' })))
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete profile qwen-test' }))
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete profile' }))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/profiles/profile-1', { method: 'DELETE' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/profiles/profile-1', expect.objectContaining({ method: 'DELETE' })))
   })
 
   it('registers and probes a local runtime', async () => {
@@ -354,7 +375,7 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: 'Revoke access key?' })).toBeInTheDocument()
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Revoke key' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/tokens/token-1', { method: 'DELETE' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/tokens/token-1', expect.objectContaining({ method: 'DELETE' })))
   })
 
   it('shows live OpenCode configuration without embedding a token', async () => {
@@ -382,6 +403,46 @@ describe('App', () => {
       body: JSON.stringify({ repo_id: 'owner/model-GGUF', group_key: 'model-Q4_K_M', revision: 'a'.repeat(40) }),
     })))
     expect(await screen.findByRole('heading', { name: 'Download jobs' })).toBeInTheDocument()
+  })
+
+  it('renders the selected repository README as formatted Markdown below quantizations', async () => {
+    renderApp({ repositoryReadme: '---\nlanguage:\n  - en\nlicense: apache-2.0\ntags:\n  - text-generation\n---\n\n<div><p><strong>See <a href="https://example.com/collection">our collection</a> for model versions.</strong></p></div>\n\n# Qwen details\n\nA **formatted** model description.\n\n| Field | Value |\n| --- | --- |\n| Context | 32K |' })
+    fireEvent.click(screen.getByRole('button', { name: 'Discover' }))
+    fireEvent.change(screen.getByLabelText('Search models'), { target: { value: 'qwen' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    fireEvent.click(await screen.findByRole('button', { name: /owner\/model-GGUF/ }))
+
+    const title = await screen.findByRole('heading', { name: 'Qwen details', level: 1 })
+    expect(title.closest('.model-card-panel')).toBeInTheDocument()
+    expect(screen.getByText('formatted')).toBeInTheDocument()
+    expect(screen.getByText('formatted').tagName).toBe('STRONG')
+    expect(screen.getByRole('table')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'our collection' })).toHaveAttribute('href', 'https://example.com/collection')
+    expect(screen.queryByText('language:')).not.toBeInTheDocument()
+    expect(screen.queryByText('apache-2.0')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Quantizations' })).toBeInTheDocument()
+  })
+
+  it('sanitizes executable raw HTML in repository READMEs', async () => {
+    renderApp({ repositoryReadme: '<img src="x" onerror="alert(1)"><script>alert(1)</script>\n\n# Safe card' })
+    fireEvent.click(screen.getByRole('button', { name: 'Discover' }))
+    fireEvent.change(screen.getByLabelText('Search models'), { target: { value: 'qwen' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    fireEvent.click(await screen.findByRole('button', { name: /owner\/model-GGUF/ }))
+
+    expect(await screen.findByRole('heading', { name: 'Safe card' })).toBeInTheDocument()
+    expect(document.querySelector('.model-card-content img')).not.toHaveAttribute('onerror')
+    expect(document.querySelector('.model-card-content script')).not.toBeInTheDocument()
+  })
+
+  it('shows a clear empty state when a selected repository has no README', async () => {
+    renderApp({ repositoryReadme: null })
+    fireEvent.click(screen.getByRole('button', { name: 'Discover' }))
+    fireEvent.change(screen.getByLabelText('Search models'), { target: { value: 'qwen' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    fireEvent.click(await screen.findByRole('button', { name: /owner\/model-GGUF/ }))
+
+    expect(await screen.findByText('No README available')).toBeInTheDocument()
   })
 
   it('shows the group key when quantization detection has no match', async () => {
@@ -424,7 +485,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Downloads' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Resume owner/model-GGUF' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/download-1/resume', { method: 'POST' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/download-1/resume', expect.objectContaining({ method: 'POST' })))
   })
 
   it('clears completed and cancelled download jobs', async () => {
@@ -435,7 +496,7 @@ describe('App', () => {
     await waitFor(() => expect(clearButton).toBeEnabled())
     fireEvent.click(clearButton)
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/terminal', { method: 'DELETE' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/terminal', expect.objectContaining({ method: 'DELETE' })))
   })
 
   it('prefills a profile from a validated completed download', async () => {

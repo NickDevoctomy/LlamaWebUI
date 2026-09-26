@@ -3,14 +3,18 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from llamawebui.domain.router_lifecycle import RouterLaunch, RouterState
 from llamawebui.services.router_supervisor import (
+    ManagedRouterProcess,
     RouterProcess,
     RouterRestartPolicy,
     RouterSupervisor,
+    launch_router,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -54,6 +58,167 @@ def launch_configuration(tmp_path: Path) -> RouterLaunch:
     executable.touch()
     preset.touch()
     return RouterLaunch(executable, preset)
+
+
+async def test_managed_process_uses_windows_graceful_termination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import llamawebui.services.router_supervisor as router_supervisor
+
+    process = SimpleNamespace(
+        pid=1234,
+        returncode=None,
+        stdout=None,
+        send_signal=Mock(),
+        kill=Mock(),
+        terminate=Mock(),
+    )
+    monkeypatch.setattr(router_supervisor, "os", SimpleNamespace(name="nt"))
+
+    await ManagedRouterProcess(process).terminate_tree(force=False)
+
+    process.send_signal.assert_called_once()
+    process.kill.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("taskkill_result", "returncode", "kill_called"),
+    [(0, None, False), (1, None, True), (1, 0, False)],
+)
+async def test_managed_process_uses_windows_force_termination(
+    monkeypatch: pytest.MonkeyPatch,
+    taskkill_result: int,
+    returncode: int | None,
+    kill_called: bool,
+) -> None:
+    import llamawebui.services.router_supervisor as router_supervisor
+
+    process = SimpleNamespace(
+        pid=1234,
+        returncode=returncode,
+        stdout=None,
+        send_signal=Mock(),
+        kill=Mock(),
+        terminate=Mock(),
+    )
+    killer = SimpleNamespace(wait=AsyncMock(return_value=taskkill_result))
+    create_subprocess = AsyncMock(return_value=killer)
+    monkeypatch.setattr(router_supervisor, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(
+        router_supervisor,
+        "asyncio",
+        SimpleNamespace(
+            create_subprocess_exec=create_subprocess,
+            subprocess=SimpleNamespace(DEVNULL=-3),
+        ),
+    )
+
+    await ManagedRouterProcess(process).terminate_tree(force=True)
+
+    create_subprocess.assert_awaited_once_with(
+        "taskkill", "/PID", "1234", "/T", "/F", stdout=-3, stderr=-3
+    )
+    assert process.kill.called is kill_called
+
+
+@pytest.mark.parametrize(("force", "expected_signal"), [(False, "SIGTERM"), (True, "SIGKILL")])
+async def test_managed_process_signals_posix_process_group(
+    monkeypatch: pytest.MonkeyPatch, force: bool, expected_signal: str
+) -> None:
+    import llamawebui.services.router_supervisor as router_supervisor
+
+    kill_group = Mock()
+    monkeypatch.setattr(
+        router_supervisor,
+        "os",
+        SimpleNamespace(name="posix", kill=kill_group),
+    )
+    process = SimpleNamespace(pid=1234, returncode=None, stdout=None)
+
+    await ManagedRouterProcess(process).terminate_tree(force=force)
+
+    signal_number = getattr(
+        router_supervisor.signal,
+        expected_signal,
+        router_supervisor.signal.SIGTERM,
+    )
+    kill_group.assert_called_once_with(-1234, signal_number)
+
+
+@pytest.mark.parametrize(
+    ("exception", "force", "returncode", "fallback"),
+    [
+        (ProcessLookupError(), False, None, None),
+        (OSError(), False, None, "terminate"),
+        (OSError(), True, None, "kill"),
+        (OSError(), True, 0, None),
+    ],
+)
+async def test_managed_process_handles_posix_signal_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    exception: OSError,
+    force: bool,
+    returncode: int | None,
+    fallback: str | None,
+) -> None:
+    import llamawebui.services.router_supervisor as router_supervisor
+
+    kill_group = Mock(side_effect=exception)
+    monkeypatch.setattr(
+        router_supervisor,
+        "os",
+        SimpleNamespace(name="posix", kill=kill_group),
+    )
+    process = SimpleNamespace(
+        pid=1234,
+        returncode=returncode,
+        stdout=None,
+        terminate=Mock(),
+        kill=Mock(),
+    )
+
+    await ManagedRouterProcess(process).terminate_tree(force=force)
+
+    if fallback == "terminate":
+        process.terminate.assert_called_once_with()
+    else:
+        process.terminate.assert_not_called()
+    if fallback == "kill":
+        process.kill.assert_called_once_with()
+    else:
+        process.kill.assert_not_called()
+
+
+async def test_launch_router_uses_windows_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    import llamawebui.services.router_supervisor as router_supervisor
+
+    process = SimpleNamespace(pid=1234, returncode=None, stdout=None)
+    create_subprocess = AsyncMock(return_value=process)
+    monkeypatch.setattr(router_supervisor, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(
+        router_supervisor,
+        "subprocess",
+        SimpleNamespace(CREATE_NEW_PROCESS_GROUP=512, PIPE=-1, STDOUT=-2),
+    )
+    monkeypatch.setattr(
+        router_supervisor,
+        "asyncio",
+        SimpleNamespace(
+            create_subprocess_exec=create_subprocess,
+            subprocess=SimpleNamespace(PIPE=-1, STDOUT=-2),
+        ),
+    )
+
+    wrapped = await launch_router(("llama-server", "--version"))
+
+    assert isinstance(wrapped, ManagedRouterProcess)
+    create_subprocess.assert_awaited_once_with(
+        "llama-server",
+        "--version",
+        stdout=-1,
+        stderr=-2,
+        creationflags=512,
+    )
 
 
 @pytest.mark.parametrize(

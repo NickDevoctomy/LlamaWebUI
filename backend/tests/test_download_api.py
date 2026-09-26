@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 
+from conftest import Login
 from fastapi.testclient import TestClient
 
 from llamawebui.app import create_app
@@ -41,13 +42,14 @@ class BlockingTransfer:
         raise AssertionError("unreachable")
 
 
-def test_create_list_and_cancel_download(tmp_path: Path) -> None:
+def test_create_list_and_cancel_download(tmp_path: Path, login: Login) -> None:
     app = create_app(
         Settings(data_dir=tmp_path / "data"),
         catalog=FakeCatalog(),
         file_transfer=BlockingTransfer(),
     )
     with TestClient(app) as client:
+        login(client)
         created = client.post(
             "/api/downloads",
             json={
@@ -76,9 +78,10 @@ def test_create_list_and_cancel_download(tmp_path: Path) -> None:
     assert remaining.json() == []
 
 
-def test_create_download_reports_invalid_group(tmp_path: Path) -> None:
+def test_create_download_reports_invalid_group(tmp_path: Path, login: Login) -> None:
     app = create_app(Settings(data_dir=tmp_path / "data"), catalog=FakeCatalog())
     with TestClient(app) as client:
+        login(client)
         response = client.post(
             "/api/downloads",
             json={"repo_id": "owner/model-GGUF", "group_key": "missing"},

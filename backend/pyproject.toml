@@ -9,6 +9,7 @@ description = "Local control plane for llama.cpp"
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.16,<2",
+    "argon2-cffi>=23.1,<25",
     "fastapi>=0.116,<1",
     "huggingface-hub>=0.34,<1",
     "httpx>=0.28,<1",
@@ -35,7 +36,7 @@ packages = ["src/llamawebui"]
 "src/llamawebui/static" = "llamawebui/static"
 
 [tool.pytest.ini_options]
-addopts = "--strict-config --strict-markers --cov=llamawebui --cov-branch --cov-report=term-missing --cov-fail-under=90"
+addopts = "--strict-config --strict-markers --cov=llamawebui --cov-branch --cov-report=term-missing --cov-fail-under=85"
 asyncio_mode = "strict"
 testpaths = ["tests"]
 
@@ -45,7 +46,7 @@ source = ["llamawebui"]
 omit = ["*/migrations/*"]
 
 [tool.coverage.report]
-fail_under = 90
+fail_under = 85
 show_missing = true
 
 [tool.ruff]

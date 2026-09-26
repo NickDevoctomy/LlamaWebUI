@@ -43,7 +43,7 @@ def test_create_persists_revision_pinned_job(registry: DownloadRegistry) -> None
     assert job.state == DownloadState.QUEUED
     assert job.total_bytes == 30
     assert job.completed_bytes == 0
-    assert job.destination.endswith("owner\\model-GGUF\\" + "a" * 40)
+    assert Path(job.destination).parts[-3:] == ("owner", "model-GGUF", "a" * 40)
     assert registry.list()[0].id == job.id
 
 

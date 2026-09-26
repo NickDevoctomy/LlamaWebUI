@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -17,7 +18,6 @@ from llamawebui.services.router_supervisor import (
 
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.skipif(os.name != "nt", reason="Windows process-tree verification"),
 ]
 
 
@@ -49,6 +49,28 @@ async def force_cleanup(pid: int) -> None:
     await process.wait()
 
 
+def linux_process_exists(pid: int) -> bool:
+    try:
+        process_stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    state = process_stat.rsplit(")", 1)[1].lstrip().split(maxsplit=1)[0]
+    return state != "Z"
+
+
+async def wait_for_linux_process_exit(pid: int) -> None:
+    async with asyncio.timeout(5):
+        while linux_process_exists(pid):
+            await asyncio.sleep(0.05)
+
+
+async def force_linux_cleanup(pid: int) -> None:
+    if linux_process_exists(pid):
+        os.kill(pid, getattr(signal, "SIGKILL", 9))
+        await wait_for_linux_process_exit(pid)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process-tree verification")
 async def test_windows_router_termination_stops_child_process(tmp_path: Path) -> None:
     parent_code = (
         "import signal, subprocess, sys, time; "
@@ -88,3 +110,40 @@ async def test_windows_router_termination_stops_child_process(tmp_path: Path) ->
             await process.wait()
         if child_pid is not None and await windows_process_exists(child_pid):
             await force_cleanup(child_pid)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux process-tree verification")
+async def test_linux_router_termination_stops_child_process(tmp_path: Path) -> None:
+    parent_code = (
+        "import subprocess, sys, time; "
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
+        "print(child.pid, flush=True); time.sleep(120)"
+    )
+    process = await launch_router((sys.executable, "-u", "-c", parent_code))
+    child_pid: int | None = None
+    try:
+        assert process.stdout is not None
+        child_pid = int((await asyncio.wait_for(process.stdout.readline(), 5)).decode().strip())
+        assert linux_process_exists(process.pid)
+        assert linux_process_exists(child_pid)
+
+        preset = tmp_path / "models.ini"
+        preset.touch()
+
+        async def existing_process(arguments: Sequence[str]) -> RouterProcess:
+            return process
+
+        supervisor = RouterSupervisor(existing_process)
+        await supervisor.start(RouterLaunch(Path(sys.executable), preset))
+        supervisor.mark_ready()
+        await supervisor.stop(timeout_seconds=5)
+        await wait_for_linux_process_exit(child_pid)
+
+        assert not linux_process_exists(process.pid)
+        assert not linux_process_exists(child_pid)
+    finally:
+        if process.returncode is None:
+            await process.terminate_tree(force=True)
+            await process.wait()
+        if child_pid is not None:
+            await force_linux_cleanup(child_pid)

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from conftest import Login
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -46,10 +47,11 @@ def test_packaged_static_directory_serves_frontend_without_vite(tmp_path: Path) 
     assert health.status_code == 200
 
 
-def test_access_token_is_shown_once_and_can_be_revoked(tmp_path: Path) -> None:
+def test_access_token_is_shown_once_and_can_be_revoked(tmp_path: Path, login: Login) -> None:
     settings = Settings(data_dir=tmp_path / "data")
 
     with TestClient(create_app(settings)) as client:
+        login(client)
         created = client.post(
             "/api/tokens", json={"name": "OpenCode", "expiry_note": "Rotate monthly"}
         )
@@ -70,13 +72,14 @@ def test_access_token_is_shown_once_and_can_be_revoked(tmp_path: Path) -> None:
     assert missing.status_code == 404
 
     with TestClient(create_app(settings)) as client:
+        login(client)
         persisted = client.get("/api/tokens")
 
     assert persisted.json()[0]["enabled"] is False
     assert token not in persisted.text
 
 
-def test_runtime_registration_persists_and_rejects_duplicate(tmp_path: Path) -> None:
+def test_runtime_registration_persists_and_rejects_duplicate(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
     probe_calls = 0
@@ -97,6 +100,7 @@ def test_runtime_registration_persists_and_rejects_duplicate(tmp_path: Path) -> 
     settings = Settings(data_dir=tmp_path / "data")
     app = create_app(settings, runtime_prober=fake_probe)
     with TestClient(app) as client:
+        login(client)
         created = client.post(
             "/api/runtimes",
             json={"name": "Local CPU", "executable_path": str(executable), "backend": "cpu"},
@@ -117,15 +121,17 @@ def test_runtime_registration_persists_and_rejects_duplicate(tmp_path: Path) -> 
     assert probe_calls == 1
 
     with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        login(client)
         assert client.get("/api/runtimes").json()[0]["id"] == created.json()["id"]
 
 
-def test_runtime_registration_reports_missing_executable(tmp_path: Path) -> None:
+def test_runtime_registration_reports_missing_executable(tmp_path: Path, login: Login) -> None:
     async def fake_probe(path: Path) -> RuntimeProbeResult:
         raise FileNotFoundError(f"llama-server executable not found: {path}")
 
     settings = Settings(data_dir=tmp_path / "data")
     with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        login(client)
         response = client.post(
             "/api/runtimes",
             json={"name": "Missing", "executable_path": str(tmp_path / "missing.exe")},
@@ -135,7 +141,7 @@ def test_runtime_registration_reports_missing_executable(tmp_path: Path) -> None
     assert "llama-server executable not found" in response.json()["detail"]
 
 
-def test_runtime_can_be_reprobed_and_removed(tmp_path: Path) -> None:
+def test_runtime_can_be_reprobed_and_removed(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
     build = "old"
@@ -154,6 +160,7 @@ def test_runtime_can_be_reprobed_and_removed(tmp_path: Path) -> None:
     with TestClient(
         create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
     ) as client:
+        login(client)
         created = client.post(
             "/api/runtimes",
             json={"name": "Mutable runtime", "executable_path": str(executable)},
@@ -178,7 +185,7 @@ def test_runtime_can_be_reprobed_and_removed(tmp_path: Path) -> None:
     assert probe_missing.status_code == 404
 
 
-def test_reprobe_missing_executable_preserves_runtime(tmp_path: Path) -> None:
+def test_reprobe_missing_executable_preserves_runtime(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
 
@@ -196,6 +203,7 @@ def test_reprobe_missing_executable_preserves_runtime(tmp_path: Path) -> None:
     with TestClient(
         create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
     ) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes",
             json={"name": "Removed binary", "executable_path": str(executable)},

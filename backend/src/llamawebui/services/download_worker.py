@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Protocol
 
 from llamawebui.domain.download_job import DownloadState
+from llamawebui.models import DownloadJobRecord
 from llamawebui.services.download_registry import DownloadRegistry
 
 _PROGRESS_INTERVAL_SECONDS = 0.25
@@ -76,6 +77,10 @@ class DownloadWorker:
         staging = self.staging_path(job_id)
         completed_bytes = 0
         try:
+            if self._destination_is_complete(job, destination):
+                self._registry.update_progress(job_id, job.total_bytes)
+                self._registry.transition(job_id, DownloadState.COMPLETED)
+                return
             for file_data in job.files:
                 if DownloadState(self._registry.get(job_id).state) is DownloadState.CANCELLED:
                     return
@@ -124,9 +129,7 @@ class DownloadWorker:
                     job = self._registry.update_progress(job_id, completed_bytes)
 
             if DownloadState(self._registry.get(job_id).state) is DownloadState.DOWNLOADING:
-                if destination.exists():
-                    raise FileExistsError(f"download destination already exists: {destination}")
-                staging.replace(destination)
+                self._publish(staging, destination)
                 self._registry.transition(job_id, DownloadState.COMPLETED)
         except asyncio.CancelledError:
             if DownloadState(self._registry.get(job_id).state) is DownloadState.CANCELLED:
@@ -142,6 +145,48 @@ class DownloadWorker:
 
     def discard_partial(self, job_id: str) -> None:
         shutil.rmtree(self.staging_path(job_id), ignore_errors=True)
+
+    @staticmethod
+    def _publish(staging: Path, destination: Path) -> None:
+        if not destination.exists():
+            staging.replace(destination)
+            return
+        if destination.is_symlink() or not destination.is_dir():
+            raise FileExistsError(f"download destination already exists: {destination}")
+        existing = tuple(destination.iterdir())
+        if not existing or any(path.name != ".cache" for path in existing):
+            raise FileExistsError(f"download destination already exists: {destination}")
+        tombstone = destination.parent / f".{destination.name}.stale"
+        if tombstone.exists():
+            raise FileExistsError(
+                f"download destination cleanup is already in progress: {destination}"
+            )
+        destination.replace(tombstone)
+        try:
+            staging.replace(destination)
+        except OSError:
+            tombstone.replace(destination)
+            raise
+        shutil.rmtree(tombstone, ignore_errors=True)
+
+    @staticmethod
+    def _destination_is_complete(job: DownloadJobRecord, destination: Path) -> bool:
+        if not destination.is_dir() or destination.is_symlink():
+            return False
+        for file_data in job.files:
+            raw_path = file_data.get("path")
+            expected_size = file_data.get("size")
+            if not isinstance(raw_path, str) or not isinstance(expected_size, int):
+                return False
+            path = (destination / raw_path).resolve()
+            if not path.is_relative_to(destination.resolve()) or not path.is_file():
+                return False
+            if path.stat().st_size != expected_size:
+                return False
+            expected_sha256 = file_data.get("sha256")
+            if isinstance(expected_sha256, str) and _sha256_file(path) != expected_sha256.lower():
+                return False
+        return True
 
     async def _download_with_progress(
         self,
@@ -171,11 +216,7 @@ class DownloadWorker:
                 await asyncio.sleep(_PROGRESS_INTERVAL_SECONDS)
                 elapsed += _PROGRESS_INTERVAL_SECONDS
                 incomplete_bytes = max(
-                    (
-                        path.stat().st_size
-                        for path in cache_directory.rglob("*.incomplete")
-                        if path.is_file()
-                    ),
+                    (_safe_file_size(path) for path in cache_directory.rglob("*.incomplete")),
                     default=0,
                 )
                 current_file_bytes = max(
@@ -245,3 +286,11 @@ def _matches_etag(path: Path, etag: object) -> bool:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest() == normalized
+
+
+def _safe_file_size(path: Path) -> int:
+    """Read a transfer cache size despite concurrent Hub finalization."""
+    try:
+        return path.stat().st_size if path.is_file() else 0
+    except FileNotFoundError:
+        return 0

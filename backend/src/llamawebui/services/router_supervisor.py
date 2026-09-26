@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from time import monotonic
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 import httpx
 
@@ -135,7 +135,7 @@ async def launch_router(arguments: Sequence[str]) -> RouterProcess:
             *arguments,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            creationflags=cast(Any, subprocess).CREATE_NEW_PROCESS_GROUP,
         )
     else:
         process = await asyncio.create_subprocess_exec(

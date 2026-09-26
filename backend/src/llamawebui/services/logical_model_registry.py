@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -68,12 +69,12 @@ class LogicalModelRegistry:
     def reconcile_profile_links(self, profiles: tuple[ModelProfileRecord, ...]) -> None:
         with self._sessions() as session:
             records = {
-                record.canonical_path: record
+                _canonical_key(record.canonical_path): record
                 for record in session.scalars(select(LogicalModelRecord))
             }
             expected: set[tuple[str, str]] = set()
             for profile in profiles:
-                logical = records.get(str(Path(profile.model_path).resolve()))
+                logical = records.get(_canonical_key(profile.model_path))
                 if logical is None:
                     continue
                 expected.add((logical.id, profile.id))
@@ -92,14 +93,15 @@ class LogicalModelRegistry:
     def reconcile(self, models: tuple[LogicalModel, ...]) -> tuple[LogicalModel, ...]:
         with self._sessions() as session:
             existing = {
-                record.canonical_path: record
+                _canonical_key(record.canonical_path): record
                 for record in session.scalars(select(LogicalModelRecord))
             }
             seen: set[str] = set()
             for model in models:
                 canonical_path = str(model.canonical_path)
-                seen.add(canonical_path)
-                record = existing.get(canonical_path)
+                canonical_key = _canonical_key(canonical_path)
+                seen.add(canonical_key)
+                record = existing.get(canonical_key)
                 if record is None:
                     record = LogicalModelRecord(
                         id=str(uuid4()), canonical_path=str(model.canonical_path)
@@ -145,3 +147,8 @@ class LogicalModelRegistry:
             metadata=dict(record.attributes),
             validation_state=record.validation_state,
         )
+
+
+def _canonical_key(path: str | Path) -> str:
+    """Return a stable comparison key without changing the displayed path."""
+    return os.path.normcase(str(Path(path).resolve()))

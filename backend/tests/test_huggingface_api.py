@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
+from conftest import Login
 from fastapi.testclient import TestClient
 from huggingface_hub.errors import HfHubHTTPError
 from requests import Response
@@ -8,7 +9,11 @@ from requests import Response
 from llamawebui.app import create_app
 from llamawebui.config import Settings
 from llamawebui.domain.model_manifest import GgufGroup, HubFile
-from llamawebui.services.huggingface_catalog import ModelSearchResult, RepositoryManifest
+from llamawebui.services.huggingface_catalog import (
+    CatalogUnavailableError,
+    ModelSearchResult,
+    RepositoryManifest,
+)
 
 
 def error_response(status_code: int) -> Response:
@@ -55,12 +60,14 @@ class FakeCatalog:
                     complete=True,
                 ),
             ),
+            readme="# Model card\n\nRepository description.",
         )
 
 
-def test_huggingface_search_and_repository_endpoints(tmp_path: Path) -> None:
+def test_huggingface_search_and_repository_endpoints(tmp_path: Path, login: Login) -> None:
     catalog = FakeCatalog()
     with TestClient(create_app(Settings(data_dir=tmp_path), catalog=catalog)) as client:
+        login(client)
         search = client.get(
             "/api/huggingface/models", params={"q": "qwen", "sort": "downloads", "limit": 10}
         )
@@ -74,21 +81,23 @@ def test_huggingface_search_and_repository_endpoints(tmp_path: Path) -> None:
     assert catalog.search_call == ("qwen", "downloads", 10)
     assert repository.status_code == 200
     assert repository.json()["revision"] == "abc123"
+    assert repository.json()["readme"] == "# Model card\n\nRepository description."
     assert repository.json()["groups"][0]["files"] == [
         {"path": "model-Q4_K_M.gguf", "size": 42}
     ]
     assert catalog.repository_call == ("owner/model-GGUF", "main")
 
 
-def test_huggingface_query_validation(tmp_path: Path) -> None:
+def test_huggingface_query_validation(tmp_path: Path, login: Login) -> None:
     with TestClient(create_app(Settings(data_dir=tmp_path), catalog=FakeCatalog())) as client:
+        login(client)
         assert client.get("/api/huggingface/models", params={"q": ""}).status_code == 422
         assert client.get(
             "/api/huggingface/models", params={"q": "qwen", "limit": 101}
         ).status_code == 422
 
 
-def test_huggingface_errors_are_redacted(tmp_path: Path) -> None:
+def test_huggingface_errors_are_redacted(tmp_path: Path, login: Login) -> None:
     class FailingCatalog(FakeCatalog):
         async def search(
             self, query: str, *, sort: str | None = None, limit: int = 25
@@ -103,6 +112,7 @@ def test_huggingface_errors_are_redacted(tmp_path: Path) -> None:
             raise HfHubHTTPError("private details", response=error_response(404))
 
     with TestClient(create_app(Settings(data_dir=tmp_path), catalog=FailingCatalog())) as client:
+        login(client)
         search = client.get("/api/huggingface/models", params={"q": "qwen"})
         repository = client.get("/api/huggingface/repositories/missing/model")
 
@@ -111,3 +121,20 @@ def test_huggingface_errors_are_redacted(tmp_path: Path) -> None:
     assert "hf_secret" not in search.text
     assert repository.status_code == 404
     assert repository.json() == {"detail": "Hugging Face request failed"}
+
+
+def test_huggingface_offline_failure_is_explicitly_unavailable(
+    tmp_path: Path, login: Login
+) -> None:
+    class OfflineCatalog(FakeCatalog):
+        async def search(
+            self, query: str, *, sort: str | None = None, limit: int = 25
+        ) -> tuple[ModelSearchResult, ...]:
+            raise CatalogUnavailableError("Hugging Face search is unavailable")
+
+    with TestClient(create_app(Settings(data_dir=tmp_path), catalog=OfflineCatalog())) as client:
+        login(client)
+        response = client.get("/api/huggingface/models", params={"q": "qwen"})
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Hugging Face search is unavailable"}

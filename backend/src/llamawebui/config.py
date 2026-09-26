@@ -39,3 +39,7 @@ class Settings(BaseSettings):
     @property
     def database_path(self) -> Path:
         return self.data_dir / "llamawebui.db"
+
+    @property
+    def database_backup_dir(self) -> Path:
+        return self.data_dir / "backups"
