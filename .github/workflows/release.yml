@@ -75,7 +75,7 @@ jobs:
 
       - name: Build Windows one-folder package
         shell: pwsh
-        run: .\packaging\build-windows.ps1 -Output dist
+        run: .\packaging\build-windows.ps1 -Output dist -PythonPath (Get-Command python.exe).Source
 
       - name: Create package archive
         shell: pwsh
