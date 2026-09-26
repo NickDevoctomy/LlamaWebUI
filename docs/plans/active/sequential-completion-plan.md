@@ -268,7 +268,7 @@ The baseline contains known stale statements in older planning documents. This p
 
 ## Phase 7 — Hardening and release
 
-**Status:** In progress — slices 7.1–7.4 are complete; slice 7.5 is the current next action.
+**Status:** Complete — slices 7.1–7.5 and the Phase 7 gate pass.
 
 ### 7.1 Backup and restore
 
@@ -306,18 +306,18 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### 7.5 Operator documentation
 
-**Status:** In progress — begin after slice 7.4 passed.
+**Status:** Complete — evidence is recorded in `notes/0025-phase-7-5-operator-documentation.md`.
 
 - Write setup, runtime registration/install, model discovery/download, profile, token, OpenCode, diagnostics, backup/restore, and troubleshooting guides.
 - Base troubleshooting entries on observed failure output.
 
 ### Phase 7 gate
 
-- [ ] Package starts on a clean Windows machine.
-- [ ] Operator can register/install a runtime, discover/download/register a model, create a profile, start the router, and connect from OpenCode.
-- [ ] Backup/restore, accessibility, offline behavior, and diagnostics are accepted.
-- [ ] CI/platform evidence is complete.
-- [ ] No unreviewed secrets or generated machine state are included.
+- [x] Package starts on a clean Windows machine.
+- [x] Operator can register/install a runtime, discover/download/register a model, create a profile, start the router, and connect from OpenCode.
+- [x] Backup/restore, accessibility, offline behavior, and diagnostics are accepted.
+- [x] CI/platform evidence is complete.
+- [x] No unreviewed secrets or generated machine state are included.
 
 ## Final release gate
 
@@ -329,4 +329,4 @@ Release is complete only when every phase gate above is checked and the followin
 - No required acceptance step depends on the 93.7 GB routine-download target.
 - A suggested release commit/tag message is recorded.
 
-**Current next action:** Begin Phase 7.5 — operator documentation. Do not begin the final Phase 7 gate until operator documentation is accepted.
+**Current next action:** No next implementation slice. The sequential completion plan is complete.

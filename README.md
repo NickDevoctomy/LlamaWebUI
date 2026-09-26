@@ -277,6 +277,65 @@ Updates replace package files only after the application is stopped. Runtime
 upgrades remain explicit registration/install operations; an application update
 must never silently replace an installed or in-use llama.cpp runtime.
 
+## Operator checklist
+
+### First run
+
+1. Register an existing `llama-server` runtime in **Runtimes**, or install a
+   published build through the runtime installer.
+2. Open **Discover**, search for a GGUF repository, inspect the revision,
+   quantization, file count, and size, then explicitly select **Download**.
+3. Confirm the completed artifact appears in **Models** and reconcile the
+   library after importing files from an external managed directory.
+4. Create or import a profile, select the runtime and model alias, validate it,
+   and enable it only after validation succeeds.
+5. Start the router from **Dashboard** or **Server**, wait for `Ready`, then
+   use `/v1/models` to select the model alias for clients.
+6. Create an access key in **Access** and configure clients through the
+   environment-variable examples in this document.
+
+### Routine operations
+
+- Use **Server** to start, restart, stop, and inspect router logs and telemetry.
+- Use **Models** to reconcile local files, inspect logical-model state, and
+  remove only application-managed completed artifacts.
+- Use **Profiles** to validate configuration after changing runtimes or model
+  paths. A `Broken` profile indicates a missing or unavailable model and must
+  be repaired or disabled before starting the router.
+- Use **Access** to revoke keys. Stop/restart the router after key changes
+  because the native key file is read at router startup.
+- Use **Settings** and diagnostics export when collecting support information;
+  never include raw keys, `.env` contents, or generated key-file contents.
+
+### Safe update and recovery rules
+
+- Stop the application before replacing the Windows package.
+- Keep `data/`, backups, models, generated keys, and registered runtimes outside
+  the package directory.
+- Database backups are created under `data/backups/` before migrations and are
+  retained to a bounded count. Do not delete the current database or backups
+  during routine updates.
+- Runtime updates are explicit and side-by-side. Do not overwrite an in-use
+  runtime; register or install a new build, validate profiles, then switch
+  deliberately.
+- Do not start multiple copies of the application. Reuse the existing backend
+  and frontend service pair, or stop the workspace-owned pair before restarting.
+
+### Troubleshooting quick reference
+
+| Symptom | Check | Safe action |
+| --- | --- | --- |
+| Login required or session expired | Control-plane session cookie | Sign in again; do not expose the cookie. |
+| Router will not start | Runtime probe, enabled profiles, and profile validation state | Fix runtime/profile diagnostics, then retry. |
+| Profile is `Broken` | Model path and completed download validity | Re-download the known source or update the profile path. |
+| API returns 401 | Bearer key, router restart after key change, and model alias | Use an active key from the environment and restart after revocation/creation. |
+| Download is paused or failed | Download job error and available disk space | Resume or retry; never manually publish partial files. |
+| Hub is unavailable | Cached metadata and local Models state | Continue using known local models; retry discovery later. |
+| UI has stale state | Browser session and control-plane health | Refresh the page and check `/api/health`. |
+
+Support bundles and logs must be reviewed for secrets before sharing. Redaction
+does not make it safe to publish raw environment files or native key files.
+
 Run backend checks from `backend/`:
 
 ```powershell
