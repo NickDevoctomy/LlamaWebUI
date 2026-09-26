@@ -1,6 +1,16 @@
 {
   "versions": [
     {
+      "version": "0.3.0",
+      "release_date": "2026-09-26",
+      "changes": [
+        {
+          "type": "feat",
+          "description": "Roles can now be created and privileges applied. Administrator and User roles have been added as protected roles."
+        }     
+      ]
+    },    
+    {
       "version": "0.2.0",
       "release_date": "2026-09-26",
       "changes": [
