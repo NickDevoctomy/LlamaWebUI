@@ -215,15 +215,13 @@ def test_authenticated_admin_can_list_and_create_admin_users(tmp_path: Path) -> 
 
         created = client.post(
             "/api/auth/users",
-            json={"username": "operator", "password": "operator-secret"},
+            json={"username": "operator", "password": "operator-secret", "description": "Ops user"},
             headers={CSRF_HEADER: CSRF_HEADER_VALUE},
         )
         assert created.status_code == 201
-        assert created.json() == {
-            "id": created.json()["id"],
-            "username": "operator",
-            "default_credentials": False,
-        }
+        assert created.json()["username"] == "operator"
+        assert created.json()["description"] == "Ops user"
+        assert created.json()["role"] == "Administrator"
 
         with _client(tmp_path) as operator:
             operator_login = operator.post(
@@ -254,3 +252,56 @@ def test_user_creation_rejects_duplicate_and_unauthenticated_requests(tmp_path: 
             headers=headers,
         )
     assert duplicate.status_code == 409
+
+
+def test_role_crud_and_user_assignment(tmp_path: Path) -> None:
+    headers = {CSRF_HEADER: CSRF_HEADER_VALUE}
+    with _client(tmp_path) as client:
+        assert client.post("/api/auth/login", json={"username": "admin", "password": "admin"}).status_code == 200
+        roles = client.get("/api/auth/roles")
+        assert roles.status_code == 200
+        administrator = next(role for role in roles.json() if role["name"] == "Administrator")
+        assert administrator["protected"] is True
+        role = client.post(
+            "/api/auth/roles",
+            json={"name": "Reader", "description": "Read-only", "privileges": ["server.read"]},
+            headers=headers,
+        )
+        assert role.status_code == 201
+        reader = role.json()
+        assert reader["privileges"] == ["server.read"]
+        created = client.post(
+            "/api/auth/users",
+            json={"username": "reader", "password": "reader-secret", "role_id": reader["id"]},
+            headers=headers,
+        )
+        assert created.status_code == 201
+        assert created.json()["role"] == "Reader"
+        updated = client.put(
+            f"/api/auth/roles/{reader['id']}",
+            json={"name": "Reader", "description": "Updated", "privileges": ["server.read", "library.read"]},
+            headers=headers,
+        )
+        assert updated.status_code == 200
+        assert updated.json()["privileges"] == ["library.read", "server.read"]
+        listed = client.get("/api/auth/users")
+        assert listed.json()[1]["role"] == "Reader"
+
+
+def test_protected_and_invalid_role_operations_are_rejected(tmp_path: Path) -> None:
+    headers = {CSRF_HEADER: CSRF_HEADER_VALUE}
+    with _client(tmp_path) as client:
+        client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        administrator = client.get("/api/auth/roles").json()[0]
+        protected_update = client.put(
+            f"/api/auth/roles/{administrator['id']}",
+            json={"name": "Changed", "privileges": []},
+            headers=headers,
+        )
+        assert protected_update.status_code == 403
+        invalid = client.post(
+            "/api/auth/roles",
+            json={"name": "Invalid", "privileges": ["unknown.read"]},
+            headers=headers,
+        )
+        assert invalid.status_code == 422

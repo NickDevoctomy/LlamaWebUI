@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from llamawebui.models import (
@@ -24,6 +24,7 @@ from llamawebui.models import (
     SessionRecord,
     UserRecord,
 )
+from llamawebui.services.authorization import PRIVILEGE_KEYS
 
 DEFAULT_ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_PASSWORD = "admin"
@@ -50,6 +51,30 @@ class UserAlreadyExistsError(ValueError):
     pass
 
 
+class RoleAlreadyExistsError(ValueError):
+    pass
+
+
+class RoleNotFoundError(LookupError):
+    pass
+
+
+class RoleProtectedError(ValueError):
+    pass
+
+
+class RoleInUseError(ValueError):
+    pass
+
+
+class InvalidPrivilegesError(ValueError):
+    pass
+
+
+class LastAdministratorError(ValueError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class AuthenticatedUser:
     id: str
@@ -59,6 +84,26 @@ class AuthenticatedUser:
     role_id: str
     role_name: str
     privileges: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedRole:
+    id: str
+    name: str
+    description: str | None
+    protected: bool
+    privileges: tuple[str, ...]
+    user_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedUser:
+    id: str
+    username: str
+    description: str | None
+    role_id: str
+    role_name: str
+    default_credentials: bool
 
 
 class AuthService:
@@ -114,6 +159,16 @@ class AuthService:
             )
 
     def create_user(self, username: str, password: str) -> AuthenticatedUser:
+        return self.create_managed_user(username, password)
+
+    def create_managed_user(
+        self,
+        username: str,
+        password: str,
+        *,
+        description: str | None = None,
+        role_id: str | None = None,
+    ) -> AuthenticatedUser:
         clean_username = username.strip()
         with self._sessions() as session:
             existing = session.scalar(
@@ -121,17 +176,103 @@ class AuthService:
             )
             if existing is not None:
                 raise UserAlreadyExistsError("username is already in use")
+            selected_role_id = role_id or session.scalar(
+                select(RoleRecord.id).where(RoleRecord.name == "Administrator")
+            )
+            if selected_role_id is None or session.get(RoleRecord, selected_role_id) is None:
+                raise RoleNotFoundError("role not found")
             user = UserRecord(
                 id=str(uuid4()),
                 username=clean_username,
                 password_hash=self._hasher.hash(password),
-                role_id=session.scalar(
-                    select(RoleRecord.id).where(RoleRecord.name == "Administrator")
-                ),
+                description=description,
+                role_id=selected_role_id,
             )
             session.add(user)
             session.commit()
             return self._authenticated_user(session, user, default_credentials=False)
+
+    def list_roles(self) -> tuple[ManagedRole, ...]:
+        with self._sessions() as session:
+            roles = session.scalars(select(RoleRecord).order_by(RoleRecord.name)).all()
+            return tuple(self._managed_role(session, role) for role in roles)
+
+    def create_role(
+        self, name: str, description: str | None, privileges: tuple[str, ...]
+    ) -> ManagedRole:
+        clean_name = name.strip()
+        clean_privileges = self._validate_privileges(privileges)
+        with self._sessions() as session:
+            if session.scalar(select(RoleRecord).where(RoleRecord.name == clean_name)) is not None:
+                raise RoleAlreadyExistsError("role name is already in use")
+            role = RoleRecord(id=str(uuid4()), name=clean_name, description=description, protected=False)
+            session.add(role)
+            session.flush()
+            session.add_all(
+                RolePrivilegeRecord(role_id=role.id, privilege_key=key)
+                for key in clean_privileges
+            )
+            session.commit()
+            return self._managed_role(session, role)
+
+    def update_role(
+        self, role_id: str, name: str, description: str | None, privileges: tuple[str, ...]
+    ) -> ManagedRole:
+        clean_privileges = self._validate_privileges(privileges)
+        with self._sessions() as session:
+            role = session.get(RoleRecord, role_id)
+            if role is None:
+                raise RoleNotFoundError("role not found")
+            if role.protected:
+                raise RoleProtectedError("protected roles cannot be edited")
+            if session.scalar(
+                select(RoleRecord).where(RoleRecord.name == name.strip(), RoleRecord.id != role_id)
+            ) is not None:
+                raise RoleAlreadyExistsError("role name is already in use")
+            if self._is_administrator(role_id, session) and not self._is_full_privilege_set(clean_privileges):
+                raise LastAdministratorError("at least one administrator role must retain full access")
+            role.name = name.strip()
+            role.description = description
+            session.execute(delete(RolePrivilegeRecord).where(RolePrivilegeRecord.role_id == role_id))
+            session.add_all(
+                RolePrivilegeRecord(role_id=role_id, privilege_key=key) for key in clean_privileges
+            )
+            session.commit()
+            return self._managed_role(session, role)
+
+    def delete_role(self, role_id: str) -> None:
+        with self._sessions() as session:
+            role = session.get(RoleRecord, role_id)
+            if role is None:
+                raise RoleNotFoundError("role not found")
+            if role.protected:
+                raise RoleProtectedError("protected roles cannot be deleted")
+            if session.scalar(select(UserRecord.id).where(UserRecord.role_id == role_id)) is not None:
+                raise RoleInUseError("role is assigned to one or more users")
+            session.delete(role)
+            session.commit()
+
+    def list_managed_users(self) -> tuple[ManagedUser, ...]:
+        with self._sessions() as session:
+            users = session.scalars(select(UserRecord).order_by(UserRecord.username)).all()
+            return tuple(self._managed_user(session, user) for user in users)
+
+    def update_user(
+        self, user_id: str, *, description: str | None, role_id: str
+    ) -> ManagedUser:
+        with self._sessions() as session:
+            user = session.get(UserRecord, user_id)
+            if user is None:
+                raise AuthenticationError("user not found")
+            if session.get(RoleRecord, role_id) is None:
+                raise RoleNotFoundError("role not found")
+            if user.role_id != role_id and self._is_administrator(user.role_id, session):
+                if self._administrator_count(session) <= 1:
+                    raise LastAdministratorError("at least one administrator user is required")
+            user.description = description
+            user.role_id = role_id
+            session.commit()
+            return self._managed_user(session, user)
 
     def create_session(self, user_id: str) -> SessionRecord:
         session_id = secrets.token_urlsafe(48)
@@ -247,6 +388,53 @@ class AuthService:
     def _role_name(self, session: Session, role_id: str) -> str:
         role = session.get(RoleRecord, role_id)
         return role.name if role is not None else "Unknown"
+
+    def _managed_role(self, session: Session, role: RoleRecord) -> ManagedRole:
+        privilege_statement = select(RolePrivilegeRecord.privilege_key).where(
+            RolePrivilegeRecord.role_id == role.id
+        )
+        user_count = session.scalar(
+            select(func.count()).select_from(UserRecord).where(UserRecord.role_id == role.id)
+        ) or 0
+        return ManagedRole(
+            id=role.id,
+            name=role.name,
+            description=role.description,
+            protected=role.protected,
+            privileges=tuple(sorted(session.scalars(privilege_statement).all())),
+            user_count=user_count,
+        )
+
+    def _managed_user(self, session: Session, user: UserRecord) -> ManagedUser:
+        return ManagedUser(
+            id=user.id,
+            username=user.username,
+            description=user.description,
+            role_id=user.role_id,
+            role_name=self._role_name(session, user.role_id),
+            default_credentials=self._is_default_hash(user.password_hash),
+        )
+
+    def _validate_privileges(self, privileges: tuple[str, ...]) -> tuple[str, ...]:
+        clean = tuple(dict.fromkeys(privileges))
+        if len(clean) != len(privileges) or not set(clean).issubset(PRIVILEGE_KEYS):
+            raise InvalidPrivilegesError("privileges must be known and unique")
+        return clean
+
+    def _is_full_privilege_set(self, privileges: tuple[str, ...]) -> bool:
+        return set(privileges) == set(PRIVILEGE_KEYS)
+
+    def _is_administrator(self, role_id: str, session: Session) -> bool:
+        role = session.get(RoleRecord, role_id)
+        if role is not None and role.protected:
+            return True
+        privileges = set(session.scalars(
+            select(RolePrivilegeRecord.privilege_key).where(RolePrivilegeRecord.role_id == role_id)
+        ).all())
+        return self._is_full_privilege_set(tuple(privileges))
+
+    def _administrator_count(self, session: Session) -> int:
+        return sum(self._is_administrator(user.role_id, session) for user in session.scalars(select(UserRecord)))
 
     def _privileges(self, session: Session, role_id: str) -> frozenset[str]:
         statement = (
