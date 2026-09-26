@@ -5,7 +5,7 @@
 **Requirements reference:** [../llama-web-ui-plan.md](../llama-web-ui-plan.md)
 **Updated:** 2026-09-26
 **Current phase:** Phase 5 — Hugging Face and downloads completion
-**Current slice:** 5.1 — General library reconciliation
+**Current slice:** 5.2 — Offline and upstream-failure behavior
 
 ## Operating rule
 
@@ -35,7 +35,7 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 - Phase 2: Complete — slices 2.1 and 2.2 pass; all Phase 2 gate criteria pass.
 - Phase 3: Complete — slices 3.1–3.3 accepted. User confirmed the desktop Profiles workflow is usable and accepted screenshot-evidenced responsive defects as deferred technical debt; see `notes/0011-phase-3-3-profile-gate-acceptance.md` and [`../../tech-debt/profile-panel-responsive-layout.md`](../../tech-debt/profile-panel-responsive-layout.md). No repeat manual test requested. The active plan was not modified.
 - Phase 4: Complete — slices 4.1–4.2 accepted; see `notes/0012-phase-4-1-real-runtime-lifecycle.md` and `notes/0013-phase-4-2-real-runtime-model-events.md`.
-- Phase 5: Not started.
+- Phase 5: In progress — slice 5.1 complete; slice 5.2 is next. See `notes/0015-phase-5-1-general-library-reconciliation.md`.
 - Phase 6: Not started.
 - Phase 7: Not started.
 
@@ -62,9 +62,10 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 | 2026-09-24 | Phase 4.1 real-runtime lifecycle | Complete; see `notes/0012-phase-4-1-real-runtime-lifecycle.md`. |
 | 2026-09-24 | Phase 4.2 real-runtime model-event capture | CUDA b11060 emitted native `status_change` SSE frames for load (`loading`) and unload; profile restored to unloaded, durable run stopped without error, managed port released. 38 focused tests passed. Details: `notes/0013-phase-4-2-real-runtime-model-events.md`. |
 | 2026-09-26 | Control-plane login delivery | Backend auth, frontend login/user management, HTTPS documentation, full quality gates, and browser acceptance completed. Backend: 280 passed, 1 skipped, 90.41% branch coverage, Ruff, and mypy passed. Frontend: 27 tests and production build passed. Details: `notes/0014-control-plane-login.md`. |
+| 2026-09-26 | Phase 5.1 general library reconciliation | Directory-scoped GGUF discovery prevents same-named external shard sets from combining; normalized logical-model/profile path reconciliation preserves identity and links across platform path casing. Backend: 281 passed, 1 skipped, 90.42% coverage; Ruff, mypy, frontend tests/build, and `git diff --check` passed. Details: `notes/0015-phase-5-1-general-library-reconciliation.md`. |
 
 ## Next action
 
-Begin Phase 5 slice 5.1 — general library reconciliation. Do not begin Phase 6 until the Phase 5 gate passes.
+Begin Phase 5 slice 5.2 — offline and upstream-failure behavior. Do not begin Phase 5.3 or Phase 6 until the relevant gates pass.
 
-Suggested commit: `feat: complete control-plane login delivery`.
+Suggested commit: `fix: reconcile duplicate local model provenance safely`.

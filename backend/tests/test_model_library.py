@@ -241,6 +241,26 @@ def test_library_discover_finds_complete_external_shards(tmp_path: Path) -> None
     assert discovered[0].model_name == "model"
 
 
+def test_library_discovery_keeps_same_named_models_in_separate_directories(
+    tmp_path: Path,
+) -> None:
+    model_root = tmp_path / "models"
+    first_dir = model_root / "owner-one"
+    second_dir = model_root / "owner-two"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir(parents=True)
+    for directory, suffix in ((first_dir, b"one"), (second_dir, b"two")):
+        (directory / "model-Q4-00001-of-00002.gguf").write_bytes(suffix)
+        (directory / "model-Q4-00002-of-00002.gguf").write_bytes(suffix)
+
+    registry = DownloadRegistry(create_database_engine(tmp_path / "app.db"), model_root)
+
+    discovered = ModelLibrary(registry, model_root).discover()
+
+    assert len(discovered) == 2
+    assert {model.primary_path.parent for model in discovered} == {first_dir, second_dir}
+
+
 def test_library_reads_scalar_gguf_metadata(tmp_path: Path) -> None:
     model = tmp_path / "model.gguf"
     metadata = [("general.name", 4, "Demo Model"), ("general.context_length", 10, 4096)]

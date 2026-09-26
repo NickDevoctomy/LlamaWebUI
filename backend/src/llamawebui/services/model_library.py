@@ -91,13 +91,17 @@ class ModelLibrary:
         )
 
     def discover(self) -> tuple[DiscoveredModel, ...]:
-        candidates: dict[str, list[Path]] = {}
+        # The directory is part of the identity.  Two unmanaged repositories
+        # commonly contain the same filename (for example, ``model-Q4.gguf``);
+        # grouping by filename alone incorrectly combines their shards and can
+        # make a complete model appear incomplete.
+        candidates: dict[tuple[Path, str], list[Path]] = {}
         for path in self._model_root.rglob("*.gguf"):
             if not path.is_file() or path.is_symlink():
                 continue
             match = _SHARD_PATTERN.match(path.name)
             key = match.group("prefix") if match else path.stem
-            candidates.setdefault(key, []).append(path)
+            candidates.setdefault((path.parent.resolve(), key.casefold()), []).append(path)
         discovered: list[DiscoveredModel] = []
         for paths in candidates.values():
             paths.sort()
