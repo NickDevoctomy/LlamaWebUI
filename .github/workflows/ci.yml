@@ -20,9 +20,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Release support is Windows x64 and Linux. macOS is intentionally
-        # excluded because it is not a supported build target.
-        os: [ubuntu-latest, windows-latest]
+        # GitHub-hosted macOS CI is included for portability coverage. This
+        # machine cannot execute the macOS job locally; GitHub Actions is the
+        # source of truth for that runner.
+        os: [ubuntu-latest, windows-latest, macos-latest]
     env:
       CI: true
 
