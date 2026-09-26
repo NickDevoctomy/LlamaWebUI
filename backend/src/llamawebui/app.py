@@ -45,6 +45,7 @@ from llamawebui.services.auth_service import (
     SessionNotFoundError,
     UserAlreadyExistsError,
 )
+from llamawebui.services.database_backup import backup_database
 from llamawebui.services.diagnostics import DiagnosticsExporter
 from llamawebui.services.download_coordinator import DownloadCoordinator
 from llamawebui.services.download_registry import (
@@ -512,6 +513,7 @@ def create_app(
             },
         )
         app_settings.data_dir.mkdir(parents=True, exist_ok=True)
+        backup_database(app_settings.database_path, app_settings.database_backup_dir)
         upgrade_database(app_settings.database_path)
         engine = create_database_engine(app_settings.database_path)
         app.state.runtime_registry = RuntimeRegistry(engine, prober=runtime_prober)

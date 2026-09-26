@@ -268,9 +268,11 @@ The baseline contains known stale statements in older planning documents. This p
 
 ## Phase 7 — Hardening and release
 
-**Status:** Not started. Start only after Phase 6 gate.
+**Status:** In progress — slice 7.1 is complete; slice 7.2 is the current next action.
 
 ### 7.1 Backup and restore
+
+**Status:** Complete — evidence is recorded in `notes/0021-phase-7-1-backup-restore.md`.
 
 - Back up the SQLite database before migrations or destructive maintenance.
 - Retain a bounded number of backups.
@@ -278,6 +280,8 @@ The baseline contains known stale statements in older planning documents. This p
 - Never overwrite the current database without an atomic replacement and recovery path.
 
 ### 7.2 Accessibility and responsive hardening
+
+**Status:** In progress — begin after slice 7.1 passed.
 
 - Run keyboard, focus, semantic-label, and screen-reader-oriented checks on all workflows.
 - Recheck desktop and `390x844` mobile layouts.
@@ -319,4 +323,4 @@ Release is complete only when every phase gate above is checked and the followin
 - No required acceptance step depends on the 93.7 GB routine-download target.
 - A suggested release commit/tag message is recorded.
 
-**Current next action:** Begin Phase 7.1 — backup and restore. Do not begin Phase 7.2 until the backup/restore gate passes.
+**Current next action:** Begin Phase 7.2 — accessibility and responsive hardening. Do not begin Phase 7.3 until the accessibility/responsive gate passes.
