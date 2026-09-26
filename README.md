@@ -293,16 +293,21 @@ git tag -a v0.1.0 -m "Release v0.1.0"
 git push origin main --follow-tags
 ```
 
-The `Release` workflow checks out the tag, runs the complete quality gates,
-builds the Windows one-folder package, creates
+Only when a version tag is pushed does the `Release` workflow start. It checks
+that the tag points to a commit reachable from `main`, calls the same reusable
+CI matrix used for ordinary branch and pull-request validation, and makes the
+packaging job depend on that CI job. After CI succeeds it builds the Windows
+one-folder package and creates
 `llamawebui-v0.1.0-windows-x64.zip`, generates release notes from the matching
 `changelog.json` entry, and publishes the GitHub release. The package contains
 the application only; user data, models, access keys, backups, and registered
 runtimes remain external.
 
-To rerun a release workflow manually, use **Actions → Release → Run workflow**
-and provide an existing version tag. The workflow requires exactly one matching
-changelog version entry and will not publish a release for an undocumented tag.
+The release workflow is intentionally not manually dispatchable: ordinary
+branch pushes, including pushes to `main`, do not start a Release run. It runs
+only for tags matching `vMAJOR.MINOR.PATCH`, requires the tag to be on `main`,
+requires its CI dependency to pass, and requires exactly one matching changelog
+version entry.
 
 ## Operator checklist
 
