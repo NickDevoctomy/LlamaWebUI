@@ -8,6 +8,12 @@ backend = root / "backend" / "src"
 
 hiddenimports = collect_submodules("llamawebui")
 datas = collect_data_files("llamawebui", include_py_files=True)
+datas.extend(
+    [
+        (str(backend / "llamawebui" / "static"), "llamawebui/static"),
+        (str(backend / "llamawebui" / "migrations"), "llamawebui/migrations"),
+    ]
+)
 
 analysis = Analysis(
     [str(backend / "llamawebui" / "__main__.py")],

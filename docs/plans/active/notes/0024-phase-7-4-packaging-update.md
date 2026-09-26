@@ -23,7 +23,9 @@
 - `git diff --check`: passed.
 - GitHub Actions CI passed on all three configured platforms: Linux, Windows, and macOS. macOS packaging is not required; its CI job provides source/build compatibility coverage.
 
-The actual Windows one-folder executable build remains runner-only because this environment does not have PyInstaller installed and package creation is intentionally not performed by the routine test gate.
+- PyInstaller 6.22.3 was installed into the project virtual environment and the Windows package was built locally with `packaging/build-windows.ps1`.
+- Packaged CLI smoke test passed: `dist\\llamawebui\\llamawebui.exe --help`.
+- Final package contains 312 files totaling 49,960,861 bytes, including `llamawebui/static/index.html` and `llamawebui/migrations/script.py.mako` under the PyInstaller `_internal` directory.
 
 ## Next action
 
