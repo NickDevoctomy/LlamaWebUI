@@ -87,6 +87,12 @@ export interface AuthUser {
   default_credentials: boolean
 }
 
+export interface ManagedUser {
+  id: string
+  username: string
+  default_credentials: boolean
+}
+
 export interface CreatedAccessToken extends AccessToken {
   token: string
 }
@@ -227,6 +233,11 @@ export const api = {
   changePassword: (currentPassword: string, newPassword: string) => request<{ changed: boolean }>('/api/auth/password', {
     method: 'POST',
     body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  }),
+  users: () => request<ManagedUser[]>('/api/auth/users'),
+  createUser: (username: string, password: string) => request<ManagedUser>('/api/auth/users', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
   }),
   serverStatus: () => request<ServerStatus>('/api/server/status'),
   runtimes: () => request<Runtime[]>('/api/runtimes'),

@@ -43,6 +43,7 @@ from llamawebui.services.auth_service import (
     AuthenticationError,
     AuthService,
     SessionNotFoundError,
+    UserAlreadyExistsError,
 )
 from llamawebui.services.diagnostics import DiagnosticsExporter
 from llamawebui.services.download_coordinator import DownloadCoordinator
@@ -223,6 +224,11 @@ class LoginRequest(BaseModel):
 class PasswordChangeRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=1024)
     new_password: str = Field(min_length=1, max_length=1024)
+
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=1024)
 
 
 def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
@@ -844,6 +850,35 @@ def create_app(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)
             ) from error
         return {"changed": True}
+
+    @app.get("/api/auth/users")
+    async def list_users(request: Request) -> list[dict[str, object]]:
+        _require_session(request)
+        return [
+            {
+                "id": user.id,
+                "username": user.username,
+                "default_credentials": user.default_credentials,
+            }
+            for user in _auth_service(request).list_users()
+        ]
+
+    @app.post("/api/auth/users", status_code=status.HTTP_201_CREATED)
+    async def create_user(
+        user_request: UserCreateRequest, request: Request
+    ) -> dict[str, object]:
+        _require_session(request)
+        try:
+            user = _auth_service(request).create_user(
+                user_request.username, user_request.password
+            )
+        except UserAlreadyExistsError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return {
+            "id": user.id,
+            "username": user.username,
+            "default_credentials": user.default_credentials,
+        }
 
     @app.post("/api/diagnostics/export")
     async def export_diagnostics(request: Request) -> dict[str, object]:

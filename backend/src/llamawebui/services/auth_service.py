@@ -40,6 +40,10 @@ class SessionNotFoundError(LookupError):
     pass
 
 
+class UserAlreadyExistsError(ValueError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class AuthenticatedUser:
     id: str
@@ -84,6 +88,39 @@ class AuthService:
                 user.password_hash = self._hasher.hash(password)
                 session.commit()
             return user
+
+    def list_users(self) -> tuple[AuthenticatedUser, ...]:
+        with self._sessions() as session:
+            users = session.scalars(select(UserRecord).order_by(UserRecord.username)).all()
+            return tuple(
+                AuthenticatedUser(
+                    id=user.id,
+                    username=user.username,
+                    default_credentials=self._is_default_hash(user.password_hash),
+                )
+                for user in users
+            )
+
+    def create_user(self, username: str, password: str) -> AuthenticatedUser:
+        clean_username = username.strip()
+        with self._sessions() as session:
+            existing = session.scalar(
+                select(UserRecord).where(UserRecord.username == clean_username)
+            )
+            if existing is not None:
+                raise UserAlreadyExistsError("username is already in use")
+            user = UserRecord(
+                id=str(uuid4()),
+                username=clean_username,
+                password_hash=self._hasher.hash(password),
+            )
+            session.add(user)
+            session.commit()
+            return AuthenticatedUser(
+                id=user.id,
+                username=user.username,
+                default_credentials=False,
+            )
 
     def create_session(self, user_id: str) -> SessionRecord:
         session_id = secrets.token_urlsafe(48)

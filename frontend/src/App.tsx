@@ -44,6 +44,7 @@ const navigation = [
   ['Access', KeyRound],
   ['Runtimes', Cpu],
   ['Settings', Settings],
+  ['Users', UserRound],
 ] as const
 
 function stateLabel(value?: string) {
@@ -141,6 +142,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
     queryFn: api.models,
     enabled: authReady && running,
   })
+  const users = useQuery({ queryKey: ['users'], queryFn: api.users, enabled: authReady })
   const previousDownloadStates = useRef<Map<string, string> | undefined>(undefined)
 
   useEffect(() => {
@@ -317,6 +319,8 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
             <DownloadsPanel jobs={downloads.data ?? []} library={library.data ?? []} onCreateProfile={(model) => { setProfileSeed(model); setSection('Profiles') }} />
           ) : section === 'Settings' ? (
             <AccountPanel user={user} />
+          ) : section === 'Users' ? (
+            <UsersPanel users={users.data ?? []} />
           ) : (
             <CollectionPanel section={section} runtimes={runtimes.data ?? []} profiles={profiles.data ?? []} tokens={tokens.data ?? []} />
           )}
@@ -510,6 +514,29 @@ function AccountPanel({ user }: { user: Awaited<ReturnType<typeof api.currentUse
       </form>
       {changePassword.isSuccess && <div className="panel-footer"><span>{confirmation}</span></div>}
     </section>
+  </section>
+}
+
+function UsersPanel({ users }: { users: Awaited<ReturnType<typeof api.users>> }) {
+  const [open, setOpen] = useState(false)
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const queryClient = useQueryClient()
+  const createUser = useMutation({
+    mutationFn: () => api.createUser(username, password),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['users'] })
+      setOpen(false)
+      setUsername('')
+      setPassword('')
+    },
+  })
+  return <section className="data-panel">
+    <div className="panel-heading"><div><h2>Users</h2><p>All accounts currently have administrator access.</p></div><button className="button primary compact" onClick={() => setOpen(true)} type="button"><UserRound size={14} /> Add user</button></div>
+    <div className="record-list">{users.map((managedUser) => <div className="record-row" key={managedUser.id}><span className="record-icon"><UserRound size={17} /></span><div className="record-copy"><strong>{managedUser.username}</strong><span>{managedUser.default_credentials ? 'Default credentials active' : 'Administrator'}</span></div><span className="profile-tag">Admin</span></div>)}</div>
+    {!users.length && <div className="empty"><UserRound size={28} /><strong>No users found</strong><span>The account list is unavailable or empty.</span></div>}
+    <div className="panel-footer"><span>{users.length} account(s)</span><span>Roles and permissions are not yet separated.</span></div>
+    {open && <Dialog title="Add administrator" description="Create another account with full control-plane access." onClose={() => setOpen(false)}><form className="form-body" onSubmit={(event) => { event.preventDefault(); createUser.mutate() }}><label className="form-field"><span>Username</span><input autoFocus autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></label><label className="form-field"><span>Temporary password</span><input autoComplete="new-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /><small>The user can sign in immediately. Password reset management will be added with role separation.</small></label>{createUser.error && <div className="form-error"><AlertCircle size={15} /> {createUser.error.message}</div>}<footer className="dialog-actions"><button className="button secondary" onClick={() => setOpen(false)} type="button">Cancel</button><button className="button primary" disabled={createUser.isPending || username.trim().length < 1 || password.length < 8} type="submit">{createUser.isPending ? <LoaderCircle className="spin" size={15} /> : <UserRound size={15} />} Add administrator</button></footer></form></Dialog>}
   </section>
 }
 

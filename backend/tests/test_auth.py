@@ -183,3 +183,56 @@ def test_password_hash_is_never_exposed(tmp_path: Path) -> None:
         assert "password" not in me.text.lower()
         assert "hash" not in me.text.lower()
         assert "admin" in me.text
+
+
+def test_authenticated_admin_can_list_and_create_admin_users(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        login = client.post(
+            "/api/auth/login", json={"username": "admin", "password": "admin"}
+        )
+        assert login.status_code == 200
+        users = client.get("/api/auth/users")
+        assert users.status_code == 200
+        assert [user["username"] for user in users.json()] == ["admin"]
+
+        created = client.post(
+            "/api/auth/users",
+            json={"username": "operator", "password": "operator-secret"},
+            headers={CSRF_HEADER: CSRF_HEADER_VALUE},
+        )
+        assert created.status_code == 201
+        assert created.json() == {
+            "id": created.json()["id"],
+            "username": "operator",
+            "default_credentials": False,
+        }
+
+        with _client(tmp_path) as operator:
+            operator_login = operator.post(
+                "/api/auth/login",
+                json={"username": "operator", "password": "operator-secret"},
+            )
+            assert operator_login.status_code == 200
+
+
+def test_user_creation_rejects_duplicate_and_unauthenticated_requests(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        unauthenticated = client.post(
+            "/api/auth/users",
+            json={"username": "operator", "password": "operator-secret"},
+            headers={CSRF_HEADER: CSRF_HEADER_VALUE},
+        )
+        assert unauthenticated.status_code == 401
+        client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {CSRF_HEADER: CSRF_HEADER_VALUE}
+        assert client.post(
+            "/api/auth/users",
+            json={"username": "operator", "password": "operator-secret"},
+            headers=headers,
+        ).status_code == 201
+        duplicate = client.post(
+            "/api/auth/users",
+            json={"username": "operator", "password": "other-secret"},
+            headers=headers,
+        )
+    assert duplicate.status_code == 409
