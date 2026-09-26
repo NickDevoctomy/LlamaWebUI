@@ -4,8 +4,8 @@
 **Execution plan:** [sequential-completion-plan.md](sequential-completion-plan.md)
 **Requirements reference:** [../llama-web-ui-plan.md](../llama-web-ui-plan.md)
 **Updated:** 2026-09-26
-**Current phase:** Phase 5 — Hugging Face and downloads completion
-**Current slice:** 5.3 — Primary download acceptance
+**Current phase:** Phase 6 — Tokens and client onboarding completion
+**Current slice:** 6.1 — Authenticated connection tests
 
 ## Operating rule
 
@@ -35,7 +35,8 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 - Phase 2: Complete — slices 2.1 and 2.2 pass; all Phase 2 gate criteria pass.
 - Phase 3: Complete — slices 3.1–3.3 accepted. User confirmed the desktop Profiles workflow is usable and accepted screenshot-evidenced responsive defects as deferred technical debt; see `notes/0011-phase-3-3-profile-gate-acceptance.md` and [`../../tech-debt/profile-panel-responsive-layout.md`](../../tech-debt/profile-panel-responsive-layout.md). No repeat manual test requested. The active plan was not modified.
 - Phase 4: Complete — slices 4.1–4.2 accepted; see `notes/0012-phase-4-1-real-runtime-lifecycle.md` and `notes/0013-phase-4-2-real-runtime-model-events.md`.
-- Phase 5: In progress — slices 5.1–5.2 complete; slice 5.3 is next. See `notes/0015-phase-5-1-general-library-reconciliation.md` and `notes/0016-phase-5-2-offline-upstream-failures.md`.
+- Phase 5: Complete — slices 5.1–5.3 passed and the Phase 5 gate is complete. See `notes/0015-phase-5-1-general-library-reconciliation.md`, `notes/0016-phase-5-2-offline-upstream-failures.md`, and `notes/0017-phase-5-3-primary-download-acceptance.md`.
+- Phase 6: In progress — slice 6.1 is next.
 - Phase 6: Not started.
 - Phase 7: Not started.
 
@@ -64,9 +65,10 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 | 2026-09-26 | Control-plane login delivery | Backend auth, frontend login/user management, HTTPS documentation, full quality gates, and browser acceptance completed. Backend: 280 passed, 1 skipped, 90.41% branch coverage, Ruff, and mypy passed. Frontend: 27 tests and production build passed. Details: `notes/0014-control-plane-login.md`. |
 | 2026-09-26 | Phase 5.1 general library reconciliation | Directory-scoped GGUF discovery prevents same-named external shard sets from combining; normalized logical-model/profile path reconciliation preserves identity and links across platform path casing. Backend: 281 passed, 1 skipped, 90.42% coverage; Ruff, mypy, frontend tests/build, and `git diff --check` passed. Details: `notes/0015-phase-5-1-general-library-reconciliation.md`. |
 | 2026-09-26 | Phase 5.2 offline and upstream-failure behavior | Added bounded cached Hub metadata with deterministic fallback during transient failures and explicit safe HTTP 503 responses when no cache exists. Backend: 284 passed, 1 skipped, 90.24% coverage; Ruff, mypy, frontend tests/build, and `git diff --check` passed. Details: `notes/0016-phase-5-2-offline-upstream-failures.md`. |
+| 2026-09-26 | Phase 5.3 primary download acceptance | Approved `unsloth/Qwen3.5-9B-GGUF` `Q4_K_M` artifact completed at 5,680,522,464 bytes; stale-cache publication and idempotent retry were fixed; profile validation, router readiness, model load/unload, and managed cleanup passed. Backend: 287 passed, 1 skipped, 90.06% coverage; frontend: 27 tests and build passed. Details: `notes/0017-phase-5-3-primary-download-acceptance.md`. |
 
 ## Next action
 
-Begin Phase 5 slice 5.3 — primary download acceptance using only the approved small acceptance model. Do not begin Phase 6 until the Phase 5 gate passes.
+Begin Phase 6 slice 6.1 — authenticated connection tests. Do not begin Phase 6.2 until the deterministic connection-test gate passes.
 
-Suggested commit: `feat: preserve cached hub metadata during outages`.
+Suggested commit: `fix: make model download publication idempotent`.

@@ -199,7 +199,7 @@ The baseline contains known stale statements in older planning documents. This p
 
 ## Phase 5 — Hugging Face and downloads completion
 
-**Status:** Core implementation complete; general reconciliation and offline behavior remain. Start only after Phase 4 gate.
+**Status:** Complete — slices 5.1–5.3 and the Phase 5 gate pass. Start Phase 6 only after this gate.
 
 ### 5.1 General library reconciliation
 
@@ -220,10 +220,10 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### Phase 5 gate
 
-- [ ] General reconciliation is complete.
-- [ ] Offline/local behavior is tested.
-- [ ] Approved live download acceptance passes.
-- [ ] No unmanaged files are deleted.
+- [x] General reconciliation is complete.
+- [x] Offline/local behavior is tested.
+- [x] Approved live download acceptance passes.
+- [x] No unmanaged files are deleted.
 
 ## Phase 6 — Tokens and client onboarding completion
 
@@ -312,4 +312,4 @@ Release is complete only when every phase gate above is checked and the followin
 - No required acceptance step depends on the 93.7 GB routine-download target.
 - A suggested release commit/tag message is recorded.
 
-**Current next action:** Begin Phase 5.1 — general library reconciliation. Do not begin Phase 6 until the Phase 5 gate passes.
+**Current next action:** Begin Phase 6.1 — authenticated connection tests. Do not begin Phase 6.2 until the deterministic connection-test gate passes.

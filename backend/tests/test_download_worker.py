@@ -16,6 +16,7 @@ from llamawebui.services.download_worker import (
     DownloadWorker,
     HuggingFaceFileTransfer,
     _matches_etag,
+    _safe_file_size,
 )
 from llamawebui.services.huggingface_catalog import RepositoryManifest
 from llamawebui.services.huggingface_transfer_process import execute_transfer
@@ -163,6 +164,45 @@ async def test_worker_rejects_existing_destination(tmp_path: Path) -> None:
     assert "already exists" in (registry.get(job_id).error or "")
 
 
+async def test_worker_replaces_stale_cache_only_destination(tmp_path: Path) -> None:
+    registry, job_id = create_registry(tmp_path, (1,))
+    job = registry.get(job_id)
+    destination = Path(job.destination)
+    (destination / ".cache" / "huggingface").mkdir(parents=True)
+
+    class Transfer:
+        async def download(
+            self, *, repo_id: str, filename: str, revision: str, destination: Path
+        ) -> Path:
+            target = destination / filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"x")
+            return target
+
+    await DownloadWorker(registry, Transfer()).run(job_id)
+
+    assert registry.get(job_id).state == DownloadState.COMPLETED
+    assert (Path(job.destination) / "model-0.gguf").read_bytes() == b"x"
+
+
+async def test_worker_completes_when_valid_destination_was_published_before_retry(
+    tmp_path: Path,
+) -> None:
+    registry, job_id = create_registry(tmp_path, (1,))
+    job = registry.get(job_id)
+    destination = Path(job.destination)
+    destination.mkdir(parents=True)
+    (destination / "model-0.gguf").write_bytes(b"x")
+
+    class Transfer:
+        async def download(self, **kwargs: object) -> Path:
+            raise AssertionError("a valid published destination should not redownload")
+
+    await DownloadWorker(registry, Transfer()).run(job_id)
+
+    assert registry.get(job_id).state == DownloadState.COMPLETED
+
+
 async def test_worker_fails_when_disk_space_drops_during_transfer(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -224,6 +264,24 @@ async def test_worker_tracks_progress_inside_a_file(
         await worker_task
 
     assert registry.get(job_id).state == DownloadState.COMPLETED
+
+
+async def test_safe_file_size_tolerates_cache_file_finalization_race(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = tmp_path / "file.incomplete"
+    path.write_bytes(b"partial")
+    original_stat = Path.stat
+
+    def disappearing_stat(candidate: Path):
+        if candidate == path:
+            path.unlink()
+        return original_stat(candidate)
+
+    monkeypatch.setattr(Path, "stat", disappearing_stat)
+
+    await asyncio.sleep(0)
+    assert _safe_file_size(path) == 0
 
 
 async def test_worker_records_size_failure(tmp_path: Path) -> None:

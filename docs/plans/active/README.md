@@ -19,6 +19,14 @@ Use this prompt when starting a new coding session:
 
 ## Sequential workflow
 
+### Service-process rule
+
+- Run at most one LlamaWebUI backend and one frontend development server at a time.
+- Before starting services, check whether the documented ports `18080` and `5173` are already owned by this workspace's processes and reuse the existing services when possible.
+- Do not start a second copy for a browser tab or retry. If a restart is required, stop the existing workspace-owned backend/frontend first, verify the ports are clear, then start exactly one replacement pair.
+- Keep browser acceptance in the existing shared page whenever possible; additional browser tabs do not justify additional servers.
+- At the end of acceptance, leave the single intended development pair running only when the user is expected to test; otherwise stop it and record that state.
+
 1. Open `sequential-progress.md`.
 2. Read the current phase and next action in `sequential-progress.md`.
 3. Read the matching requirements and acceptance criteria in `sequential-completion-plan.md`.
