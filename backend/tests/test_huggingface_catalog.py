@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 from huggingface_hub import HfApi
 
-from llamawebui.services.huggingface_catalog import HuggingFaceCatalog
+from llamawebui.services.huggingface_catalog import CatalogUnavailableError, HuggingFaceCatalog
 
 pytestmark = pytest.mark.asyncio
 
@@ -46,6 +46,25 @@ async def test_search_preserves_provider_relevance_order_by_default() -> None:
     await HuggingFaceCatalog(api=api).search("model")
 
     api.list_models.assert_called_once_with(filter="gguf", search="model", limit=25, full=True)
+
+
+async def test_search_uses_recent_cache_when_hub_is_unavailable() -> None:
+    api = Mock(spec=HfApi)
+    api.list_models.return_value = []
+    catalog = HuggingFaceCatalog(api=api)
+
+    await catalog.search("model")
+    api.list_models.side_effect = OSError("offline")
+
+    assert await catalog.search("model") == ()
+
+
+async def test_search_reports_unavailable_without_cached_metadata() -> None:
+    api = Mock(spec=HfApi)
+    api.list_models.side_effect = OSError("offline")
+
+    with pytest.raises(CatalogUnavailableError, match="search is unavailable"):
+        await HuggingFaceCatalog(api=api).search("model")
 
 
 async def test_repository_pins_revision_and_groups_files(tmp_path: Path) -> None:

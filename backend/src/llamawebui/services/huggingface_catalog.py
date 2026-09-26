@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 from huggingface_hub import HfApi
-from huggingface_hub.errors import EntryNotFoundError
+from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError
 
 from llamawebui.domain.model_manifest import GgufGroup, HubFile, group_gguf_files
+
+CacheKey = TypeVar("CacheKey")
+CacheValue = TypeVar("CacheValue")
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +38,10 @@ class RepositoryManifest:
     readme: str | None = None
 
 
+class CatalogUnavailableError(RuntimeError):
+    """The Hub could not be reached and no cached response was available."""
+
+
 class Catalog(Protocol):
     async def search(
         self, query: str, *, sort: str | None = None, limit: int = 25
@@ -45,8 +53,19 @@ class Catalog(Protocol):
 
 
 class HuggingFaceCatalog:
-    def __init__(self, token: str | None = None, *, api: HfApi | None = None) -> None:
+    def __init__(
+        self,
+        token: str | None = None,
+        *,
+        api: HfApi | None = None,
+        cache_ttl_seconds: float = 300.0,
+    ) -> None:
         self._api = api or HfApi(token=token)
+        self._cache_ttl_seconds = cache_ttl_seconds
+        self._search_cache: dict[
+            tuple[str, str | None, int], tuple[float, tuple[ModelSearchResult, ...]]
+        ] = {}
+        self._repository_cache: dict[tuple[str, str | None], tuple[float, RepositoryManifest]] = {}
 
     async def search(
         self, query: str, *, sort: str | None = None, limit: int = 25
@@ -59,8 +78,15 @@ class HuggingFaceCatalog:
         }
         if sort is not None:
             request.update(sort=sort, direction=-1)
-        models = await asyncio.to_thread(lambda: list(self._api.list_models(**request)))
-        return tuple(
+        cache_key = (query, sort, limit)
+        try:
+            models = await asyncio.to_thread(lambda: list(self._api.list_models(**request)))
+        except (HfHubHTTPError, OSError) as error:
+            cached = self._cached(self._search_cache, cache_key)
+            if cached is not None:
+                return cached
+            raise CatalogUnavailableError("Hugging Face search is unavailable") from error
+        results = tuple(
             ModelSearchResult(
                 repo_id=model.id,
                 downloads=model.downloads or 0,
@@ -72,16 +98,27 @@ class HuggingFaceCatalog:
             )
             for model in models
         )
+        self._search_cache[cache_key] = (time.monotonic(), results)
+        return results
 
     async def repository(
         self, repo_id: str, *, revision: str | None = None
     ) -> RepositoryManifest:
-        model = await asyncio.to_thread(
-            self._api.model_info,
-            repo_id,
-            revision=revision,
-            files_metadata=True,
-        )
+        cache_key = (repo_id, revision)
+        try:
+            model = await asyncio.to_thread(
+                self._api.model_info,
+                repo_id,
+                revision=revision,
+                files_metadata=True,
+            )
+        except (HfHubHTTPError, OSError) as error:
+            cached = self._cached(self._repository_cache, cache_key)
+            if cached is not None:
+                return cached
+            raise CatalogUnavailableError(
+                "Hugging Face repository metadata is unavailable"
+            ) from error
         if model.sha is None:
             raise ValueError(f"repository did not resolve to a commit SHA: {repo_id}")
         files = tuple(
@@ -93,12 +130,28 @@ class HuggingFaceCatalog:
             )
             for sibling in model.siblings or ()
         )
-        return RepositoryManifest(
+        manifest = RepositoryManifest(
             repo_id=model.id,
             revision=model.sha,
             groups=group_gguf_files(files),
             readme=await self._readme(repo_id, model.sha),
         )
+        self._repository_cache[cache_key] = (time.monotonic(), manifest)
+        return manifest
+
+    def _cached(
+        self,
+        cache: dict[CacheKey, tuple[float, CacheValue]],
+        key: CacheKey,
+    ) -> CacheValue | None:
+        entry = cache.get(key)
+        if entry is None:
+            return None
+        timestamp, value = entry
+        if time.monotonic() - timestamp > self._cache_ttl_seconds:
+            cache.pop(key, None)
+            return None
+        return value
 
     async def _readme(self, repo_id: str, revision: str) -> str | None:
         try:

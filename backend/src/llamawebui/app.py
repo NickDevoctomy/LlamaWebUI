@@ -62,7 +62,11 @@ from llamawebui.services.event_broker import (
     EventBroker,
     EventCursorError,
 )
-from llamawebui.services.huggingface_catalog import Catalog, HuggingFaceCatalog
+from llamawebui.services.huggingface_catalog import (
+    Catalog,
+    CatalogUnavailableError,
+    HuggingFaceCatalog,
+)
 from llamawebui.services.llama_release_installer import (
     GitHubReleaseClient,
     ReleaseInstallError,
@@ -1590,6 +1594,10 @@ def create_app(
             results = await hub.search(q, sort=sort, limit=limit)
         except HfHubHTTPError as error:
             raise _hub_error(error) from error
+        except CatalogUnavailableError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+            ) from error
         return [
             {
                 "repo_id": result.repo_id,
@@ -1612,6 +1620,10 @@ def create_app(
             manifest = await hub.repository(repo_id, revision=revision)
         except HfHubHTTPError as error:
             raise _hub_error(error) from error
+        except CatalogUnavailableError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+            ) from error
         return {
             "repo_id": manifest.repo_id,
             "revision": manifest.revision,
@@ -1824,6 +1836,10 @@ def create_app(
             return payload
         except HfHubHTTPError as error:
             raise _hub_error(error) from error
+        except CatalogUnavailableError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+            ) from error
         except DownloadPlanError as error:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)

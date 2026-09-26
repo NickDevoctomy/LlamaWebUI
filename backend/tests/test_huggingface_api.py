@@ -9,7 +9,11 @@ from requests import Response
 from llamawebui.app import create_app
 from llamawebui.config import Settings
 from llamawebui.domain.model_manifest import GgufGroup, HubFile
-from llamawebui.services.huggingface_catalog import ModelSearchResult, RepositoryManifest
+from llamawebui.services.huggingface_catalog import (
+    CatalogUnavailableError,
+    ModelSearchResult,
+    RepositoryManifest,
+)
 
 
 def error_response(status_code: int) -> Response:
@@ -117,3 +121,20 @@ def test_huggingface_errors_are_redacted(tmp_path: Path, login: Login) -> None:
     assert "hf_secret" not in search.text
     assert repository.status_code == 404
     assert repository.json() == {"detail": "Hugging Face request failed"}
+
+
+def test_huggingface_offline_failure_is_explicitly_unavailable(
+    tmp_path: Path, login: Login
+) -> None:
+    class OfflineCatalog(FakeCatalog):
+        async def search(
+            self, query: str, *, sort: str | None = None, limit: int = 25
+        ) -> tuple[ModelSearchResult, ...]:
+            raise CatalogUnavailableError("Hugging Face search is unavailable")
+
+    with TestClient(create_app(Settings(data_dir=tmp_path), catalog=OfflineCatalog())) as client:
+        login(client)
+        response = client.get("/api/huggingface/models", params={"q": "qwen"})
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Hugging Face search is unavailable"}
