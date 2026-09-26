@@ -34,6 +34,7 @@ The OpenAI-compatible inference endpoint is explicitly out of scope for user-acc
 - **CSRF:** A dependency on all state-changing routes requiring the custom header; returns `403` when absent.
 - **Password change:** Only the signed-in `admin` can change the admin password. Requires the current password; sets a new password (new hash). Never returns the hash or existing password.
 - **Frontend:** Add login/logout UI, a User Management screen (password change), and show the signed-in username + logout button at the bottom-left of the sidebar directly above the "Local control plane / version" section. Show a warning while default `admin` / `admin` credentials are active. Represent loading, empty, success, error, disabled, confirmation, and destructive states.
+- **Additional users:** The Users tab now lists accounts and lets an authenticated administrator create additional administrator accounts. Role separation, user deletion, and per-user password administration remain out of scope; all current accounts have administrator access.
 
 ## Acceptance
 

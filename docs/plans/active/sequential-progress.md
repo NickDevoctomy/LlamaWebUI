@@ -3,7 +3,7 @@
 **Status:** Active
 **Execution plan:** [sequential-completion-plan.md](sequential-completion-plan.md)
 **Requirements reference:** [../llama-web-ui-plan.md](../llama-web-ui-plan.md)
-**Updated:** 2026-09-24
+**Updated:** 2026-09-26
 **Current phase:** Phase 5 — Hugging Face and downloads completion
 **Current slice:** 5.1 — General library reconciliation
 
@@ -26,6 +26,7 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 - Phase 3.3 - see `notes/0011-phase-3-3-profile-gate-acceptance.md`.
 - Phase 4.1 - see `notes/0012-phase-4-1-real-runtime-lifecycle.md`.
 - Phase 4.2 - see `notes/0013-phase-4-2-real-runtime-model-events.md`.
+- Control-plane login delivery slices 1–3 - see `notes/0014-control-plane-login.md`.
 
 ## Phase gates
 
@@ -60,9 +61,10 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 | 2026-09-24 | Phase 3.3 gate acceptance | User accepted desktop Profiles workflow and explicitly deferred responsive issues shown in supplied screenshots to [`../../tech-debt/profile-panel-responsive-layout.md`](../../tech-debt/profile-panel-responsive-layout.md). No repeat acceptance requested. Earlier slice evidence covers logical-model lifecycle, Windows command round-trip, and no profile mutation on import/validation errors. Phase 3 accepted; active plan unchanged. Details: `notes/0011-phase-3-3-profile-gate-acceptance.md`. |
 | 2026-09-24 | Phase 4.1 real-runtime lifecycle | Complete; see `notes/0012-phase-4-1-real-runtime-lifecycle.md`. |
 | 2026-09-24 | Phase 4.2 real-runtime model-event capture | CUDA b11060 emitted native `status_change` SSE frames for load (`loading`) and unload; profile restored to unloaded, durable run stopped without error, managed port released. 38 focused tests passed. Details: `notes/0013-phase-4-2-real-runtime-model-events.md`. |
+| 2026-09-26 | Control-plane login delivery | Backend auth, frontend login/user management, HTTPS documentation, full quality gates, and browser acceptance completed. Backend: 280 passed, 1 skipped, 90.41% branch coverage, Ruff, and mypy passed. Frontend: 27 tests and production build passed. Details: `notes/0014-control-plane-login.md`. |
 
 ## Next action
 
 Begin Phase 5 slice 5.1 — general library reconciliation. Do not begin Phase 6 until the Phase 5 gate passes.
 
-Suggested commit: `test: record native model lifecycle events`.
+Suggested commit: `feat: complete control-plane login delivery`.

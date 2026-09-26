@@ -88,7 +88,7 @@ To bind both services to a specific address, pass an IPv4 address or `0.0.0.0`:
 .\start.ps1 0.0.0.0
 ```
 
-The backend listens on port `18080` and the frontend on port `5173`. Use the machine's LAN address in a browser when connecting from another device. Binding beyond loopback requires an API key for the managed router; do not expose it to an untrusted network.
+The backend listens on port `18080` and the frontend on port `5173`. Use the machine's LAN address in a browser when connecting from another device. The control-plane login protects management endpoints, but credentials and session cookies must be transported over HTTPS whenever the control plane is reachable beyond loopback. Binding beyond loopback requires an API key for the managed router; do not expose either service to an untrusted network.
 
 ## Start the frontend
 
