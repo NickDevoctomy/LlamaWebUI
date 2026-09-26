@@ -31,14 +31,15 @@ The following work is already present in the repository and is not repeated as p
 - Logical-model persistence/reconciliation, profile relationships, missing-state retention, and guarded missing-record removal.
 - Profile CRUD, clone, reset, validate, JSON import/export, readable command export, and non-executing command import.
 - Token creation/revocation, restricted native key-file generation, OpenCode configuration generation, and live authenticated inference/tool-call acceptance evidence.
-- Backend quality gate: 224 tests passed, 90.01% branch coverage, Ruff passed, and strict mypy passed.
-- Frontend production build passed.
+- Latest backend quality gate: 287 passed, 1 skipped, 90.06% branch coverage, Ruff passed, and strict mypy passed.
+- Latest frontend quality gate: 27 tests passed and production build passed.
+- Phase 5 live acceptance completed with the approved `unsloth/Qwen3.5-9B-GGUF` `Q4_K_M` artifact at revision `3885219b6810b007914f3a7950a8d1b469d598a5`; detailed evidence is in `notes/0017-phase-5-3-primary-download-acceptance.md`.
 
 The baseline contains known stale statements in older planning documents. This plan is the sequential source for remaining implementation work. The historical commit sequence is intentionally not repeated here; this document is focused only on remaining work.
 
 ## Phase 0 — Feasibility completion
 
-**Status:** Incomplete. This is the first phase to close in the sequential completion pass.
+**Status:** Complete — slices 0.1–0.2 and the Phase 0 gate pass. Start Phase 1 only after this gate.
 
 ### 0.1 Confirm API-key reload semantics
 
@@ -227,14 +228,18 @@ The baseline contains known stale statements in older planning documents. This p
 
 ## Phase 6 — Tokens and client onboarding completion
 
-**Status:** Implemented feature set; formal phase gate remains blocked by earlier phases and must be closed only after Phases 0–5 are gated.
+**Status:** In progress — Phases 0–5 are gated; slice 6.1 is the current next action.
 
 ### 6.1 Authenticated connection tests
+
+**Status:** Not started.
 
 - Add deterministic fake-router tests for authenticated `/v1/models`, non-streaming completion, streaming completion, invalid token rejection, and sanitized errors.
 - Keep these tests independent of real models and fixed ports.
 
 ### 6.2 Live authenticated acceptance
+
+**Status:** Not started — begin only after slice 6.1 passes.
 
 - With an existing validated model/profile and registered runtime:
   - Create a token and use it for authenticated model listing.
@@ -246,6 +251,8 @@ The baseline contains known stale statements in older planning documents. This p
 - Never print or store the raw token in acceptance artifacts.
 
 ### 6.3 Onboarding documentation
+
+**Status:** Not started — begin only after slice 6.2 passes.
 
 - Verify generated OpenCode/curl/OpenAI SDK configuration examples contain only placeholders, not raw secrets.
 - Document restart requirements and local-only control-plane behavior.
