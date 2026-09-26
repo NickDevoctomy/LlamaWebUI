@@ -209,7 +209,9 @@ class AuthService:
         with self._sessions() as session:
             if session.scalar(select(RoleRecord).where(RoleRecord.name == clean_name)) is not None:
                 raise RoleAlreadyExistsError("role name is already in use")
-            role = RoleRecord(id=str(uuid4()), name=clean_name, description=description, protected=False)
+            role = RoleRecord(
+                id=str(uuid4()), name=clean_name, description=description, protected=False
+            )
             session.add(role)
             session.flush()
             session.add_all(
@@ -233,13 +235,20 @@ class AuthService:
                 select(RoleRecord).where(RoleRecord.name == name.strip(), RoleRecord.id != role_id)
             ) is not None:
                 raise RoleAlreadyExistsError("role name is already in use")
-            if self._is_administrator(role_id, session) and not self._is_full_privilege_set(clean_privileges):
-                raise LastAdministratorError("at least one administrator role must retain full access")
+            if self._is_administrator(role_id, session) and not self._is_full_privilege_set(
+                clean_privileges
+            ):
+                raise LastAdministratorError(
+                    "at least one administrator role must retain full access"
+                )
             role.name = name.strip()
             role.description = description
-            session.execute(delete(RolePrivilegeRecord).where(RolePrivilegeRecord.role_id == role_id))
+            session.execute(
+                delete(RolePrivilegeRecord).where(RolePrivilegeRecord.role_id == role_id)
+            )
             session.add_all(
-                RolePrivilegeRecord(role_id=role_id, privilege_key=key) for key in clean_privileges
+                RolePrivilegeRecord(role_id=role_id, privilege_key=key)
+                for key in clean_privileges
             )
             session.commit()
             return self._managed_role(session, role)
@@ -251,7 +260,10 @@ class AuthService:
                 raise RoleNotFoundError("role not found")
             if role.protected:
                 raise RoleProtectedError("protected roles cannot be deleted")
-            if session.scalar(select(UserRecord.id).where(UserRecord.role_id == role_id)) is not None:
+            if (
+                session.scalar(select(UserRecord.id).where(UserRecord.role_id == role_id))
+                is not None
+            ):
                 raise RoleInUseError("role is assigned to one or more users")
             session.delete(role)
             session.commit()
@@ -270,9 +282,12 @@ class AuthService:
                 raise AuthenticationError("user not found")
             if session.get(RoleRecord, role_id) is None:
                 raise RoleNotFoundError("role not found")
-            if user.role_id != role_id and self._is_administrator(user.role_id, session):
-                if self._administrator_count(session) <= 1:
-                    raise LastAdministratorError("at least one administrator user is required")
+            if (
+                user.role_id != role_id
+                and self._is_administrator(user.role_id, session)
+                and self._administrator_count(session) <= 1
+            ):
+                raise LastAdministratorError("at least one administrator user is required")
             user.description = description
             user.role_id = role_id
             session.commit()
@@ -287,7 +302,10 @@ class AuthService:
                 raise ProtectedUserError("the default admin account cannot be deleted")
             if user.id == requesting_user_id:
                 raise ProtectedUserError("the signed-in account cannot be deleted")
-            if self._is_administrator(user.role_id, session) and self._administrator_count(session) <= 1:
+            if (
+                self._is_administrator(user.role_id, session)
+                and self._administrator_count(session) <= 1
+            ):
                 raise LastAdministratorError("at least one administrator user is required")
             session.execute(delete(SessionRecord).where(SessionRecord.user_id == user_id))
             session.delete(user)
@@ -453,7 +471,10 @@ class AuthService:
         return self._is_full_privilege_set(tuple(privileges))
 
     def _administrator_count(self, session: Session) -> int:
-        return sum(self._is_administrator(user.role_id, session) for user in session.scalars(select(UserRecord)))
+        return sum(
+            self._is_administrator(user.role_id, session)
+            for user in session.scalars(select(UserRecord))
+        )
 
     def _privileges(self, session: Session, role_id: str) -> frozenset[str]:
         statement = (

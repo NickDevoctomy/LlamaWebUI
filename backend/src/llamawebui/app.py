@@ -42,15 +42,15 @@ from llamawebui.services.auth_service import (
     AuthenticatedUser,
     AuthenticationError,
     AuthService,
-    SessionNotFoundError,
-    UserAlreadyExistsError,
     InvalidPrivilegesError,
     LastAdministratorError,
+    ProtectedUserError,
     RoleAlreadyExistsError,
     RoleInUseError,
     RoleNotFoundError,
     RoleProtectedError,
-    ProtectedUserError,
+    SessionNotFoundError,
+    UserAlreadyExistsError,
 )
 from llamawebui.services.authorization import privilege_for_request
 from llamawebui.services.database_backup import backup_database
@@ -960,7 +960,9 @@ def create_app(
         except RoleAlreadyExistsError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         except InvalidPrivilegesError as error:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
         return _managed_role_payload(role)
 
     @app.put("/api/auth/roles/{role_id}")
@@ -978,7 +980,9 @@ def create_app(
         except (RoleAlreadyExistsError, LastAdministratorError) as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         except InvalidPrivilegesError as error:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
         return _managed_role_payload(role)
 
     @app.delete("/api/auth/roles/{role_id}", status_code=status.HTTP_204_NO_CONTENT)
