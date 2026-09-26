@@ -37,17 +37,17 @@ import { DiscoverPanel, DownloadsPanel } from './DiscoveryPanels'
 import { Dialog, ProfilePanel, RuntimePanel } from './SetupPanels'
 
 const navigation = [
-  ['Dashboard', CircleGauge],
-  ['Models', Library],
-  ['Discover', Search],
-  ['Downloads', Download],
-  ['Server', Server],
-  ['Profiles', FolderCog],
-  ['Access', KeyRound],
-  ['Runtimes', Cpu],
-  ['Settings', Settings],
-  ['Users', UserRound],
-  ['Roles', Shield],
+  ['Dashboard', CircleGauge, 'server.read'],
+  ['Models', Library, 'library.read'],
+  ['Discover', Search, 'huggingface.read'],
+  ['Downloads', Download, 'downloads.read'],
+  ['Server', Server, 'server.read'],
+  ['Profiles', FolderCog, 'profiles.read'],
+  ['Access', KeyRound, 'tokens.read'],
+  ['Runtimes', Cpu, 'runtimes.read'],
+  ['Settings', Settings, 'settings.read'],
+  ['Users', UserRound, 'auth.read'],
+  ['Roles', Shield, 'auth.read'],
 ] as const
 
 function stateLabel(value?: string) {
@@ -81,7 +81,7 @@ function App() {
     queryKey: ['auth-user'],
     queryFn: api.currentUser,
     retry: false,
-    placeholderData: { username: '', default_credentials: false, description: null, role: '', privileges: [] },
+    placeholderData: { username: '', default_credentials: false, description: null, role: '', privileges: ['server.read', 'library.read', 'huggingface.read', 'downloads.read', 'profiles.read', 'tokens.read', 'runtimes.read', 'settings.read', 'auth.read'] },
   })
   const logout = useMutation({
     mutationFn: api.logout,
@@ -122,31 +122,37 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
   const [selectedRuntime, setSelectedRuntime] = useState('')
   const [profileSeed, setProfileSeed] = useState<LibraryModel>()
   const queryClient = useQueryClient()
+  const canRead = (privilege: string) => user.privileges?.includes(privilege) ?? false
+  const visibleNavigation = navigation.filter(([, , privilege]) => canRead(privilege))
+  const hasVisibleSection = visibleNavigation.some(([label]) => label === section)
+  useEffect(() => {
+    if (authReady && !hasVisibleSection) setSection(visibleNavigation[0]?.[0] ?? '')
+  }, [authReady, hasVisibleSection, visibleNavigation])
   const status = useQuery({
     queryKey: ['server'],
     queryFn: api.serverStatus,
-    enabled: authReady,
+    enabled: authReady && canRead('server.read'),
     refetchInterval: (query) => query.state.data?.state === 'ready' ? 2000 : false,
   })
-  const runtimes = useQuery({ queryKey: ['runtimes'], queryFn: api.runtimes, enabled: authReady })
-  const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles, enabled: authReady })
-  const tokens = useQuery({ queryKey: ['tokens'], queryFn: api.tokens, enabled: authReady })
+  const runtimes = useQuery({ queryKey: ['runtimes'], queryFn: api.runtimes, enabled: authReady && canRead('runtimes.read') })
+  const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles, enabled: authReady && canRead('profiles.read') })
+  const tokens = useQuery({ queryKey: ['tokens'], queryFn: api.tokens, enabled: authReady && canRead('tokens.read') })
   const downloads = useQuery({
     queryKey: ['downloads'],
     queryFn: api.downloads,
-    enabled: authReady,
+    enabled: authReady && canRead('downloads.read'),
     refetchInterval: (query) => query.state.data?.some((job) => ['queued', 'downloading'].includes(job.state)) ? 2000 : false,
   })
-  const library = useQuery({ queryKey: ['library'], queryFn: api.library, enabled: authReady, refetchInterval: 5000 })
-  const logicalLibrary = useQuery({ queryKey: ['logical-library'], queryFn: api.logicalLibrary, enabled: authReady, refetchInterval: 5000 })
+  const library = useQuery({ queryKey: ['library'], queryFn: api.library, enabled: authReady && canRead('library.read'), refetchInterval: 5000 })
+  const logicalLibrary = useQuery({ queryKey: ['logical-library'], queryFn: api.logicalLibrary, enabled: authReady && canRead('library.read'), refetchInterval: 5000 })
   const running = status.data?.state === 'ready' || status.data?.state === 'degraded'
   const models = useQuery({
     queryKey: ['models'],
     queryFn: api.models,
-    enabled: authReady && running,
+    enabled: authReady && running && canRead('server.read'),
   })
-  const users = useQuery({ queryKey: ['users'], queryFn: api.users, enabled: authReady })
-  const roles = useQuery({ queryKey: ['roles'], queryFn: api.roles, enabled: authReady })
+  const users = useQuery({ queryKey: ['users'], queryFn: api.users, enabled: authReady && canRead('auth.read') })
+  const roles = useQuery({ queryKey: ['roles'], queryFn: api.roles, enabled: authReady && canRead('auth.read') })
   const previousDownloadStates = useRef<Map<string, string> | undefined>(undefined)
 
   useEffect(() => {
@@ -201,7 +207,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
         </div>
         <nav aria-label="Primary navigation">
           <p className="nav-label">Workspace</p>
-          {navigation.map(([label, Icon]) => (
+          {visibleNavigation.map(([label, Icon]) => (
             <button
               aria-label={label}
               aria-current={section === label ? 'page' : undefined}
@@ -547,13 +553,18 @@ function UsersPanel({ users, roles, canManage }: { users: Awaited<ReturnType<typ
     mutationFn: () => api.updateUser(editing!.id, description, roleId),
     onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['users'] }); setEditing(undefined) },
   })
-  const openCreate = () => { setRoleId(roles.find((role) => role.name === 'Administrator')?.id ?? roles[0]?.id ?? ''); setOpen(true) }
+  const deleteUser = useMutation({
+    mutationFn: (id: string) => api.deleteUser(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
+  })
+  const openCreate = () => { setRoleId(roles.find((role) => role.name === 'User')?.id ?? roles.find((role) => role.name === 'Administrator')?.id ?? roles[0]?.id ?? ''); setOpen(true) }
   const openEdit = (user: typeof editing) => { setEditing(user); setDescription(user?.description ?? ''); setRoleId(user?.role_id ?? '') }
   return <section className="data-panel">
     <div className="panel-heading"><div><h2>Users</h2><p>Control-plane accounts and assigned roles.</p></div><button className="button primary compact" disabled={!canManage} onClick={openCreate} type="button"><UserRound size={14} /> Add user</button></div>
-    <div className="record-list">{users.map((managedUser) => <div className="record-row" key={managedUser.id}><span className="record-icon"><UserRound size={17} /></span><div className="record-copy"><strong>{managedUser.username}</strong><span>{managedUser.description || 'No description'}</span></div><span className="profile-tag">{managedUser.role}</span><button className="icon-button small" disabled={!canManage} aria-label={`Edit ${managedUser.username}`} onClick={() => openEdit(managedUser)} type="button"><Pencil size={14} /></button></div>)}</div>
+    <div className="record-list">{users.map((managedUser) => <div className="record-row" key={managedUser.id}><span className="record-icon"><UserRound size={17} /></span><div className="record-copy"><strong>{managedUser.username}</strong><span>{managedUser.description || 'No description'}</span></div><span className="profile-tag">{managedUser.role}</span><button className="icon-button small" disabled={!canManage} aria-label={`Edit ${managedUser.username}`} onClick={() => openEdit(managedUser)} type="button"><Pencil size={14} /></button><button className="icon-button small danger-icon" disabled={!canManage || managedUser.username === 'admin' || deleteUser.isPending} aria-label={`Delete ${managedUser.username}`} title={managedUser.username === 'admin' ? 'The default admin account cannot be deleted' : 'Delete user'} onClick={() => { if (window.confirm(`Delete user ${managedUser.username}?`)) deleteUser.mutate(managedUser.id) }} type="button"><Trash2 size={14} /></button></div>)}</div>
     {!users.length && <div className="empty"><UserRound size={28} /><strong>No users found</strong><span>The account list is unavailable or empty.</span></div>}
     <div className="panel-footer"><span>{users.length} account(s)</span><span>Descriptions and role assignments are editable.</span></div>
+    {deleteUser.error && <div className="form-error"><AlertCircle size={15} /> {deleteUser.error.message}</div>}
     {open && <Dialog title="Add user" description="Create a control-plane account with a selected role." onClose={() => setOpen(false)}><form className="form-body" onSubmit={(event) => { event.preventDefault(); createUser.mutate() }}><label className="form-field"><span>Username</span><input autoFocus autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></label><label className="form-field"><span>Temporary password</span><input autoComplete="new-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label><label className="form-field"><span>Description <small>(optional)</small></span><input value={description} onChange={(event) => setDescription(event.target.value)} /></label><label className="form-field"><span>Role</span><select value={roleId} onChange={(event) => setRoleId(event.target.value)}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>{createUser.error && <div className="form-error"><AlertCircle size={15} /> {createUser.error.message}</div>}<footer className="dialog-actions"><button className="button secondary" onClick={() => setOpen(false)} type="button">Cancel</button><button className="button primary" disabled={createUser.isPending || !roleId || username.trim().length < 1 || password.length < 8} type="submit">{createUser.isPending ? <LoaderCircle className="spin" size={15} /> : <UserRound size={15} />} Add user</button></footer></form></Dialog>}
     {editing && <Dialog title={`Edit ${editing.username}`} description="Update the account description and role." onClose={() => setEditing(undefined)}><form className="form-body" onSubmit={(event) => { event.preventDefault(); updateUser.mutate() }}><label className="form-field"><span>Description <small>(optional)</small></span><input autoFocus value={description} onChange={(event) => setDescription(event.target.value)} /></label><label className="form-field"><span>Role</span><select value={roleId} onChange={(event) => setRoleId(event.target.value)}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>{updateUser.error && <div className="form-error"><AlertCircle size={15} /> {updateUser.error.message}</div>}<footer className="dialog-actions"><button className="button secondary" onClick={() => setEditing(undefined)} type="button">Cancel</button><button className="button primary" disabled={updateUser.isPending || !roleId} type="submit">{updateUser.isPending ? <LoaderCircle className="spin" size={15} /> : <Pencil size={15} />} Save user</button></footer></form></Dialog>}
   </section>

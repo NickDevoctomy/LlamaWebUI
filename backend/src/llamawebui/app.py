@@ -50,6 +50,7 @@ from llamawebui.services.auth_service import (
     RoleInUseError,
     RoleNotFoundError,
     RoleProtectedError,
+    ProtectedUserError,
 )
 from llamawebui.services.authorization import privilege_for_request
 from llamawebui.services.database_backup import backup_database
@@ -1006,6 +1007,20 @@ def create_app(
         except LastAdministratorError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         return _managed_user_payload(user)
+
+    @app.delete("/api/auth/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def delete_user(user_id: str, request: Request) -> None:
+        current_user = _require_session(request)
+        try:
+            _auth_service(request).delete_user(
+                user_id, requesting_user_id=current_user.id
+            )
+        except AuthenticationError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ProtectedUserError as error:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+        except LastAdministratorError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     @app.post("/api/diagnostics/export")
     async def export_diagnostics(request: Request) -> dict[str, object]:

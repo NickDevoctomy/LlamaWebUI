@@ -265,6 +265,7 @@ export const api = {
   updateUser: (id: string, description: string, roleId: string) => request<ManagedUser>(`/api/auth/users/${id}`, {
     method: 'PUT', body: JSON.stringify({ description: description || null, role_id: roleId }),
   }),
+  deleteUser: (id: string) => request<void>(`/api/auth/users/${id}`, { method: 'DELETE' }),
   serverStatus: () => request<ServerStatus>('/api/server/status'),
   runtimes: () => request<Runtime[]>('/api/runtimes'),
   reprobeRuntime: (runtimeId: string) => request<Runtime>(`/api/runtimes/${runtimeId}/probe`, { method: 'POST' }),

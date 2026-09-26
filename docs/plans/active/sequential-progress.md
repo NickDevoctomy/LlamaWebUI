@@ -2,7 +2,7 @@
 
 **Feature:** Roles and privileges for control-plane users  
 **Status:** Slice 3 complete.  
-**Next action:** Perform live browser acceptance at desktop and 390x844 if further visual verification is required.
+**Next action:** Perform live browser acceptance at desktop and 390x844 if further visual verification is required; user deletion and protected User-role assignment are included in the acceptance flow.
 
 ## Current blocker
 

@@ -12,6 +12,9 @@
 - Extended Users with role and description display.
 - Added optional description and role selection when creating users.
 - Added user editing for descriptions and role assignments.
+- Added user deletion with confirmation and protected-account safeguards.
+- Added protected `User` role seeded with server start/stop, server read, and profile read privileges.
+- New users now default to the protected `User` role.
 - Added privilege-aware UI mutation gating based on the current session.
 - Added responsive privilege-grid styling for narrow layouts.
 - Updated frontend API types/client methods and test fixtures.
@@ -21,6 +24,8 @@
 - Frontend tests: **27 passed**.
 - Frontend production build: **passed**.
 - Backend tests after frontend integration: **passed**.
+- User deletion API tests: **17 focused auth tests passed**.
+- Protected User role tests: **21 focused auth/diagnostics tests passed**.
 - Backend Ruff: **passed**.
 - Backend mypy: **passed**.
 - `git diff --check`: **passed**.

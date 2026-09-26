@@ -188,6 +188,9 @@ def test_roles_and_privileges_are_seeded_and_idempotent(tmp_path: Path) -> None:
         second = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
         assert second.status_code == 200
         assert len(second.json()["privileges"]) == privilege_count
+        user_role = next(role for role in client.get("/api/auth/roles").json() if role["name"] == "User")
+        assert user_role["protected"] is True
+        assert user_role["privileges"] == ["library.read", "profiles.read", "server.lifecycle.write", "server.read"]
 
 
 def test_password_hash_is_never_exposed(tmp_path: Path) -> None:
@@ -305,3 +308,25 @@ def test_protected_and_invalid_role_operations_are_rejected(tmp_path: Path) -> N
             headers=headers,
         )
         assert invalid.status_code == 422
+
+
+def test_user_deletion_requires_protected_account_rules(tmp_path: Path) -> None:
+    headers = {CSRF_HEADER: CSRF_HEADER_VALUE}
+    with _client(tmp_path) as client:
+        client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        created = client.post(
+            "/api/auth/users",
+            json={"username": "operator", "password": "operator-secret"},
+            headers=headers,
+        )
+        assert created.status_code == 201
+        user_id = created.json()["id"]
+        deleted = client.delete(f"/api/auth/users/{user_id}", headers=headers)
+        assert deleted.status_code == 204
+        assert client.get("/api/auth/users").json() == [
+            item for item in client.get("/api/auth/users").json() if item["username"] == "admin"
+        ]
+
+        admin_id = client.get("/api/auth/users").json()[0]["id"]
+        protected = client.delete(f"/api/auth/users/{admin_id}", headers=headers)
+        assert protected.status_code == 403

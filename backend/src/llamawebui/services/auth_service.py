@@ -75,6 +75,10 @@ class LastAdministratorError(ValueError):
     pass
 
 
+class ProtectedUserError(ValueError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class AuthenticatedUser:
     id: str
@@ -273,6 +277,21 @@ class AuthService:
             user.role_id = role_id
             session.commit()
             return self._managed_user(session, user)
+
+    def delete_user(self, user_id: str, *, requesting_user_id: str) -> None:
+        with self._sessions() as session:
+            user = session.get(UserRecord, user_id)
+            if user is None:
+                raise AuthenticationError("user not found")
+            if user.username == DEFAULT_ADMIN_USERNAME:
+                raise ProtectedUserError("the default admin account cannot be deleted")
+            if user.id == requesting_user_id:
+                raise ProtectedUserError("the signed-in account cannot be deleted")
+            if self._is_administrator(user.role_id, session) and self._administrator_count(session) <= 1:
+                raise LastAdministratorError("at least one administrator user is required")
+            session.execute(delete(SessionRecord).where(SessionRecord.user_id == user_id))
+            session.delete(user)
+            session.commit()
 
     def create_session(self, user_id: str) -> SessionRecord:
         session_id = secrets.token_urlsafe(48)

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
 const responses: Record<string, unknown> = {
-  '/api/auth/me': { username: 'admin', default_credentials: false, description: null, role: 'Administrator', privileges: ['auth.read', 'auth.write'] },
+  '/api/auth/me': { username: 'admin', default_credentials: false, description: null, role: 'Administrator', privileges: ['auth.read', 'auth.write', 'server.read', 'library.read', 'profiles.read', 'downloads.read', 'tokens.read', 'runtimes.read', 'huggingface.read', 'integrations.read', 'diagnostics.read', 'settings.read'] },
   '/api/auth/users': [{ id: 'admin-1', username: 'admin', description: null, role_id: 'administrator', role: 'Administrator', default_credentials: false }],
   '/api/auth/roles': [{ id: 'administrator', name: 'Administrator', description: 'Full control', protected: true, privileges: ['auth.read', 'auth.write'], user_count: 1 }],
   '/api/server/status': {
@@ -39,6 +39,7 @@ function renderApp({
   serverStatus = responses['/api/server/status'],
   repositoryGroups = [{ key: 'model-Q4_K_M', quantization: 'Q4_K_M', total_size: 4_200_000_000, complete: true, files: [{ path: 'model-Q4_K_M.gguf', size: 4_200_000_000 }] }],
   repositoryReadme = '# Qwen model card\n\nUseful model details.',
+  currentUser = responses['/api/auth/me'],
 }: {
   runtimeList?: unknown[]
   tokenList?: unknown[]
@@ -51,6 +52,7 @@ function renderApp({
   serverStatus?: unknown
   repositoryGroups?: unknown[]
   repositoryReadme?: string | null
+  currentUser?: unknown
 } = {}) {
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const rawPath = typeof input === 'string'
@@ -87,7 +89,7 @@ function renderApp({
             : path === '/api/library/logical'
               ? logicalLibraryList
             : path === '/api/auth/me'
-              ? responses['/api/auth/me']
+              ? currentUser
             : path === '/api/server/status'
             ? serverStatus
             : path === '/api/huggingface/models'
@@ -114,6 +116,40 @@ function renderApp({
 }
 
 describe('App', () => {
+  it('hides navigation sections without the matching read privilege', async () => {
+    renderApp({
+      currentUser: {
+        username: 'reader',
+        default_credentials: false,
+        description: null,
+        role: 'User',
+        privileges: ['profiles.read'],
+      },
+    })
+
+    expect(await screen.findByRole('button', { name: 'Profiles' })).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Downloads' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Runtimes' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Access' })).not.toBeInTheDocument()
+    })
+  })
+
+  it('allows a basic User session to load its own identity', async () => {
+    renderApp({
+      currentUser: {
+        username: 'reader',
+        default_credentials: false,
+        description: null,
+        role: 'User',
+        privileges: ['profiles.read'],
+      },
+    })
+
+    expect(await screen.findByText('reader')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Profiles' })).toBeInTheDocument()
+  })
+
   it('renders live operational state and navigates to server details', async () => {
     renderApp()
 

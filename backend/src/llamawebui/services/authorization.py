@@ -42,13 +42,30 @@ PRIVILEGES: tuple[PrivilegeDefinition, ...] = tuple(
     )
 )
 
+PRIVILEGES += (
+    PrivilegeDefinition(
+        "server.lifecycle.write",
+        "Server lifecycle write",
+        "Start and stop the managed llama.cpp router.",
+        "server",
+        "write",
+    ),
+)
+
 PRIVILEGE_KEYS = frozenset(item.key for item in PRIVILEGES)
 
 
 def privilege_for_request(path: str, method: str) -> str | None:
     """Return the privilege required by an authenticated control-plane request."""
-    if path in {"/api/health", "/api/auth/login", "/api/auth/logout"}:
+    if path in {
+        "/api/health",
+        "/api/auth/login",
+        "/api/auth/logout",
+        "/api/auth/me",
+    }:
         return None
+    if path in {"/api/server/start", "/api/server/stop"}:
+        return "server.lifecycle.write"
     if path.startswith("/api/auth/"):
         resource = "auth"
     elif path.startswith("/api/server/"):
