@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
+from conftest import Login
 from fastapi.testclient import TestClient
 from huggingface_hub.errors import HfHubHTTPError
 from requests import Response
@@ -59,9 +60,10 @@ class FakeCatalog:
         )
 
 
-def test_huggingface_search_and_repository_endpoints(tmp_path: Path) -> None:
+def test_huggingface_search_and_repository_endpoints(tmp_path: Path, login: Login) -> None:
     catalog = FakeCatalog()
     with TestClient(create_app(Settings(data_dir=tmp_path), catalog=catalog)) as client:
+        login(client)
         search = client.get(
             "/api/huggingface/models", params={"q": "qwen", "sort": "downloads", "limit": 10}
         )
@@ -82,15 +84,16 @@ def test_huggingface_search_and_repository_endpoints(tmp_path: Path) -> None:
     assert catalog.repository_call == ("owner/model-GGUF", "main")
 
 
-def test_huggingface_query_validation(tmp_path: Path) -> None:
+def test_huggingface_query_validation(tmp_path: Path, login: Login) -> None:
     with TestClient(create_app(Settings(data_dir=tmp_path), catalog=FakeCatalog())) as client:
+        login(client)
         assert client.get("/api/huggingface/models", params={"q": ""}).status_code == 422
         assert client.get(
             "/api/huggingface/models", params={"q": "qwen", "limit": 101}
         ).status_code == 422
 
 
-def test_huggingface_errors_are_redacted(tmp_path: Path) -> None:
+def test_huggingface_errors_are_redacted(tmp_path: Path, login: Login) -> None:
     class FailingCatalog(FakeCatalog):
         async def search(
             self, query: str, *, sort: str | None = None, limit: int = 25
@@ -105,6 +108,7 @@ def test_huggingface_errors_are_redacted(tmp_path: Path) -> None:
             raise HfHubHTTPError("private details", response=error_response(404))
 
     with TestClient(create_app(Settings(data_dir=tmp_path), catalog=FailingCatalog())) as client:
+        login(client)
         search = client.get("/api/huggingface/models", params={"q": "qwen"})
         repository = client.get("/api/huggingface/repositories/missing/model")
 

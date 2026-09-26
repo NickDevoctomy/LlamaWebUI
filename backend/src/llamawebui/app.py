@@ -5,12 +5,12 @@ import json
 import logging
 import sys
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, Field, field_validator
@@ -34,6 +34,15 @@ from llamawebui.models import (
     ModelProfileRecord,
     RuntimeRecord,
     ServerRunRecord,
+)
+from llamawebui.services.auth_service import (
+    CSRF_HEADER,
+    CSRF_HEADER_VALUE,
+    SESSION_COOKIE_NAME,
+    AuthenticatedUser,
+    AuthenticationError,
+    AuthService,
+    SessionNotFoundError,
 )
 from llamawebui.services.diagnostics import DiagnosticsExporter
 from llamawebui.services.download_coordinator import DownloadCoordinator
@@ -204,6 +213,16 @@ class AccessTokenCreateRequest(BaseModel):
 
 class ProfileCloneRequest(BaseModel):
     alias: str = Field(min_length=1, max_length=64)
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=1, max_length=1024)
 
 
 def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
@@ -408,6 +427,54 @@ def _hub_error(error: HfHubHTTPError) -> HTTPException:
     return HTTPException(status_code=status_code, detail="Hugging Face request failed")
 
 
+def _auth_service(request: Request) -> AuthService:
+    return cast(AuthService, request.app.state.auth_service)
+
+
+def _session_id(request: Request) -> str | None:
+    return request.cookies.get(SESSION_COOKIE_NAME)
+
+
+def _require_session(request: Request) -> AuthenticatedUser:
+    session_id = _session_id(request)
+    if session_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="authentication required",
+        )
+    try:
+        return _auth_service(request).resolve_session(session_id)
+    except SessionNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)
+        ) from error
+
+
+def _session_cookie(session_id: str, secure: bool) -> str:
+    attributes = [
+        f"{SESSION_COOKIE_NAME}={session_id}",
+        "Path=/",
+        "HttpOnly",
+        "SameSite=Lax",
+    ]
+    if secure:
+        attributes.append("Secure")
+    return "; ".join(attributes)
+
+
+def _clear_session_cookie(secure: bool) -> str:
+    attributes = [
+        f"{SESSION_COOKIE_NAME}=",
+        "Path=/",
+        "HttpOnly",
+        "SameSite=Lax",
+        "Max-Age=0",
+    ]
+    if secure:
+        attributes.append("Secure")
+    return "; ".join(attributes)
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -446,6 +513,8 @@ def create_app(
         )
         app.state.profile_registry = ProfileRegistry(engine)
         app.state.token_registry = TokenRegistry(engine, app_settings.data_dir)
+        app.state.auth_service = AuthService(engine)
+        app.state.auth_service.ensure_default_admin()
         app.state.download_registry = DownloadRegistry(engine, app_settings.data_dir / "models")
         app.state.model_library = ModelLibrary(
             app.state.download_registry, app_settings.data_dir / "models"
@@ -546,6 +615,35 @@ def create_app(
             )
 
     app = FastAPI(title="LlamaWebUI", version="0.1.0", lifespan=lifespan)
+
+    PUBLIC_API_PATHS = {"/api/health", "/api/auth/login", "/api/auth/logout"}
+
+    @app.middleware("http")
+    async def require_control_plane_auth(request: Request, call_next: Any) -> Any:
+        path = request.url.path
+        if path.startswith("/api/") and path not in PUBLIC_API_PATHS:
+            session_id = _session_id(request)
+            if session_id is None:
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": "authentication required"},
+                )
+            try:
+                _auth_service(request).resolve_session(session_id)
+            except SessionNotFoundError as error:
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": str(error)},
+                )
+            if (
+                request.method not in {"GET", "HEAD", "OPTIONS"}
+                and request.headers.get(CSRF_HEADER) != CSRF_HEADER_VALUE
+            ):
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"detail": "missing CSRF protection header"},
+                )
+        return await call_next(request)
 
     async def start_router(runtime_id: str, request: Request) -> dict[str, object]:
         runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
@@ -674,6 +772,78 @@ def create_app(
             "database_path": str(app_settings.database_path),
             "hugging_face_token_configured": app_settings.hf_token is not None,
         }
+
+    @app.post("/api/auth/login")
+    async def login(login_request: LoginRequest, request: Request) -> JSONResponse:
+        auth = _auth_service(request)
+        try:
+            user = auth.authenticate(login_request.username, login_request.password)
+        except AuthenticationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)
+            ) from error
+        session = auth.create_session(user.id)
+        secure = request.url.scheme == "https"
+        response = JSONResponse(
+            {
+                "username": user.username,
+                "default_credentials": auth.is_default_credentials(user.id),
+            }
+        )
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=session.id,
+            httponly=True,
+            secure=secure,
+            samesite="lax",
+            path="/",
+        )
+        return response
+
+    @app.post("/api/auth/logout")
+    async def logout(request: Request) -> JSONResponse:
+        session_id = _session_id(request)
+        if session_id is not None:
+            with suppress(SessionNotFoundError):
+                _auth_service(request).revoke_session(session_id)
+        secure = request.url.scheme == "https"
+        response = JSONResponse({"logged_out": True})
+        response.delete_cookie(
+            key=SESSION_COOKIE_NAME,
+            httponly=True,
+            secure=secure,
+            samesite="lax",
+            path="/",
+        )
+        return response
+
+    @app.get("/api/auth/me")
+    async def current_user(request: Request) -> dict[str, object]:
+        user = _require_session(request)
+        return {
+            "username": user.username,
+            "default_credentials": user.default_credentials,
+        }
+
+    @app.post("/api/auth/password")
+    async def change_password(
+        password_request: PasswordChangeRequest, request: Request
+    ) -> dict[str, object]:
+        user = _require_session(request)
+        auth = _auth_service(request)
+        session_id = _session_id(request)
+        try:
+            auth.change_password(
+                user.id,
+                password_request.current_password,
+                password_request.new_password,
+                keep_session_id=session_id,
+            )
+        except AuthenticationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)
+            ) from error
+        return {"changed": True}
 
     @app.post("/api/diagnostics/export")
     async def export_diagnostics(request: Request) -> dict[str, object]:

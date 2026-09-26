@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from conftest import Login
 from fastapi.testclient import TestClient
 
 from llamawebui.app import create_app
@@ -18,7 +19,7 @@ def _profile_payload(runtime_id: str, model: Path) -> dict[str, object]:
     }
 
 
-def test_profile_persists_preset_and_guards_runtime_removal(tmp_path: Path) -> None:
+def test_profile_persists_preset_and_guards_runtime_removal(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
     model = tmp_path / "model.gguf"
@@ -39,6 +40,7 @@ def test_profile_persists_preset_and_guards_runtime_removal(tmp_path: Path) -> N
     settings = Settings(data_dir=tmp_path / "data")
     app = create_app(settings, runtime_prober=fake_probe)
     with TestClient(app) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -62,10 +64,11 @@ def test_profile_persists_preset_and_guards_runtime_removal(tmp_path: Path) -> N
     assert runtime_removed.status_code == 204
 
     with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        login(client)
         assert client.get("/api/profiles").json() == []
 
 
-def test_profile_rejects_unknown_runtime_and_invalid_options(tmp_path: Path) -> None:
+def test_profile_rejects_unknown_runtime_and_invalid_options(tmp_path: Path, login: Login) -> None:
     model = tmp_path / "model.gguf"
     model.touch()
     settings = Settings(data_dir=tmp_path / "data")
@@ -80,6 +83,7 @@ def test_profile_rejects_unknown_runtime_and_invalid_options(tmp_path: Path) -> 
         )
 
     with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        login(client)
         unknown = client.post(
             "/api/profiles",
             json={"alias": "model", "runtime_id": "missing", "model_path": str(model)},
@@ -104,7 +108,9 @@ def test_profile_rejects_unknown_runtime_and_invalid_options(tmp_path: Path) -> 
     assert invalid.json()["detail"] == ["runtime does not support --ctx-size"]
 
 
-def test_profile_clone_copies_configuration_but_stays_disabled(tmp_path: Path) -> None:
+def test_profile_clone_copies_configuration_but_stays_disabled(
+    tmp_path: Path, login: Login
+) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
     model = tmp_path / "model.gguf"
@@ -124,6 +130,7 @@ def test_profile_clone_copies_configuration_but_stays_disabled(tmp_path: Path) -
 
     settings = Settings(data_dir=tmp_path / "data")
     with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -156,7 +163,7 @@ def test_profile_clone_copies_configuration_but_stays_disabled(tmp_path: Path) -
     assert padded.status_code == 422
 
 
-def test_profile_export_returns_portable_profile_json(tmp_path: Path) -> None:
+def test_profile_export_returns_portable_profile_json(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
     model = tmp_path / "model.gguf"
@@ -176,6 +183,7 @@ def test_profile_export_returns_portable_profile_json(tmp_path: Path) -> None:
 
     settings = Settings(data_dir=tmp_path / "data")
     with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -194,7 +202,9 @@ def test_profile_export_returns_portable_profile_json(tmp_path: Path) -> None:
     assert "export-model" in payload["preset"]
 
 
-def test_profile_command_export_returns_readable_structured_command(tmp_path: Path) -> None:
+def test_profile_command_export_returns_readable_structured_command(
+    tmp_path: Path, login: Login
+) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
     model = tmp_path / "model file.gguf"
@@ -214,6 +224,7 @@ def test_profile_command_export_returns_readable_structured_command(tmp_path: Pa
     with TestClient(
         create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
     ) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -235,7 +246,7 @@ def test_profile_command_export_returns_readable_structured_command(tmp_path: Pa
     assert "--ctx-size 4096" in command.text
 
 
-def test_profile_command_import_creates_disabled_profile(tmp_path: Path) -> None:
+def test_profile_command_import_creates_disabled_profile(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
     model = tmp_path / "model.gguf"
@@ -255,6 +266,7 @@ def test_profile_command_import_creates_disabled_profile(tmp_path: Path) -> None
     with TestClient(
         create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
     ) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -274,6 +286,7 @@ def test_profile_command_import_creates_disabled_profile(tmp_path: Path) -> None
 
 def test_windows_profile_command_round_trip_preserves_settings_and_shards(
     tmp_path: Path,
+    login: Login,
 ) -> None:
     executable = tmp_path / "llama tools" / "llama-server.exe"
     executable.parent.mkdir()
@@ -318,6 +331,7 @@ def test_windows_profile_command_round_trip_preserves_settings_and_shards(
     with TestClient(
         create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
     ) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes",
             json={"name": "CPU", "executable_path": str(executable)},
@@ -367,7 +381,9 @@ def test_windows_profile_command_round_trip_preserves_settings_and_shards(
     assert "override-tensor = per_layer_token_embd=CPU" in imported_profile["preset"]
 
 
-def test_invalid_profile_command_import_does_not_change_saved_profiles(tmp_path: Path) -> None:
+def test_invalid_profile_command_import_does_not_change_saved_profiles(
+    tmp_path: Path, login: Login
+) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
     model = tmp_path / "model.gguf"
@@ -387,6 +403,7 @@ def test_invalid_profile_command_import_does_not_change_saved_profiles(tmp_path:
     with TestClient(
         create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
     ) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -410,7 +427,7 @@ def test_invalid_profile_command_import_does_not_change_saved_profiles(tmp_path:
     assert after == before
 
 
-def test_profile_import_clears_missing_model_path(tmp_path: Path) -> None:
+def test_profile_import_clears_missing_model_path(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
 
@@ -422,6 +439,7 @@ def test_profile_import_clears_missing_model_path(tmp_path: Path) -> None:
 
     settings = Settings(data_dir=tmp_path / "data")
     with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -436,7 +454,7 @@ def test_profile_import_clears_missing_model_path(tmp_path: Path) -> None:
     assert imported.json()["enabled"] is False
 
 
-def test_profile_command_import_rejects_malformed_command(tmp_path: Path) -> None:
+def test_profile_command_import_rejects_malformed_command(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
 
@@ -452,6 +470,7 @@ def test_profile_command_import_rejects_malformed_command(tmp_path: Path) -> Non
     with TestClient(
         create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
     ) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -464,8 +483,9 @@ def test_profile_command_import_rejects_malformed_command(tmp_path: Path) -> Non
     assert "--model" in response.json()["detail"]
 
 
-def test_profile_command_import_rejects_unknown_runtime(tmp_path: Path) -> None:
+def test_profile_command_import_rejects_unknown_runtime(tmp_path: Path, login: Login) -> None:
     with TestClient(create_app(Settings(data_dir=tmp_path / "data"))) as client:
+        login(client)
         response = client.post(
             "/api/profiles/import-command",
             json={
@@ -478,15 +498,20 @@ def test_profile_command_import_rejects_unknown_runtime(tmp_path: Path) -> None:
     assert response.status_code == 404
 
 
-def test_profile_command_export_reports_missing_profile_and_runtime(tmp_path: Path) -> None:
+def test_profile_command_export_reports_missing_profile_and_runtime(
+    tmp_path: Path, login: Login
+) -> None:
     settings = Settings(data_dir=tmp_path / "data")
     with TestClient(create_app(settings)) as client:
+        login(client)
         missing = client.get("/api/profiles/missing/command")
 
     assert missing.status_code == 404
 
 
-def test_profile_import_recreates_export_with_exported_enabled_state(tmp_path: Path) -> None:
+def test_profile_import_recreates_export_with_exported_enabled_state(
+    tmp_path: Path, login: Login
+) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
     model = tmp_path / "model.gguf"
@@ -506,6 +531,7 @@ def test_profile_import_recreates_export_with_exported_enabled_state(tmp_path: P
 
     settings = Settings(data_dir=tmp_path / "data")
     with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -524,6 +550,7 @@ def test_profile_import_recreates_export_with_exported_enabled_state(tmp_path: P
 
     exported["alias"] = "imported-model"
     with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        login(client)
         imported = client.post("/api/profiles/import", json={"document": exported})
 
     assert imported.status_code == 201
@@ -534,6 +561,7 @@ def test_profile_import_recreates_export_with_exported_enabled_state(tmp_path: P
 
 def test_profile_validate_reports_runtime_and_file_errors_without_mutation(
     tmp_path: Path,
+    login: Login,
 ) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
@@ -550,6 +578,7 @@ def test_profile_validate_reports_runtime_and_file_errors_without_mutation(
 
     settings = Settings(data_dir=tmp_path / "data")
     with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -568,7 +597,7 @@ def test_profile_validate_reports_runtime_and_file_errors_without_mutation(
     assert listed.json()[0]["alias"] == "validate-model"
 
 
-def test_profile_reset_retains_identity_and_removes_overrides(tmp_path: Path) -> None:
+def test_profile_reset_retains_identity_and_removes_overrides(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
     model = tmp_path / "model.gguf"
@@ -588,6 +617,7 @@ def test_profile_reset_retains_identity_and_removes_overrides(tmp_path: Path) ->
 
     settings = Settings(data_dir=tmp_path / "data")
     with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -608,7 +638,9 @@ def test_profile_reset_retains_identity_and_removes_overrides(tmp_path: Path) ->
     assert "ctx-size" not in reset.json()["preset"]
 
 
-def test_profile_update_populates_and_persists_all_editor_settings(tmp_path: Path) -> None:
+def test_profile_update_populates_and_persists_all_editor_settings(
+    tmp_path: Path, login: Login
+) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
     model = tmp_path / "model.gguf"
@@ -638,6 +670,7 @@ def test_profile_update_populates_and_persists_all_editor_settings(tmp_path: Pat
 
     settings = Settings(data_dir=tmp_path / "data")
     with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]

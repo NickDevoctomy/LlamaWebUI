@@ -6,11 +6,13 @@ from pathlib import Path
 
 import httpx
 import pytest
+from conftest import Login
 from fastapi.testclient import TestClient
 
 from llamawebui.app import create_app
 from llamawebui.config import Settings
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
+from llamawebui.services.auth_service import CSRF_HEADER, CSRF_HEADER_VALUE
 from llamawebui.services.model_event_stream import stream_model_events
 from llamawebui.services.router_client import RouterAPIError, RouterModel, RouterModelEvent
 from llamawebui.services.router_supervisor import (
@@ -129,7 +131,7 @@ async def test_model_event_stream_emits_event_and_upstream_error() -> None:
     await error_stream.aclose()
 
 
-def test_server_start_status_and_stop(tmp_path: Path) -> None:
+def test_server_start_status_and_stop(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     model = tmp_path / "model.gguf"
     executable.touch()
@@ -165,6 +167,7 @@ def test_server_start_status_and_stop(tmp_path: Path) -> None:
         router_client=FakeRouterClient(),
     )
     with TestClient(app) as client:
+        login(client)
         stopped = client.get("/api/server/status")
         created_token = client.post("/api/tokens", json={"name": "OpenCode"})
         runtime_id = client.post(
@@ -213,7 +216,7 @@ def test_server_start_status_and_stop(tmp_path: Path) -> None:
     assert "[local-model]" in preset_path.read_text(encoding="utf-8")
 
 
-def test_server_start_validates_runtime_and_profiles(tmp_path: Path) -> None:
+def test_server_start_validates_runtime_and_profiles(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
 
@@ -228,6 +231,7 @@ def test_server_start_validates_runtime_and_profiles(tmp_path: Path) -> None:
 
     app = create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
     with TestClient(app) as client:
+        login(client)
         missing = client.post("/api/server/start", json={"runtime_id": "missing"})
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
@@ -239,7 +243,7 @@ def test_server_start_validates_runtime_and_profiles(tmp_path: Path) -> None:
     assert unsupported.json()["detail"] == "runtime does not support --models-preset"
 
 
-def test_server_start_requires_enabled_profile(tmp_path: Path) -> None:
+def test_server_start_requires_enabled_profile(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
 
@@ -256,6 +260,7 @@ def test_server_start_requires_enabled_profile(tmp_path: Path) -> None:
 
     app = create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
     with TestClient(app) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -265,7 +270,7 @@ def test_server_start_requires_enabled_profile(tmp_path: Path) -> None:
     assert response.json()["detail"] == "runtime has no enabled model profiles"
 
 
-def test_server_start_reports_readiness_timeout(tmp_path: Path) -> None:
+def test_server_start_reports_readiness_timeout(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     model = tmp_path / "model.gguf"
     executable.touch()
@@ -299,6 +304,7 @@ def test_server_start_reports_readiness_timeout(tmp_path: Path) -> None:
         router_port_probe=available_port,
     )
     with TestClient(app) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -313,13 +319,16 @@ def test_server_start_reports_readiness_timeout(tmp_path: Path) -> None:
     assert "did not become ready" in response.json()["detail"]
     assert status_response.json()["state"] == "stopped"
     with TestClient(app) as client:
+        login(client)
         runs = client.get("/api/server/runs").json()
     assert len(runs) == 1
     assert runs[0]["state"] == "stopped"
     assert "did not become ready" in runs[0]["error"]
 
 
-def test_server_restart_uses_previous_runtime_and_creates_new_run(tmp_path: Path) -> None:
+def test_server_restart_uses_previous_runtime_and_creates_new_run(
+    tmp_path: Path, login: Login
+) -> None:
     executable = tmp_path / "llama-server.exe"
     model = tmp_path / "model.gguf"
     executable.touch()
@@ -352,6 +361,7 @@ def test_server_restart_uses_previous_runtime_and_creates_new_run(tmp_path: Path
         router_port_probe=available_port,
     )
     with TestClient(app) as client:
+        login(client)
         no_previous = client.post("/api/server/restart")
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
@@ -373,7 +383,7 @@ def test_server_restart_uses_previous_runtime_and_creates_new_run(tmp_path: Path
     assert {run["runtime_id"] for run in runs} == {runtime_id}
 
 
-def test_server_restart_can_switch_to_explicit_runtime(tmp_path: Path) -> None:
+def test_server_restart_can_switch_to_explicit_runtime(tmp_path: Path, login: Login) -> None:
     executable_one = tmp_path / "llama-one.exe"
     executable_two = tmp_path / "llama-two.exe"
     model = tmp_path / "model.gguf"
@@ -405,6 +415,7 @@ def test_server_restart_can_switch_to_explicit_runtime(tmp_path: Path) -> None:
         router_port_probe=available_port,
     )
     with TestClient(app) as client:
+        login(client)
         first = client.post(
             "/api/runtimes", json={"name": "One", "executable_path": str(executable_one)}
         ).json()
@@ -435,6 +446,7 @@ def test_server_restart_can_switch_to_explicit_runtime(tmp_path: Path) -> None:
 
 def test_server_rollback_restores_current_runtime_when_candidate_fails(
     tmp_path: Path,
+    login: Login,
 ) -> None:
     executable_one = tmp_path / "llama-one.exe"
     executable_two = tmp_path / "llama-two.exe"
@@ -469,6 +481,7 @@ def test_server_rollback_restores_current_runtime_when_candidate_fails(
         router_port_probe=available_port,
     )
     with TestClient(app) as client:
+        login(client)
         first = client.post(
             "/api/runtimes", json={"name": "One", "executable_path": str(executable_one)}
         ).json()
@@ -493,6 +506,7 @@ def test_server_rollback_restores_current_runtime_when_candidate_fails(
 
 def test_server_rollback_reports_restore_failure_without_hiding_candidate_error(
     tmp_path: Path,
+    login: Login,
 ) -> None:
     executable_one = tmp_path / "llama-one.exe"
     executable_two = tmp_path / "llama-two.exe"
@@ -526,6 +540,7 @@ def test_server_rollback_reports_restore_failure_without_hiding_candidate_error(
         router_port_probe=available_port,
     )
     with TestClient(app) as client:
+        login(client)
         first = client.post(
             "/api/runtimes", json={"name": "One", "executable_path": str(executable_one)}
         ).json()["id"]
@@ -547,7 +562,7 @@ def test_server_rollback_reports_restore_failure_without_hiding_candidate_error(
     assert len(launches) == 4
 
 
-def test_server_start_records_occupied_port_without_launching(tmp_path: Path) -> None:
+def test_server_start_records_occupied_port_without_launching(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     model = tmp_path / "model.gguf"
     executable.touch()
@@ -580,6 +595,7 @@ def test_server_start_records_occupied_port_without_launching(tmp_path: Path) ->
         router_port_probe=occupied,
     )
     with TestClient(app) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -635,6 +651,11 @@ async def test_server_lifecycle_requests_are_serialized(tmp_path: Path) -> None:
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            login_response = await client.post(
+                "/api/auth/login", json={"username": "admin", "password": "admin"}
+            )
+            assert login_response.status_code == 200
+            client.headers.update({CSRF_HEADER: CSRF_HEADER_VALUE})
             runtime_id = (
                 await client.post(
                     "/api/runtimes",
@@ -716,6 +737,11 @@ async def test_server_recovers_with_durable_attempt_history(tmp_path: Path) -> N
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            login_response = await client.post(
+                "/api/auth/login", json={"username": "admin", "password": "admin"}
+            )
+            assert login_response.status_code == 200
+            client.headers.update({CSRF_HEADER: CSRF_HEADER_VALUE})
             runtime_id = (
                 await client.post(
                     "/api/runtimes",
@@ -759,12 +785,13 @@ async def test_server_recovers_with_durable_attempt_history(tmp_path: Path) -> N
     assert any(event.type == "router.model.model_status" for event in events)
 
 
-def test_router_model_operations_require_running_server(tmp_path: Path) -> None:
+def test_router_model_operations_require_running_server(tmp_path: Path, login: Login) -> None:
     router_client = FakeRouterClient()
     app = create_app(
         Settings(data_dir=tmp_path / "data"), router_client=router_client
     )
     with TestClient(app) as client:
+        login(client)
         listed = client.get("/api/server/models")
         events = client.get("/api/server/models/events")
         loaded = client.post("/api/server/models/load", json={"model": "local-model"})
@@ -777,7 +804,7 @@ def test_router_model_operations_require_running_server(tmp_path: Path) -> None:
     assert router_client.actions == []
 
 
-def test_router_model_list_load_and_unload(tmp_path: Path) -> None:
+def test_router_model_list_load_and_unload(tmp_path: Path, login: Login) -> None:
     executable = tmp_path / "llama-server.exe"
     model = tmp_path / "model.gguf"
     executable.touch()
@@ -817,6 +844,7 @@ def test_router_model_list_load_and_unload(tmp_path: Path) -> None:
         router_client=router_client,
     )
     with TestClient(app) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]

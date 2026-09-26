@@ -2,6 +2,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
+from conftest import Login
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -141,9 +142,10 @@ def test_library_deduplicates_completed_jobs_for_same_primary_path(tmp_path: Pat
     assert models[0].download_id == first.id
 
 
-def test_library_endpoint_returns_primary_profile_path(tmp_path: Path) -> None:
+def test_library_endpoint_returns_primary_profile_path(tmp_path: Path, login: Login) -> None:
     app = create_app(Settings(data_dir=tmp_path / "data"))
     with TestClient(app) as client:
+        login(client)
         registry = app.state.download_registry
         manifest = RepositoryManifest(
             repo_id="owner/model-GGUF",
@@ -467,7 +469,9 @@ def test_logical_model_registry_rejects_removing_valid_or_linked_records(tmp_pat
         logical.remove_missing(record.id)
 
 
-def test_library_import_creates_disabled_profile_for_discovered_model(tmp_path: Path) -> None:
+def test_library_import_creates_disabled_profile_for_discovered_model(
+    tmp_path: Path, login: Login
+) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
     model_root = tmp_path / "data" / "models"
@@ -487,6 +491,7 @@ def test_library_import_creates_disabled_profile_for_discovered_model(tmp_path: 
 
     app = create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
     with TestClient(app) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -513,6 +518,7 @@ def test_library_import_creates_disabled_profile_for_discovered_model(tmp_path: 
 
 def test_logical_model_delete_guards_missing_links_and_cleans_up_profile_links(
     tmp_path: Path,
+    login: Login,
 ) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
@@ -532,6 +538,7 @@ def test_logical_model_delete_guards_missing_links_and_cleans_up_profile_links(
 
     app = create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
     with TestClient(app) as client:
+        login(client)
         runtime_id = client.post(
             "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
         ).json()["id"]
@@ -563,7 +570,9 @@ def test_logical_model_delete_guards_missing_links_and_cleans_up_profile_links(
     assert reconciliation["linked_logical_models"] == 0
 
 
-def test_library_delete_preserves_profile_and_exposes_redownload(tmp_path: Path) -> None:
+def test_library_delete_preserves_profile_and_exposes_redownload(
+    tmp_path: Path, login: Login
+) -> None:
     executable = tmp_path / "llama-server.exe"
     executable.touch()
 
@@ -578,6 +587,7 @@ def test_library_delete_preserves_profile_and_exposes_redownload(tmp_path: Path)
 
     app = create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
     with TestClient(app) as client:
+        login(client)
         registry = app.state.download_registry
         manifest = RepositoryManifest(
             repo_id="owner/model-GGUF",

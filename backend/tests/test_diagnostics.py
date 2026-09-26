@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 
+from conftest import Login
 from fastapi.testclient import TestClient
 
 from llamawebui.app import create_app
@@ -14,7 +15,9 @@ from llamawebui.services.diagnostics import DiagnosticsExporter, _path_summary, 
 from llamawebui.services.logging_utils import configure_logging
 
 
-def test_diagnostics_export_is_atomic_bounded_and_redacted(tmp_path: Path, caplog) -> None:
+def test_diagnostics_export_is_atomic_bounded_and_redacted(
+    tmp_path: Path, caplog, login: Login
+) -> None:
     configure_logging(secrets=("custom-secret",))
     logging.getLogger("llamawebui.test").warning(
         "Authorization: Bearer custom-secret HF_TOKEN=hf_private_value"
@@ -22,6 +25,7 @@ def test_diagnostics_export_is_atomic_bounded_and_redacted(tmp_path: Path, caplo
     settings = Settings(data_dir=tmp_path / "data")
 
     with TestClient(create_app(settings)) as client:
+        login(client)
         response = client.post("/api/diagnostics/export")
 
     assert response.status_code == 200
@@ -31,16 +35,19 @@ def test_diagnostics_export_is_atomic_bounded_and_redacted(tmp_path: Path, caplo
     rendered = destination.read_text(encoding="utf-8")
 
     assert payload["format"] == 1
-    assert payload["database"]["schema_revision"] == "0008_logical_model_profiles"
+    assert payload["database"]["schema_revision"] == "0009_users_sessions"
     assert payload["logs"]
     assert "custom-secret" not in rendered
     assert "hf_private_value" not in rendered
     assert not list(destination.parent.glob(".diagnostics-*.tmp"))
 
 
-def test_diagnostics_export_excludes_sensitive_profile_and_token_data(tmp_path: Path) -> None:
+def test_diagnostics_export_excludes_sensitive_profile_and_token_data(
+    tmp_path: Path, login: Login
+) -> None:
     settings = Settings(data_dir=tmp_path / "data")
     with TestClient(create_app(settings)) as client:
+        login(client)
         token = client.post("/api/tokens", json={"name": "operator", "expiry_note": "private"})
         assert token.status_code == 201
         export = client.post("/api/diagnostics/export")
