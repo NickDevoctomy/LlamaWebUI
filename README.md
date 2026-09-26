@@ -259,6 +259,24 @@ the native router or control plane to an untrusted network.
 
 ## Test and quality checks
 
+## Build the Windows one-folder package
+
+The release package target is Windows x64. Build it from the repository root:
+
+```powershell
+.\packaging\build-windows.ps1
+```
+
+This produces `dist\llamawebui\` with the Python control plane and compiled
+static frontend. Keep `data/`, model files, generated keys, backups, and
+registered llama.cpp runtimes outside the package directory. Set
+`LLAMAWEBUI_DATA_DIR` to the external data directory when launching the
+packaged executable so replacing the package does not replace user state.
+
+Updates replace package files only after the application is stopped. Runtime
+upgrades remain explicit registration/install operations; an application update
+must never silently replace an installed or in-use llama.cpp runtime.
+
 Run backend checks from `backend/`:
 
 ```powershell

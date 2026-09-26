@@ -268,7 +268,7 @@ The baseline contains known stale statements in older planning documents. This p
 
 ## Phase 7 — Hardening and release
 
-**Status:** In progress — slices 7.1–7.3 are complete; slice 7.4 is the current next action.
+**Status:** In progress — slices 7.1–7.4 are complete; slice 7.5 is the current next action.
 
 ### 7.1 Backup and restore
 
@@ -298,13 +298,15 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### 7.4 Packaging and update behavior
 
-**Status:** In progress — begin after slice 7.3 passed.
+**Status:** Complete — evidence is recorded in `notes/0024-phase-7-4-packaging-update.md`.
 
 - Produce the one-folder Windows package with static frontend assets and runtime-registration support.
 - Verify copied-folder startup, data-directory selection, lock behavior, migrations, and clean shutdown.
 - Add update checks that never silently replace installed llama.cpp runtimes.
 
 ### 7.5 Operator documentation
+
+**Status:** In progress — begin after slice 7.4 passed.
 
 - Write setup, runtime registration/install, model discovery/download, profile, token, OpenCode, diagnostics, backup/restore, and troubleshooting guides.
 - Base troubleshooting entries on observed failure output.
@@ -327,4 +329,4 @@ Release is complete only when every phase gate above is checked and the followin
 - No required acceptance step depends on the 93.7 GB routine-download target.
 - A suggested release commit/tag message is recorded.
 
-**Current next action:** Begin Phase 7.4 — packaging and update behavior. Do not begin Phase 7.5 until packaging/update behavior is accepted.
+**Current next action:** Begin Phase 7.5 — operator documentation. Do not begin the final Phase 7 gate until operator documentation is accepted.

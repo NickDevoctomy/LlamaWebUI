@@ -61,6 +61,13 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      - name: Verify Windows package definition
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path packaging/windows-package.spec)) { throw 'Windows package spec is missing' }
+          if (-not (Test-Path packaging/build-windows.ps1)) { throw 'Windows package script is missing' }
+
       - name: Run backend tests
         working-directory: backend
         run: python -m pytest
