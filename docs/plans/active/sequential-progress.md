@@ -5,7 +5,7 @@
 **Requirements reference:** [../llama-web-ui-plan.md](../llama-web-ui-plan.md)
 **Updated:** 2026-09-26
 **Current phase:** Phase 7 — Hardening and release
-**Current slice:** 7.3 — CI and platform matrix
+**Current slice:** 7.4 — Packaging and update behavior
 
 ## Operating rule
 
@@ -37,7 +37,7 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 - Phase 4: Complete — slices 4.1–4.2 accepted; see `notes/0012-phase-4-1-real-runtime-lifecycle.md` and `notes/0013-phase-4-2-real-runtime-model-events.md`.
 - Phase 5: Complete — slices 5.1–5.3 passed and the Phase 5 gate is complete. See `notes/0015-phase-5-1-general-library-reconciliation.md`, `notes/0016-phase-5-2-offline-upstream-failures.md`, and `notes/0017-phase-5-3-primary-download-acceptance.md`.
 - Phase 6: Complete — slices 6.1–6.3 and the Phase 6 gate pass. See `notes/0018-phase-6-1-authenticated-connection-tests.md`, `notes/0019-phase-6-2-live-authenticated-acceptance.md`, and `notes/0020-phase-6-3-onboarding-documentation.md`.
-- Phase 7: In progress — slices 7.1–7.2 complete; slice 7.3 is next. See `notes/0021-phase-7-1-backup-restore.md` and `notes/0022-phase-7-2-accessibility-responsive.md`.
+- Phase 7: In progress — slices 7.1–7.3 complete; slice 7.4 is next. See `notes/0021-phase-7-1-backup-restore.md`, `notes/0022-phase-7-2-accessibility-responsive.md`, and `notes/0023-phase-7-3-ci-platform-matrix.md`.
 
 ## Validation log
 
@@ -70,9 +70,10 @@ Follow `sequential-completion-plan.md` strictly. Complete one slice, validate it
 | 2026-09-26 | Phase 6.3 onboarding documentation | README now documents curl/OpenAI SDK setup, placeholder-only access-key configuration, model alias use, key lifecycle/restart behavior, and HTTPS guidance. Secret scan, Ruff, mypy, and `git diff --check` passed. Details: `notes/0020-phase-6-3-onboarding-documentation.md`. |
 | 2026-09-26 | Phase 7.1 backup and restore | Added bounded SQLite backups before migrations, integrity validation, atomic restore with recovery copy, and temporary-database tests. Backend: 294 passed, 1 skipped, 89.90% coverage; Ruff, mypy, frontend tests/build, and `git diff --check` passed. Details: `notes/0021-phase-7-1-backup-restore.md`. |
 | 2026-09-26 | Phase 7.2 accessibility and responsive hardening | Added unique dialog ARIA IDs, active-navigation semantics, visible keyboard focus, reduced-motion support, and 390px-safe scrollable mobile navigation. Browser checks reported no horizontal overflow at 390x844 or desktop width; frontend 27 tests/build passed. Details: `notes/0022-phase-7-2-accessibility-responsive.md`. |
+| 2026-09-26 | Phase 7.3 CI and platform matrix | CI now runs the quality workflow on supported `ubuntu-latest` and `windows-latest` runners; macOS is intentionally excluded. Local equivalent gates passed: backend 294 passed, 1 skipped, 89.90% coverage; frontend 27 tests and build passed; Ruff, mypy, and diff checks passed. Details: `notes/0023-phase-7-3-ci-platform-matrix.md`. |
 
 ## Next action
 
-Begin Phase 7 slice 7.3 — CI and platform matrix. Do not begin Phase 7.4 until the CI/platform gate passes.
+Begin Phase 7 slice 7.4 — packaging and update behavior. Do not begin Phase 7.5 until packaging/update behavior is accepted.
 
-Suggested commit: `fix: harden responsive navigation and dialog accessibility`.
+Suggested commit: `ci: add supported Windows and Linux test matrix`.

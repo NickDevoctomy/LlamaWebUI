@@ -268,7 +268,7 @@ The baseline contains known stale statements in older planning documents. This p
 
 ## Phase 7 — Hardening and release
 
-**Status:** In progress — slices 7.1–7.2 are complete; slice 7.3 is the current next action.
+**Status:** In progress — slices 7.1–7.3 are complete; slice 7.4 is the current next action.
 
 ### 7.1 Backup and restore
 
@@ -289,7 +289,7 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### 7.3 CI and platform matrix
 
-**Status:** In progress — begin after slice 7.2 passed.
+**Status:** Complete — evidence is recorded in `notes/0023-phase-7-3-ci-platform-matrix.md`.
 
 - Add clean-checkout backend/frontend quality jobs.
 - Add Windows x64 CPU/CUDA acceptance coverage where available.
@@ -297,6 +297,8 @@ The baseline contains known stale statements in older planning documents. This p
 - Keep real large downloads outside normal CI.
 
 ### 7.4 Packaging and update behavior
+
+**Status:** In progress — begin after slice 7.3 passed.
 
 - Produce the one-folder Windows package with static frontend assets and runtime-registration support.
 - Verify copied-folder startup, data-directory selection, lock behavior, migrations, and clean shutdown.
@@ -325,4 +327,4 @@ Release is complete only when every phase gate above is checked and the followin
 - No required acceptance step depends on the 93.7 GB routine-download target.
 - A suggested release commit/tag message is recorded.
 
-**Current next action:** Begin Phase 7.3 — CI and platform matrix. Do not begin Phase 7.4 until the CI/platform gate passes.
+**Current next action:** Begin Phase 7.4 — packaging and update behavior. Do not begin Phase 7.5 until packaging/update behavior is accepted.
