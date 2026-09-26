@@ -61,11 +61,15 @@ def test_login_logout_and_authenticated_access(tmp_path: Path) -> None:
         assert login.status_code == 200
         assert login.json()["username"] == "admin"
         assert login.json()["default_credentials"] is True
+        assert login.json()["role"] == "Administrator"
+        assert "server.read" in login.json()["privileges"]
         assert SESSION_COOKIE_NAME in login.cookies
 
         me = client.get("/api/auth/me")
         assert me.status_code == 200
         assert me.json()["username"] == "admin"
+        assert me.json()["role"] == "Administrator"
+        assert len(me.json()["privileges"]) >= 2
 
         status = client.get("/api/server/status")
         assert status.status_code == 200
@@ -170,6 +174,20 @@ def test_default_admin_seeded_once(tmp_path: Path) -> None:
         )
         assert second.status_code == 200
         assert second.json()["default_credentials"] is True
+
+
+def test_roles_and_privileges_are_seeded_and_idempotent(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        first = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert first.status_code == 200
+        assert first.json()["role"] == "Administrator"
+        privilege_count = len(first.json()["privileges"])
+        assert privilege_count >= 10
+
+    with _client(tmp_path) as client:
+        second = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert second.status_code == 200
+        assert len(second.json()["privileges"]) == privilege_count
 
 
 def test_password_hash_is_never_exposed(tmp_path: Path) -> None:

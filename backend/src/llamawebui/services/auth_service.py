@@ -17,7 +17,13 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from llamawebui.models import SessionRecord, UserRecord
+from llamawebui.models import (
+    PrivilegeRecord,
+    RolePrivilegeRecord,
+    RoleRecord,
+    SessionRecord,
+    UserRecord,
+)
 
 DEFAULT_ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_PASSWORD = "admin"
@@ -49,6 +55,10 @@ class AuthenticatedUser:
     id: str
     username: str
     default_credentials: bool
+    description: str | None
+    role_id: str
+    role_name: str
+    privileges: frozenset[str]
 
 
 class AuthService:
@@ -60,6 +70,11 @@ class AuthService:
         """Seed the default ``admin`` / ``admin`` account on first run."""
         with self._sessions() as session:
             self._purge_inactive_sessions(session)
+            administrator = session.scalar(
+                select(RoleRecord).where(RoleRecord.name == "Administrator")
+            )
+            if administrator is None:
+                raise RuntimeError("Administrator role is not available")
             existing = session.scalar(select(UserRecord.id).limit(1))
             if existing is not None:
                 return
@@ -68,6 +83,7 @@ class AuthService:
                     id=str(uuid4()),
                     username=DEFAULT_ADMIN_USERNAME,
                     password_hash=self._hasher.hash(DEFAULT_ADMIN_PASSWORD),
+                    role_id=administrator.id,
                 )
             )
             session.commit()
@@ -93,11 +109,7 @@ class AuthService:
         with self._sessions() as session:
             users = session.scalars(select(UserRecord).order_by(UserRecord.username)).all()
             return tuple(
-                AuthenticatedUser(
-                    id=user.id,
-                    username=user.username,
-                    default_credentials=self._is_default_hash(user.password_hash),
-                )
+                self._authenticated_user(session, user)
                 for user in users
             )
 
@@ -113,14 +125,13 @@ class AuthService:
                 id=str(uuid4()),
                 username=clean_username,
                 password_hash=self._hasher.hash(password),
+                role_id=session.scalar(
+                    select(RoleRecord.id).where(RoleRecord.name == "Administrator")
+                ),
             )
             session.add(user)
             session.commit()
-            return AuthenticatedUser(
-                id=user.id,
-                username=user.username,
-                default_credentials=False,
-            )
+            return self._authenticated_user(session, user, default_credentials=False)
 
     def create_session(self, user_id: str) -> SessionRecord:
         session_id = secrets.token_urlsafe(48)
@@ -149,11 +160,7 @@ class AuthService:
             if user is None:
                 raise SessionNotFoundError("session user no longer exists")
             default_credentials = self._is_default_hash(user.password_hash)
-            return AuthenticatedUser(
-                id=user.id,
-                username=user.username,
-                default_credentials=default_credentials,
-            )
+            return self._authenticated_user(session, user, default_credentials=default_credentials)
 
     def revoke_session(self, session_id: str) -> None:
         with self._sessions() as session:
@@ -215,3 +222,36 @@ class AuthService:
             return self._hasher.verify(password_hash, DEFAULT_ADMIN_PASSWORD)
         except (VerifyMismatchError, InvalidHashError):
             return False
+
+    def _authenticated_user(
+        self,
+        session: Session,
+        user: UserRecord,
+        *,
+        default_credentials: bool | None = None,
+    ) -> AuthenticatedUser:
+        return AuthenticatedUser(
+            id=user.id,
+            username=user.username,
+            default_credentials=(
+                self._is_default_hash(user.password_hash)
+                if default_credentials is None
+                else default_credentials
+            ),
+            description=user.description,
+            role_id=user.role_id,
+            role_name=self._role_name(session, user.role_id),
+            privileges=self._privileges(session, user.role_id),
+        )
+
+    def _role_name(self, session: Session, role_id: str) -> str:
+        role = session.get(RoleRecord, role_id)
+        return role.name if role is not None else "Unknown"
+
+    def _privileges(self, session: Session, role_id: str) -> frozenset[str]:
+        statement = (
+            select(PrivilegeRecord.key)
+            .join(RolePrivilegeRecord, RolePrivilegeRecord.privilege_key == PrivilegeRecord.key)
+            .where(RolePrivilegeRecord.role_id == role_id)
+        )
+        return frozenset(session.scalars(statement).all())

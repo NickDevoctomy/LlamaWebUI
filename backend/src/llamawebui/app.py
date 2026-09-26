@@ -45,6 +45,7 @@ from llamawebui.services.auth_service import (
     SessionNotFoundError,
     UserAlreadyExistsError,
 )
+from llamawebui.services.authorization import privilege_for_request
 from llamawebui.services.database_backup import backup_database
 from llamawebui.services.diagnostics import DiagnosticsExporter
 from llamawebui.services.download_coordinator import DownloadCoordinator
@@ -461,6 +462,19 @@ def _require_session(request: Request) -> AuthenticatedUser:
         ) from error
 
 
+def _require_privilege(
+    request: Request, user: AuthenticatedUser | None = None
+) -> AuthenticatedUser:
+    current_user = user or _require_session(request)
+    privilege = privilege_for_request(request.url.path, request.method)
+    if privilege is not None and privilege not in current_user.privileges:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="insufficient privileges",
+        )
+    return current_user
+
+
 def _session_cookie(session_id: str, secure: bool) -> str:
     attributes = [
         f"{SESSION_COOKIE_NAME}={session_id}",
@@ -641,7 +655,7 @@ def create_app(
                     content={"detail": "authentication required"},
                 )
             try:
-                _auth_service(request).resolve_session(session_id)
+                user = _auth_service(request).resolve_session(session_id)
             except SessionNotFoundError as error:
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -654,6 +668,12 @@ def create_app(
                 return JSONResponse(
                     status_code=status.HTTP_403_FORBIDDEN,
                     content={"detail": "missing CSRF protection header"},
+                )
+            privilege = privilege_for_request(path, request.method)
+            if privilege is not None and privilege not in user.privileges:
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"detail": "insufficient privileges"},
                 )
         return await call_next(request)
 
@@ -795,11 +815,15 @@ def create_app(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)
             ) from error
         session = auth.create_session(user.id)
+        authenticated = auth.resolve_session(session.id)
         secure = request.url.scheme == "https"
         response = JSONResponse(
             {
                 "username": user.username,
                 "default_credentials": auth.is_default_credentials(user.id),
+                "description": authenticated.description,
+                "role": authenticated.role_name,
+                "privileges": sorted(authenticated.privileges),
             }
         )
         response.set_cookie(
@@ -835,6 +859,9 @@ def create_app(
         return {
             "username": user.username,
             "default_credentials": user.default_credentials,
+            "description": user.description,
+            "role": user.role_name,
+            "privileges": sorted(user.privileges),
         }
 
     @app.post("/api/auth/password")

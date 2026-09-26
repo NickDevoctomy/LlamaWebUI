@@ -1,14 +1,14 @@
 # Sequential progress
 
 **Feature:** Roles and privileges for control-plane users  
-**Status:** Planned; implementation has not started.  
-**Next action:** Begin Slice 1: add the persistence model, migration, protected Administrator seed, and centralized read/write authorization foundation.
+**Status:** Slice 1 complete.  
+**Next action:** Begin Slice 2: implement role/user management APIs, privilege assignment validation, protected-role safeguards, and user description/role editing.
 
 ## Current blocker
 
-None. This is a planning handoff; no feature code has been changed.
+None. Slice 1 passed its focused tests and backend quality gates.
 
 ## Slice links
 
 - [Roles and privileges plan](roles-and-privileges-plan.md)
-- Notes: none yet
+- [Slice 1 note](notes/001-slice-1-roles-foundation.md)
