@@ -232,14 +232,14 @@ The baseline contains known stale statements in older planning documents. This p
 
 ### 6.1 Authenticated connection tests
 
-**Status:** Not started.
+**Status:** Complete — deterministic fake-router coverage is recorded in `notes/0018-phase-6-1-authenticated-connection-tests.md`.
 
 - Add deterministic fake-router tests for authenticated `/v1/models`, non-streaming completion, streaming completion, invalid token rejection, and sanitized errors.
 - Keep these tests independent of real models and fixed ports.
 
 ### 6.2 Live authenticated acceptance
 
-**Status:** Not started — begin only after slice 6.1 passes.
+**Status:** In progress — begin after slice 6.1 passed.
 
 - With an existing validated model/profile and registered runtime:
   - Create a token and use it for authenticated model listing.
@@ -319,4 +319,4 @@ Release is complete only when every phase gate above is checked and the followin
 - No required acceptance step depends on the 93.7 GB routine-download target.
 - A suggested release commit/tag message is recorded.
 
-**Current next action:** Begin Phase 6.1 — authenticated connection tests. Do not begin Phase 6.2 until the deterministic connection-test gate passes.
+**Current next action:** Begin Phase 6.2 — live authenticated acceptance. Do not begin Phase 6.3 until the live authenticated acceptance gate passes.
