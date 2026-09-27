@@ -23,6 +23,19 @@ def test_backup_is_valid_and_retention_is_bounded(tmp_path: Path) -> None:
     assert validate_database(created[-1])
 
 
+def test_backup_retention_keeps_newest_backups_when_mtimes_tie(tmp_path: Path) -> None:
+    database = tmp_path / "app.db"
+    upgrade_database(database)
+    backups = tmp_path / "backups"
+
+    created = [backup_database(database, backups, keep=2) for _ in range(4)]
+
+    assert created[-1] is not None
+    assert created[-2] is not None
+    assert created[-1].exists()
+    assert created[-2].exists()
+
+
 def test_restore_validates_and_preserves_recovery_copy(tmp_path: Path) -> None:
     database = tmp_path / "app.db"
     upgrade_database(database)
