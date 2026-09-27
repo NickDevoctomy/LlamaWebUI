@@ -7,7 +7,15 @@
         {
           "type": "feat",
           "description": "Roles can now be created and privileges applied. Administrator and User roles have been added as protected roles."
-        }     
+        },
+        {
+          "type": "change",
+          "description": "Settings button takes you to settings page, not user account page."
+        },
+        {
+          "type": "feat",
+          "description": "Pressing user icon at bottom of navigation bar takes you to user account page."
+        }          
       ]
     },    
     {

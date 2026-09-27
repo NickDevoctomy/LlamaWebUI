@@ -150,6 +150,31 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: 'Profiles' })).toBeInTheDocument()
   })
 
+  it('opens Account from the bottom-left account button and keeps Settings restricted', async () => {
+    renderApp({
+      currentUser: {
+        username: 'reader',
+        default_credentials: false,
+        description: null,
+        role: 'User',
+        privileges: ['server.read'],
+      },
+    })
+
+    expect(await screen.findByRole('button', { name: 'Account' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Account' }))
+    expect(screen.getByRole('heading', { name: 'Account', level: 2 })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Change password' })).toBeInTheDocument()
+  })
+
+  it('renders Settings as an empty full-width section for users with settings access', async () => {
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
+    expect(screen.getByRole('heading', { name: 'Settings', level: 2 })).toBeInTheDocument()
+    expect(screen.getByText('Application settings will be available here in a future release.')).toBeInTheDocument()
+  })
+
   it('renders live operational state and navigates to server details', async () => {
     renderApp()
 

@@ -62,6 +62,7 @@ def privilege_for_request(path: str, method: str) -> str | None:
         "/api/auth/login",
         "/api/auth/logout",
         "/api/auth/me",
+        "/api/auth/password",
     }:
         return None
     if path in {"/api/server/start", "/api/server/stop"}:

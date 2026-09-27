@@ -1,8 +1,8 @@
 # Sequential progress
 
 **Feature:** Roles and privileges for control-plane users  
-**Status:** Slice 3 complete.  
-**Next action:** Perform live browser acceptance at desktop and 390x844 if further visual verification is required; user deletion and protected User-role assignment are included in the acceptance flow.
+**Status:** Slice 4 complete.  
+**Next action:** Perform live browser acceptance at desktop and 390x844 if further visual verification is required.
 
 ## Current blocker
 
@@ -14,3 +14,4 @@ None. Slice 3 passed frontend tests/build and backend quality gates.
 - [Slice 1 note](notes/001-slice-1-roles-foundation.md)
 - [Slice 2 note](notes/002-slice-2-role-user-apis.md)
 - [Slice 3 note](notes/003-slice-3-roles-users-ui.md)
+- [Slice 4 note](notes/004-slice-4-account-settings-navigation.md)

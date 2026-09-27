@@ -124,7 +124,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
   const queryClient = useQueryClient()
   const canRead = (privilege: string) => user.privileges?.includes(privilege) ?? false
   const visibleNavigation = navigation.filter(([, , privilege]) => canRead(privilege))
-  const hasVisibleSection = visibleNavigation.some(([label]) => label === section)
+  const hasVisibleSection = section === 'Account' || visibleNavigation.some(([label]) => label === section)
   useEffect(() => {
     if (authReady && !hasVisibleSection) setSection(visibleNavigation[0]?.[0] ?? '')
   }, [authReady, hasVisibleSection, visibleNavigation])
@@ -227,7 +227,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
         </nav>
         <div className="sidebar-foot">
           <div className="sidebar-user">
-            <UserRound size={15} />
+            <button aria-label="Account" className="icon-button account-button" onClick={() => setSection('Account')} title="Account" type="button"><UserRound size={15} /></button>
             <div><strong>{user.username}</strong>{user.default_credentials && <span className="default-warning">Default password active</span>}</div>
             <button aria-label="Log out" className="icon-button small sidebar-logout" disabled={loggingOut} onClick={onLogout} title="Log out" type="button"><LogOut size={15} /></button>
           </div>
@@ -328,8 +328,10 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
             <DiscoverPanel jobs={downloads.data ?? []} library={library.data ?? []} initialRepoId={discoveryRepository} onQueued={() => setSection('Downloads')} />
           ) : section === 'Downloads' ? (
             <DownloadsPanel jobs={downloads.data ?? []} library={library.data ?? []} onCreateProfile={(model) => { setProfileSeed(model); setSection('Profiles') }} />
-          ) : section === 'Settings' ? (
+          ) : section === 'Account' ? (
             <AccountPanel user={user} />
+          ) : section === 'Settings' ? (
+            <SettingsPanel />
           ) : section === 'Users' ? (
             <UsersPanel users={users.data ?? []} roles={roles.data ?? []} canManage={user.privileges?.includes('auth.write') ?? true} />
           ) : section === 'Roles' ? (
@@ -498,6 +500,12 @@ function CollectionPanel({ section, runtimes, profiles, tokens }: {
   return <section className="data-panel"><div className="panel-heading"><div><h2>{section}</h2><p>Local control-plane records and configuration.</p></div></div>{items.length ? <div className="collection">{items.map((item) => <div className="collection-row" key={`${item.title}-${item.meta}`}><div><strong>{item.title}</strong><span>{item.meta}</span></div><span className="profile-tag">{item.state}</span></div>)}</div> : <div className="empty"><Database size={28} /><strong>No {section.toLowerCase()} to show</strong><span>This workspace will populate as items are configured.</span></div>}</section>
 }
 
+function SettingsPanel() {
+  return <section className="data-panel settings-panel">
+    <div className="panel-heading"><div><h2>Settings</h2><p>Application settings will be available here in a future release.</p></div><Settings size={20} /></div>
+  </section>
+}
+
 function AccountPanel({ user }: { user: Awaited<ReturnType<typeof api.currentUser>> }) {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -513,7 +521,7 @@ function AccountPanel({ user }: { user: Awaited<ReturnType<typeof api.currentUse
   const valid = currentPassword.length > 0 && newPassword.length >= 8 && newPassword === confirmation
   return <section className="settings-grid">
     <section className="data-panel account-panel">
-      <div className="panel-heading"><div><h2>Account</h2><p>Manage the signed-in control-plane administrator.</p></div><UserRound size={20} /></div>
+      <div className="panel-heading"><div><h2>Account</h2><p>View your account and change your password.</p></div><UserRound size={20} /></div>
       <div className="account-summary"><span className="metric-icon"><UserRound size={18} /></span><div><small>Signed in as</small><strong>{user.username}</strong></div>{user.default_credentials && <span className="profile-tag warning-tag">Default password active</span>}</div>
       {user.default_credentials && <div className="inline-notice"><ShieldAlert size={15} /> Change the default password before exposing the control plane beyond this local machine.</div>}
       <form className="form-body" onSubmit={(event) => { event.preventDefault(); changePassword.mutate() }}>

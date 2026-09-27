@@ -21,7 +21,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px solid #718c16; outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
 
-.app-shell { min-height: 100vh; display: grid; grid-template-columns: 222px minmax(0, 1fr); }
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: 318px minmax(0, 1fr); }
 .sidebar { position: sticky; top: 0; height: 100vh; padding: 24px 14px 18px; color: #ededE7; background: var(--ink); display: flex; flex-direction: column; }
 .brand { display: flex; align-items: center; gap: 11px; padding: 0 8px 28px; }
 .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; color: var(--ink); background: var(--signal); border-radius: 4px; }
@@ -34,10 +34,12 @@ button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-v
 .nav-item.active { color: var(--ink); background: var(--signal); font-weight: 600; }
 .nav-count { margin-left: auto; min-width: 21px; text-align: center; font: 500 10px 'IBM Plex Mono', monospace; }
 .sidebar-foot { margin-top: auto; padding: 16px 8px 0; border-top: 1px solid #2c2e2a; color: #6f716b; font: 11px 'IBM Plex Mono', monospace; }
-.sidebar-user { margin-bottom: 15px; display: grid; grid-template-columns: 17px minmax(0, 1fr) 30px; align-items: center; gap: 8px; color: #aeb0a8; }
+.sidebar-user { margin-bottom: 15px; display: grid; grid-template-columns: 30px minmax(0, 1fr) 30px; align-items: center; gap: 8px; color: #aeb0a8; }
 .sidebar-user > div { min-width: 0; display: grid; gap: 4px; }
 .sidebar-user strong { overflow: hidden; color: #ededE7; font-size: 11px; text-overflow: ellipsis; }
 .default-warning { overflow: hidden; color: #d6b743; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-user .account-button { width: 30px; height: 30px; color: #6f716b; background: var(--ink); border-color: #30322e; }
+.sidebar-user .account-button:hover { color: #aeb0a8; border-color: #555850; background: #242622; }
 .sidebar-logout { color: #aeb0a8; }
 .sidebar-logout:hover { color: #fff; }
 .local-badge { margin-bottom: 9px; display: flex; align-items: center; gap: 7px; color: #aeb0a8; }
@@ -196,6 +198,7 @@ tbody tr:hover { background: #f4f4ee; }
 .auth-footnote { margin: 22px 0 0; color: var(--muted); font-size: 10px; }
 .auth-state { min-height: 100vh; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); background: var(--paper); font: 12px 'IBM Plex Mono', monospace; }
 .settings-grid { display: grid; grid-template-columns: minmax(0, 620px); gap: 18px; }
+.settings-panel { width: 100%; }
 .users-panel { max-width: 780px; }
 .account-summary { padding: 18px 19px; display: flex; align-items: center; gap: 12px; }
 .account-summary > div { min-width: 0; flex: 1; display: grid; gap: 4px; }
