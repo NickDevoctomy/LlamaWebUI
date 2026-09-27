@@ -42,9 +42,17 @@ from llamawebui.services.auth_service import (
     AuthenticatedUser,
     AuthenticationError,
     AuthService,
+    InvalidPrivilegesError,
+    LastAdministratorError,
+    ProtectedUserError,
+    RoleAlreadyExistsError,
+    RoleInUseError,
+    RoleNotFoundError,
+    RoleProtectedError,
     SessionNotFoundError,
     UserAlreadyExistsError,
 )
+from llamawebui.services.authorization import privilege_for_request
 from llamawebui.services.database_backup import backup_database
 from llamawebui.services.diagnostics import DiagnosticsExporter
 from llamawebui.services.download_coordinator import DownloadCoordinator
@@ -234,6 +242,19 @@ class PasswordChangeRequest(BaseModel):
 class UserCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=1024)
+    description: str | None = Field(default=None, max_length=500)
+    role_id: str | None = None
+
+
+class RoleCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+    privileges: tuple[str, ...] = ()
+
+
+class UserUpdateRequest(BaseModel):
+    description: str | None = Field(default=None, max_length=500)
+    role_id: str
 
 
 def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
@@ -461,6 +482,41 @@ def _require_session(request: Request) -> AuthenticatedUser:
         ) from error
 
 
+def _require_privilege(
+    request: Request, user: AuthenticatedUser | None = None
+) -> AuthenticatedUser:
+    current_user = user or _require_session(request)
+    privilege = privilege_for_request(request.url.path, request.method)
+    if privilege is not None and privilege not in current_user.privileges:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="insufficient privileges",
+        )
+    return current_user
+
+
+def _managed_role_payload(role: Any) -> dict[str, object]:
+    return {
+        "id": role.id,
+        "name": role.name,
+        "description": role.description,
+        "protected": role.protected,
+        "privileges": list(role.privileges),
+        "user_count": role.user_count,
+    }
+
+
+def _managed_user_payload(user: Any) -> dict[str, object]:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "description": user.description,
+        "role_id": user.role_id,
+        "role": user.role_name,
+        "default_credentials": user.default_credentials,
+    }
+
+
 def _session_cookie(session_id: str, secure: bool) -> str:
     attributes = [
         f"{SESSION_COOKIE_NAME}={session_id}",
@@ -641,7 +697,7 @@ def create_app(
                     content={"detail": "authentication required"},
                 )
             try:
-                _auth_service(request).resolve_session(session_id)
+                user = _auth_service(request).resolve_session(session_id)
             except SessionNotFoundError as error:
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -654,6 +710,12 @@ def create_app(
                 return JSONResponse(
                     status_code=status.HTTP_403_FORBIDDEN,
                     content={"detail": "missing CSRF protection header"},
+                )
+            privilege = privilege_for_request(path, request.method)
+            if privilege is not None and privilege not in user.privileges:
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"detail": "insufficient privileges"},
                 )
         return await call_next(request)
 
@@ -795,11 +857,15 @@ def create_app(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)
             ) from error
         session = auth.create_session(user.id)
+        authenticated = auth.resolve_session(session.id)
         secure = request.url.scheme == "https"
         response = JSONResponse(
             {
                 "username": user.username,
                 "default_credentials": auth.is_default_credentials(user.id),
+                "description": authenticated.description,
+                "role": authenticated.role_name,
+                "privileges": sorted(authenticated.privileges),
             }
         )
         response.set_cookie(
@@ -835,6 +901,9 @@ def create_app(
         return {
             "username": user.username,
             "default_credentials": user.default_credentials,
+            "description": user.description,
+            "role": user.role_name,
+            "privileges": sorted(user.privileges),
         }
 
     @app.post("/api/auth/password")
@@ -859,32 +928,103 @@ def create_app(
 
     @app.get("/api/auth/users")
     async def list_users(request: Request) -> list[dict[str, object]]:
-        _require_session(request)
-        return [
-            {
-                "id": user.id,
-                "username": user.username,
-                "default_credentials": user.default_credentials,
-            }
-            for user in _auth_service(request).list_users()
-        ]
+        return [_managed_user_payload(user) for user in _auth_service(request).list_managed_users()]
 
     @app.post("/api/auth/users", status_code=status.HTTP_201_CREATED)
     async def create_user(
         user_request: UserCreateRequest, request: Request
     ) -> dict[str, object]:
-        _require_session(request)
         try:
-            user = _auth_service(request).create_user(
-                user_request.username, user_request.password
+            user = _auth_service(request).create_managed_user(
+                user_request.username,
+                user_request.password,
+                description=user_request.description,
+                role_id=user_request.role_id,
             )
         except UserAlreadyExistsError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
-        return {
-            "id": user.id,
-            "username": user.username,
-            "default_credentials": user.default_credentials,
-        }
+        except RoleNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        return _managed_user_payload(user)
+
+    @app.get("/api/auth/roles")
+    async def list_roles(request: Request) -> list[dict[str, object]]:
+        return [_managed_role_payload(role) for role in _auth_service(request).list_roles()]
+
+    @app.post("/api/auth/roles", status_code=status.HTTP_201_CREATED)
+    async def create_role(role_request: RoleCreateRequest, request: Request) -> dict[str, object]:
+        try:
+            role = _auth_service(request).create_role(
+                role_request.name, role_request.description, role_request.privileges
+            )
+        except RoleAlreadyExistsError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except InvalidPrivilegesError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
+        return _managed_role_payload(role)
+
+    @app.put("/api/auth/roles/{role_id}")
+    async def update_role(
+        role_id: str, role_request: RoleCreateRequest, request: Request
+    ) -> dict[str, object]:
+        try:
+            role = _auth_service(request).update_role(
+                role_id, role_request.name, role_request.description, role_request.privileges
+            )
+        except RoleNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except RoleProtectedError as error:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+        except (RoleAlreadyExistsError, LastAdministratorError) as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except InvalidPrivilegesError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
+        return _managed_role_payload(role)
+
+    @app.delete("/api/auth/roles/{role_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def delete_role(role_id: str, request: Request) -> None:
+        try:
+            _auth_service(request).delete_role(role_id)
+        except RoleNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except RoleProtectedError as error:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+        except RoleInUseError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    @app.put("/api/auth/users/{user_id}")
+    async def update_user(
+        user_id: str, user_request: UserUpdateRequest, request: Request
+    ) -> dict[str, object]:
+        try:
+            user = _auth_service(request).update_user(
+                user_id, description=user_request.description, role_id=user_request.role_id
+            )
+        except AuthenticationError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except RoleNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except LastAdministratorError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return _managed_user_payload(user)
+
+    @app.delete("/api/auth/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def delete_user(user_id: str, request: Request) -> None:
+        current_user = _require_session(request)
+        try:
+            _auth_service(request).delete_user(
+                user_id, requesting_user_id=current_user.id
+            )
+        except AuthenticationError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ProtectedUserError as error:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+        except LastAdministratorError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     @app.post("/api/diagnostics/export")
     async def export_diagnostics(request: Request) -> dict[str, object]:

@@ -2,14 +2,10 @@
 
 ## Start Every Session
 
-- Read `docs/plans/active/README.md` first, then read `docs/plans/active/sequential-progress.md` and the latest completed/current slice note under `docs/plans/active/notes/`. Treat `docs/plans/llama-web-ui-plan.md` as the authoritative overall design and requirements document.
+- Read `docs/plans/active/README.md` first
+- Treat `docs/plans/llama-web-ui-plan.md` as the authoritative overall design and requirements document.
 - Run `git status --short` and `git log -3 --oneline --decorate` before editing. Preserve user changes and never reset or overwrite work that is not yours.
-- Continue from the single current next action in `sequential-progress.md`. The numbered notes are the slice handoff/evidence; do not invent another handoff source. Do not expand backend or frontend scope beyond what is needed to complete that slice.
 - Proactively start stopped local development/control-plane services and registered managed runtimes when they are required for the current slice's acceptance. Do not ask the user for permission solely because an in-scope service is stopped. Existing validated models may be loaded/unloaded when explicitly required by the current acceptance; restore their original state and verify managed cleanup afterward. Ask first only for out-of-scope destructive actions, secret creation, or large downloads/transfers.
-- The current slice is not complete unless every required gate passes. If any focused test, frontend test, build, lint, type check, coverage check, or required manual check fails, keep the slice BLOCKED and stop. Do not advance the phase, mark it complete, or write a success-style handoff.
-- Never overwrite a failed validation with a later progress update. Record one concise numbered note under `docs/plans/active/notes/` only after the slice is complete; keep `sequential-progress.md` to current status, blocker, next action, and links.
-- Do not modify README files or planning instructions during a feature slice unless the current slice explicitly requires documentation changes. Do not add narrative, retrospective, or commit-history material to progress documents. Do not add a current-slice section to the active README; slice state belongs in `sequential-progress.md` and numbered notes.
-- Work in visible, testable slices. Every completed slice must end with a runnable deliverable, numbered manual test steps when required, validation results, and a suggested commit message. A failed or partial slice must not be presented as completed.
 
 ## Architecture Boundaries
 
@@ -57,6 +53,8 @@ npm test
 npm run build
 ```
 
+- For every user-facing frontend change, perform visual browser acceptance after the tests/build. Start the documented backend and frontend services when needed, open the app in the browser, and inspect the changed workflow at desktop width and `390x844`. Verify actual geometry (no overlap, clipping, or overflow), colors/borders/icons against the surrounding design, visible labels, hover/focus/disabled states, and the resulting destination after interaction. A passing Vitest test or build is not sufficient for UI acceptance; use browser DOM inspection and screenshots when visual differences matter. Add a focused test for the interaction, but do not treat it as a substitute for live visual verification.
+
 - If `npm test` fails, inspect and report every failure. Do not assume a baseline failure is acceptable, do not advance the sequential plan, and do not change unrelated backend tests to improve the status.
 
 ## Live Development
@@ -80,8 +78,6 @@ npm run dev -- --host 127.0.0.1
 
 ## Model Acceptance
 
-- Never download the 93.7 GB `unsloth/Qwen3.8-Flash-Next-GGUF` group during routine development.
-- This development machine has an RTX 4090 and 128 GB RAM. Register a CUDA llama.cpp build before evaluating GPU behavior; the currently registered Vulkan runtime reports no devices here.
 - The recommended first real acceptance artifact is `unsloth/Qwen3.5-9B-GGUF`, revision `3885219b6810b007914f3a7950a8d1b469d598a5`, group `Qwen3.5-9B-Q4_K_M`, 5.29 GiB.
 - Do not create real download jobs or tokens during automated acceptance. Do not initiate large downloads/transfers or secret-creating actions without explicit user direction; continue verification from state the user intentionally creates.
 
@@ -90,6 +86,6 @@ npm run dev -- --host 127.0.0.1
 - Make the smallest complete change that resolves the current user-visible dependency.
 - Validate the narrow behavior immediately after the first edit, then run the relevant full quality gates.
 - Perform live browser acceptance for user-facing workflows without mutating valuable user state.
-- Update `docs/plans/active/sequential-progress.md` with implemented behavior, measured validation, remaining blocker, and the exact next slice.
 - Run `git diff --check` and inspect `git status --short --untracked-files=all` for generated files or secrets.
-- Leave development services running when the user is expected to test the slice.
+- Leave development services running when the user is expected to test the slice, otherwise stop / close them.
+- Run all backend and frontend tests, along with ruff and mypy, everything should pass.

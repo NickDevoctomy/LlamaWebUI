@@ -135,12 +135,50 @@ class AccessTokenRecord(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class RoleRecord(Base):
+    __tablename__ = "roles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    description: Mapped[str | None] = mapped_column(Text)
+    protected: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PrivilegeRecord(Base):
+    __tablename__ = "privileges"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text)
+    resource: Mapped[str] = mapped_column(String(50), index=True)
+    access: Mapped[str] = mapped_column(String(10))
+
+
+class RolePrivilegeRecord(Base):
+    __tablename__ = "role_privileges"
+
+    role_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True
+    )
+    privilege_key: Mapped[str] = mapped_column(
+        String(100), ForeignKey("privileges.key", ondelete="CASCADE"), primary_key=True
+    )
+
+
 class UserRecord(Base):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True)
     password_hash: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    role_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("roles.id", ondelete="RESTRICT"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()

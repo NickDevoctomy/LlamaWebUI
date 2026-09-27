@@ -32,6 +32,9 @@ def test_upgrade_database_creates_schema_and_is_idempotent(tmp_path: Path) -> No
             "sessions",
             "settings",
             "users",
+                "roles",
+                "privileges",
+                "role_privileges",
         }
         runtime_columns = {column["name"] for column in inspect(engine).get_columns("runtimes")}
         assert {"executable_path", "options", "help_sha256"} <= runtime_columns
