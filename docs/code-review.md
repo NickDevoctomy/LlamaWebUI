@@ -154,3 +154,4 @@ Severity is prioritized as follows:
 
 1. It is your responsibility to start the backend and/or frontend.
 2. It is your responsibility to install any additional packages required for this development of this project. This does not include system utilities installed outside of this workspace.
+3. local admin password for testing is 'password123', this server is not public facing.
