@@ -73,7 +73,6 @@ if ($Publish) {
     Invoke-Checked 'git' @('commit', '-m', "release: $tag")
     Invoke-Checked 'git' @('tag', '-a', $tag, '-m', "LlamaWebUI $tag")
     Invoke-Checked 'git' @('push', 'origin', 'HEAD', $tag)
-    Invoke-Checked 'gh' @('release', 'create', $tag, '--title', "LlamaWebUI $tag", '--notes-file', 'release-notes.md')
 } else {
-    Write-Output "Validated and built $tag. Re-run with -Publish to commit, tag, push, and create the GitHub release."
+    Write-Output "Validated and built $tag. Re-run with -Publish to commit, tag, and push the release commit and tag."
 }

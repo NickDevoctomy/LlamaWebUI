@@ -40,7 +40,7 @@ After reviewing the generated package and release notes, publish the release exp
 .\packaging\release.ps1 -Publish
 ```
 
-`-Publish` commits the synchronized metadata and generated release notes, creates an annotated Git tag, pushes the current commit and tag to `origin`, and creates the GitHub release using the generated notes. It requires `git` credentials and the GitHub CLI (`gh`) to already be authenticated. The script does not create or modify the changelog entry for you, and it stops before tagging if the entry is missing, duplicated, empty, or not dated today.
+`-Publish` commits the synchronized metadata and generated release notes, creates an annotated Git tag, and pushes the current commit and tag to `origin`. The tag-triggered GitHub Actions workflow then validates the tag, packages the tagged source, creates the GitHub release, and uploads the Windows archive. The script does not create or modify the changelog entry for you, and it stops before tagging if the entry is missing, duplicated, empty, or not dated today.
 
 For an intentional local packaging retry when quality gates have already passed, use `-SkipQualityGates`; this still performs version/changelog/tag validation and package generation:
 
