@@ -35,6 +35,7 @@ import { AccessPanel } from './AccessPanel'
 import { api, type DownloadJob, type LibraryModel, type LogicalModel, type Profile, type RouterModel, type Runtime } from './api'
 import { DiscoverPanel, DownloadsPanel } from './DiscoveryPanels'
 import { Dialog, ProfilePanel, RuntimePanel } from './SetupPanels'
+import { APP_VERSION } from './version'
 
 const navigation = [
   ['Dashboard', CircleGauge, 'server.read'],
@@ -232,7 +233,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
             <button aria-label="Log out" className="icon-button small sidebar-logout" disabled={loggingOut} onClick={onLogout} title="Log out" type="button"><LogOut size={15} /></button>
           </div>
           <div className="local-badge"><ShieldCheck size={15} /> Local control plane</div>
-          <span>v0.1 alpha</span>
+          <span>v{APP_VERSION}</span>
         </div>
       </aside>
 

@@ -190,6 +190,7 @@ describe('App', () => {
     renderApp()
 
     expect(await screen.findByRole('heading', { name: 'Dashboard', level: 1 })).toBeInTheDocument()
+    expect(screen.getByText('v0.3.0')).toBeInTheDocument()
     expect(screen.getByText('Operational overview')).toBeInTheDocument()
     expect(screen.getByText('Local control-plane health and active work.')).toBeInTheDocument()
   })
