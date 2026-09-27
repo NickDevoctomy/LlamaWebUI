@@ -581,6 +581,8 @@ def create_app(
         )
         app.state.profile_registry = ProfileRegistry(engine)
         app.state.token_registry = TokenRegistry(engine, app_settings.data_dir)
+        app.state.token_registry.reconcile_legacy_materialized_tokens()
+        app.state.token_registry.remove_materialized_tokens()
         app.state.auth_service = AuthService(engine)
         app.state.auth_service.ensure_default_admin()
         app.state.download_registry = DownloadRegistry(engine, app_settings.data_dir / "models")
@@ -673,6 +675,7 @@ def create_app(
             )
             async with app.state.router_lifecycle_lock:
                 await app.state.router_supervisor.stop()
+            app.state.token_registry.remove_materialized_tokens()
             app.state.router_supervisor.set_state_observer(None)
             await app.state.router_event_synchronizer.shutdown()
             await app.state.download_coordinator.shutdown()
@@ -774,6 +777,7 @@ def create_app(
         write_combined_preset_atomic(
             preset_path, tuple(profile.preset for profile in enabled_profiles)
         )
+        tokens.materialize_enabled_tokens()
         launch = RouterLaunch(
             executable=Path(runtime.executable_path),
             preset_path=preset_path,
@@ -818,6 +822,7 @@ def create_app(
                 launch, timeout_seconds=app_settings.router_ready_timeout_seconds
             )
         except TimeoutError as error:
+            tokens.remove_materialized_tokens()
             run_registry.update(
                 run.id,
                 supervisor.state,
@@ -829,6 +834,7 @@ def create_app(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(error)
             ) from error
         except (OSError, RuntimeError) as error:
+            tokens.remove_materialized_tokens()
             run_registry.update(
                 run.id,
                 supervisor.state,
@@ -840,6 +846,7 @@ def create_app(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)
             ) from error
         except ValueError as error:
+            tokens.remove_materialized_tokens()
             run_registry.update(
                 run.id,
                 supervisor.state,
@@ -1117,6 +1124,7 @@ def create_app(
     @app.post("/api/server/stop")
     async def stop_server(request: Request) -> dict[str, object]:
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        tokens = cast(TokenRegistry, request.app.state.token_registry)
         lock = cast(asyncio.Lock, request.app.state.router_lifecycle_lock)
         async with lock:
             try:
@@ -1125,6 +1133,7 @@ def create_app(
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT, detail=str(error)
                 ) from error
+            tokens.remove_materialized_tokens()
         return _server_payload(supervisor, app_settings)
 
     @app.post("/api/server/restart")
