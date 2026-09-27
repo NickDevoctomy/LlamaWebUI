@@ -142,3 +142,13 @@ Severity is prioritized as follows:
 ## DEFFERED
 
 1. Playwright frontend test coverage (CR-012)
+
+## Acceptance
+
+1. Full test coverage passes, including ruff and mypy.
+2. Backend and frontend have been fully stopped.
+
+## Notes
+
+1. It is your responsibility to start the backend and/or frontend.
+2. It is your responsibility to install any additional packages required for this development of this project. This does not include system utilities installed outside of this workspace.
