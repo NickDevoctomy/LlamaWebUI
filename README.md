@@ -1,5 +1,7 @@
 # Llama Web UI
 
+> This application is built primarily via the use of agentic coding tools. While a reasonable amount of care and attention has been put into making sure it does what I need it to do, it was developed primarily for me to use personally. As a result, the quality  of the software is not exactly exception and you should expect there to be bugs. Please do not use this for anything important and do not expose it to the public internet as it likely contains security issues. Use at your own risk.
+
 Local control plane and operator UI for an official `llama-server` process.
 
 The application manages runtimes, model profiles, downloads, access keys, router lifecycle, and OpenAI-compatible connections. It does not replace or reimplement `llama-server` inference.

@@ -1,4 +1,4 @@
-# LlamaWebUI v0.3.0
+# LlamaWebUI v0.3.1
 
 Released: 2026-09-27
 
