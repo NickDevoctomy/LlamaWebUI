@@ -24,8 +24,19 @@ def login() -> Login:
         response = client.post(
             "/api/auth/login", json={"username": username, "password": password}
         )
+        if response.status_code == 401 and username == "admin" and password == "admin":
+            password = "test-admin-password"
+            response = client.post(
+                "/api/auth/login", json={"username": username, "password": password}
+            )
         assert response.status_code == 200, response.text
         client.headers.update({CSRF_HEADER: CSRF_HEADER_VALUE})
+        if username == "admin" and password == "admin":
+            changed = client.post(
+                "/api/auth/password",
+                json={"current_password": "admin", "new_password": "test-admin-password"},
+            )
+            assert changed.status_code == 200, changed.text
         return client
 
     return _login

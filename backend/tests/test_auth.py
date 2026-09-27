@@ -31,12 +31,34 @@ def test_control_plane_requires_authentication(tmp_path: Path) -> None:
     assert response.status_code == 401
 
 
+def test_bootstrap_credentials_cannot_access_management_until_rotated(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        login = client.post(
+            "/api/auth/login", json={"username": "admin", "password": "admin"}
+        )
+        assert login.status_code == 200
+
+        status_response = client.get("/api/server/status")
+        users_response = client.get("/api/auth/users")
+        account_response = client.get("/api/auth/me")
+
+    assert status_response.status_code == 403
+    assert users_response.status_code == 403
+    assert account_response.status_code == 200
+
+
 def test_control_plane_requires_csrf_header_for_mutations(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         login = client.post(
             "/api/auth/login", json={"username": "admin", "password": "admin"}
         )
         assert login.status_code == 200
+        changed = client.post(
+            "/api/auth/password",
+            json={"current_password": "admin", "new_password": "new-secret"},
+            headers={CSRF_HEADER: CSRF_HEADER_VALUE},
+        )
+        assert changed.status_code == 200
         # Missing CSRF header on a state-changing request.
         response = client.post("/api/server/stop")
     assert response.status_code == 403
@@ -71,6 +93,12 @@ def test_login_logout_and_authenticated_access(tmp_path: Path) -> None:
         assert me.json()["role"] == "Administrator"
         assert len(me.json()["privileges"]) >= 2
 
+        changed = client.post(
+            "/api/auth/password",
+            json={"current_password": "admin", "new_password": "new-secret"},
+            headers={CSRF_HEADER: CSRF_HEADER_VALUE},
+        )
+        assert changed.status_code == 200
         status = client.get("/api/server/status")
         assert status.status_code == 200
 
@@ -188,6 +216,12 @@ def test_roles_and_privileges_are_seeded_and_idempotent(tmp_path: Path) -> None:
         second = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
         assert second.status_code == 200
         assert len(second.json()["privileges"]) == privilege_count
+        changed = client.post(
+            "/api/auth/password",
+            json={"current_password": "admin", "new_password": "new-secret"},
+            headers={CSRF_HEADER: CSRF_HEADER_VALUE},
+        )
+        assert changed.status_code == 200
         user_role = next(
             role for role in client.get("/api/auth/roles").json() if role["name"] == "User"
         )
@@ -219,6 +253,12 @@ def test_authenticated_admin_can_list_and_create_admin_users(tmp_path: Path) -> 
             "/api/auth/login", json={"username": "admin", "password": "admin"}
         )
         assert login.status_code == 200
+        changed = client.post(
+            "/api/auth/password",
+            json={"current_password": "admin", "new_password": "new-secret"},
+            headers={CSRF_HEADER: CSRF_HEADER_VALUE},
+        )
+        assert changed.status_code == 200
         users = client.get("/api/auth/users")
         assert users.status_code == 200
         assert [user["username"] for user in users.json()] == ["admin"]
@@ -250,6 +290,11 @@ def test_user_creation_rejects_duplicate_and_unauthenticated_requests(tmp_path: 
         )
         assert unauthenticated.status_code == 401
         client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        client.post(
+            "/api/auth/password",
+            json={"current_password": "admin", "new_password": "new-secret"},
+            headers={CSRF_HEADER: CSRF_HEADER_VALUE},
+        )
         headers = {CSRF_HEADER: CSRF_HEADER_VALUE}
         assert client.post(
             "/api/auth/users",
@@ -269,6 +314,11 @@ def test_role_crud_and_user_assignment(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         assert client.post(
             "/api/auth/login", json={"username": "admin", "password": "admin"}
+        ).status_code == 200
+        assert client.post(
+            "/api/auth/password",
+            json={"current_password": "admin", "new_password": "new-secret"},
+            headers=headers,
         ).status_code == 200
         roles = client.get("/api/auth/roles")
         assert roles.status_code == 200
@@ -308,6 +358,11 @@ def test_protected_and_invalid_role_operations_are_rejected(tmp_path: Path) -> N
     headers = {CSRF_HEADER: CSRF_HEADER_VALUE}
     with _client(tmp_path) as client:
         client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        client.post(
+            "/api/auth/password",
+            json={"current_password": "admin", "new_password": "new-secret"},
+            headers=headers,
+        )
         administrator = client.get("/api/auth/roles").json()[0]
         protected_update = client.put(
             f"/api/auth/roles/{administrator['id']}",
@@ -327,6 +382,11 @@ def test_user_deletion_requires_protected_account_rules(tmp_path: Path) -> None:
     headers = {CSRF_HEADER: CSRF_HEADER_VALUE}
     with _client(tmp_path) as client:
         client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        client.post(
+            "/api/auth/password",
+            json={"current_password": "admin", "new_password": "new-secret"},
+            headers=headers,
+        )
         created = client.post(
             "/api/auth/users",
             json={"username": "operator", "password": "operator-secret"},

@@ -112,6 +112,7 @@ function renderApp({
   })
   vi.stubGlobal('fetch', fetchMock)
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  client.setQueryData(['auth-user'], currentUser)
   render(<QueryClientProvider client={client}><App /></QueryClientProvider>)
   return Object.assign(fetchMock, { client })
 }
@@ -167,6 +168,33 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Account' }))
     expect(screen.getByRole('heading', { name: 'Account', level: 2 })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Change password' })).toBeInTheDocument()
+  })
+
+  it('clears password fields after a successful password change', async () => {
+    renderApp({
+      onRequest: (path, init) => {
+        if (path === '/api/auth/password' && init?.method === 'POST') return { changed: true }
+        return undefined
+      },
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Account' }))
+    expect(await screen.findByRole('heading', { name: 'Account', level: 2 })).toBeInTheDocument()
+    const current = await screen.findByLabelText('Current password')
+    const next = await screen.findByLabelText(/New password/)
+    const confirmation = await screen.findByLabelText('Confirm new password')
+    fireEvent.change(current, { target: { value: 'admin' } })
+    fireEvent.change(next, { target: { value: 'new-password' } })
+    fireEvent.change(confirmation, { target: { value: 'new-password' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Password changed. Other sessions have been signed out.')).toBeInTheDocument()
+      expect(current).toHaveValue('')
+      expect(next).toHaveValue('')
+      expect(confirmation).toHaveValue('')
+    })
+    expect(screen.queryByText('Passwords do not match.')).not.toBeInTheDocument()
   })
 
   it('renders Settings as an empty full-width section for users with settings access', async () => {

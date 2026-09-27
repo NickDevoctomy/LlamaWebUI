@@ -685,6 +685,11 @@ def create_app(
     app = FastAPI(title="LlamaWebUI", version="0.1.0", lifespan=lifespan)
 
     PUBLIC_API_PATHS = {"/api/health", "/api/auth/login", "/api/auth/logout"}
+    BOOTSTRAP_ALLOWED_PATHS = {
+        "/api/auth/me",
+        "/api/auth/password",
+        "/api/auth/logout",
+    }
 
     @app.middleware("http")
     async def require_control_plane_auth(request: Request, call_next: Any) -> Any:
@@ -702,6 +707,13 @@ def create_app(
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     content={"detail": str(error)},
+                )
+            if user.default_credentials and path not in BOOTSTRAP_ALLOWED_PATHS:
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={
+                        "detail": "change the bootstrap password before using the control plane"
+                    },
                 )
             if (
                 request.method not in {"GET", "HEAD", "OPTIONS"}
@@ -842,9 +854,6 @@ def create_app(
     async def health() -> dict[str, object]:
         return {
             "status": "ok",
-            "data_dir": str(app_settings.data_dir),
-            "database_path": str(app_settings.database_path),
-            "hugging_face_token_configured": app_settings.hf_token is not None,
         }
 
     @app.post("/api/auth/login")

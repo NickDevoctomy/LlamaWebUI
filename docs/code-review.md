@@ -146,7 +146,9 @@ Severity is prioritized as follows:
 ## Acceptance
 
 1. Full test coverage passes, including ruff and mypy.
-2. Backend and frontend have been fully stopped.
+2. For every user-facing frontend change, perform a live UI acceptance test when the affected workflow requires it. Start the documented backend and frontend services, open the application in a browser, and exercise the changed workflow through the UI. Verify the resulting navigation, loading, success, error, disabled, confirmation, and destructive states as applicable. For authentication changes, test the real login/logout flow and any affected password or account-management flow rather than relying only on component tests.
+3. Record live UI-test failures, diagnose them against the running application, and fix or explicitly report them before considering the review item complete.
+4. Backend and frontend have been fully stopped after live acceptance, unless the user is expected to continue testing the running application.
 
 ## Notes
 

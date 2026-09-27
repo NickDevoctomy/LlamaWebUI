@@ -20,9 +20,6 @@ def test_health_creates_data_directory_without_exposing_token(tmp_path: Path) ->
     assert response.status_code == 200
     assert response.json() == {
         "status": "ok",
-        "data_dir": str(data_dir.resolve()),
-        "database_path": str(data_dir.resolve() / "llamawebui.db"),
-        "hugging_face_token_configured": True,
     }
     assert "hf_private" not in response.text
     assert data_dir.is_dir()

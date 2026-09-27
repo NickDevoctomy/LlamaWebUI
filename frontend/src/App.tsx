@@ -82,22 +82,26 @@ function App() {
     queryKey: ['auth-user'],
     queryFn: api.currentUser,
     retry: false,
-    placeholderData: { username: '', default_credentials: false, description: null, role: '', privileges: ['server.read', 'library.read', 'huggingface.read', 'downloads.read', 'profiles.read', 'tokens.read', 'runtimes.read', 'settings.read', 'auth.read'] },
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
   })
   const logout = useMutation({
     mutationFn: api.logout,
-    onSuccess: () => { queryClient.setQueryData(['auth-user'], undefined) },
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ['auth-user'], exact: true })
+    },
   })
   if (auth.isError) {
     const authError = auth.error as Error & { status?: number }
     if (authError.status === 401) return <LoginScreen onLoggedIn={(user) => queryClient.setQueryData(['auth-user'], user)} />
     return <div className="auth-state"><AlertCircle size={20} /> Unable to check the control-plane session: {auth.error.message}</div>
   }
-  return <AuthenticatedApp user={auth.data!} authReady={!auth.isPlaceholderData} onLogout={() => logout.mutate()} loggingOut={logout.isPending} />
+  if (auth.isPending || !auth.data) return <div className="auth-state">Checking control-plane session…</div>
+  return <AuthenticatedApp user={auth.data} authReady onLogout={() => logout.mutate()} loggingOut={logout.isPending} />
 }
 
 function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: Awaited<ReturnType<typeof api.currentUser>>) => void }) {
-  const [username, setUsername] = useState('admin')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const login = useMutation({ mutationFn: () => api.login(username, password), onSuccess: onLoggedIn })
   return <main className="auth-shell">
@@ -112,23 +116,29 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: Awaited<ReturnType<typ
         {login.error && <div className="form-error"><AlertCircle size={15} /> {login.error.message}</div>}
         <button className="button primary" disabled={login.isPending || !username || !password} type="submit">{login.isPending ? <LoaderCircle className="spin" size={15} /> : <ShieldCheck size={15} />} Sign in</button>
       </form>
-      <p className="auth-footnote">Default local credentials: <span className="mono">admin / admin</span></p>
     </section>
   </main>
 }
 
 function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awaited<ReturnType<typeof api.currentUser>>; authReady: boolean; onLogout: () => void; loggingOut: boolean }) {
-  const [section, setSection] = useState('Dashboard')
+  const [section, setSection] = useState(user.default_credentials ? 'Account' : 'Dashboard')
   const [discoveryRepository, setDiscoveryRepository] = useState<string>()
   const [selectedRuntime, setSelectedRuntime] = useState('')
   const [profileSeed, setProfileSeed] = useState<LibraryModel>()
   const queryClient = useQueryClient()
   const canRead = (privilege: string) => user.privileges?.includes(privilege) ?? false
-  const visibleNavigation = navigation.filter(([, , privilege]) => canRead(privilege))
+  const visibleNavigation = user.default_credentials
+    ? []
+    : navigation.filter(([, , privilege]) => canRead(privilege))
   const hasVisibleSection = section === 'Account' || visibleNavigation.some(([label]) => label === section)
   useEffect(() => {
-    if (authReady && !hasVisibleSection) setSection(visibleNavigation[0]?.[0] ?? '')
-  }, [authReady, hasVisibleSection, visibleNavigation])
+    if (!authReady) return
+    if (user.default_credentials) {
+      setSection('Account')
+    } else if (!hasVisibleSection) {
+      setSection(visibleNavigation[0]?.[0] ?? '')
+    }
+  }, [authReady, hasVisibleSection, user.default_credentials, visibleNavigation])
   const status = useQuery({
     queryKey: ['server'],
     queryFn: api.serverStatus,
@@ -511,12 +521,16 @@ function AccountPanel({ user }: { user: Awaited<ReturnType<typeof api.currentUse
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmation, setConfirmation] = useState('')
+  const [successMessage, setSuccessMessage] = useState('')
+  const queryClient = useQueryClient()
   const changePassword = useMutation({
     mutationFn: () => api.changePassword(currentPassword, newPassword),
     onSuccess: () => {
       setCurrentPassword('')
       setNewPassword('')
-      setConfirmation('Password changed. Other sessions have been signed out.')
+      setConfirmation('')
+      setSuccessMessage('Password changed. Other sessions have been signed out.')
+      void queryClient.invalidateQueries({ queryKey: ['auth-user'] })
     },
   })
   const valid = currentPassword.length > 0 && newPassword.length >= 8 && newPassword === confirmation
@@ -526,15 +540,14 @@ function AccountPanel({ user }: { user: Awaited<ReturnType<typeof api.currentUse
       <div className="account-summary"><span className="metric-icon"><UserRound size={18} /></span><div><small>Signed in as</small><strong>{user.username}</strong></div>{user.default_credentials && <span className="profile-tag warning-tag">Default password active</span>}</div>
       {user.default_credentials && <div className="inline-notice"><ShieldAlert size={15} /> Change the default password before exposing the control plane beyond this local machine.</div>}
       <form className="form-body" onSubmit={(event) => { event.preventDefault(); changePassword.mutate() }}>
-        <label className="form-field"><span>Current password</span><input autoComplete="current-password" type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
-        <label className="form-field"><span>New password</span><input autoComplete="new-password" type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /><small>Use at least 8 characters. Existing passwords are never displayed.</small></label>
-        <label className="form-field"><span>Confirm new password</span><input autoComplete="new-password" type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} aria-invalid={confirmation.length > 0 && confirmation !== newPassword} /></label>
+        <label className="form-field" htmlFor="current-password"><span>Current password</span><input id="current-password" autoComplete="current-password" type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
+        <label className="form-field" htmlFor="new-password"><span>New password</span><input id="new-password" autoComplete="new-password" type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /><small>Use at least 8 characters. Existing passwords are never displayed.</small></label>
+        <label className="form-field" htmlFor="confirm-new-password"><span>Confirm new password</span><input id="confirm-new-password" autoComplete="new-password" type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} aria-invalid={confirmation.length > 0 && confirmation !== newPassword} /></label>
         {changePassword.error && <div className="form-error"><AlertCircle size={15} /> {changePassword.error.message}</div>}
         {confirmation && <div className={confirmation === newPassword ? 'form-success' : 'form-error'}>{confirmation === newPassword ? 'Passwords match.' : 'Passwords do not match.'}</div>}
-        {changePassword.isSuccess && <div className="form-success">{changePassword.data.changed ? 'Password changed successfully.' : ''}</div>}
+        {successMessage && <div className="form-success">{successMessage}</div>}
         <button className="button primary" disabled={!valid || changePassword.isPending} type="submit">{changePassword.isPending ? <LoaderCircle className="spin" size={15} /> : <ShieldCheck size={15} />} Change password</button>
       </form>
-      {changePassword.isSuccess && <div className="panel-footer"><span>{confirmation}</span></div>}
     </section>
   </section>
 }
