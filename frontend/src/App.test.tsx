@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
+import { APP_VERSION } from './version'
 
 const responses: Record<string, unknown> = {
   '/api/auth/me': { username: 'admin', default_credentials: false, description: null, role: 'Administrator', privileges: ['auth.read', 'auth.write', 'server.read', 'library.read', 'profiles.read', 'downloads.read', 'tokens.read', 'runtimes.read', 'huggingface.read', 'integrations.read', 'diagnostics.read', 'settings.read'] },
@@ -190,7 +191,7 @@ describe('App', () => {
     renderApp()
 
     expect(await screen.findByRole('heading', { name: 'Dashboard', level: 1 })).toBeInTheDocument()
-    expect(screen.getByText('v0.3.0')).toBeInTheDocument()
+    expect(screen.getByText(`v${APP_VERSION}`)).toBeInTheDocument()
     expect(screen.getByText('Operational overview')).toBeInTheDocument()
     expect(screen.getByText('Local control-plane health and active work.')).toBeInTheDocument()
   })
