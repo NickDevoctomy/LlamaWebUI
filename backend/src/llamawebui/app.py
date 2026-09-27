@@ -309,7 +309,19 @@ def _profile_payload(
     profile: ModelProfileRecord, artifacts: ModelArtifactRegistry | None = None
 ) -> dict[str, object]:
     source = artifacts.source_for_profile(profile) if artifacts is not None else None
-    available = artifacts.profile_available(profile) if artifacts is not None else True
+    validation_state = "available"
+    if artifacts is not None:
+        matches = artifacts.matching_jobs(profile)
+        validation_state = (
+            "available"
+            if not matches and Path(profile.model_path).is_file()
+            else "broken"
+            if not matches
+            else max(
+                (artifacts.validation_state(job) for job in matches),
+                key=("broken", "unverified", "available").index,
+            )
+        )
     return {
         "id": profile.id,
         "alias": profile.alias,
@@ -318,7 +330,7 @@ def _profile_payload(
         "configuration": profile.configuration,
         "preset": profile.preset,
         "enabled": profile.enabled,
-        "validation_state": "available" if available else "broken",
+        "validation_state": validation_state,
         "source_download": (
             {
                 "id": source.download_id,

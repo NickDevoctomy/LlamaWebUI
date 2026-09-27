@@ -134,7 +134,7 @@ Severity is prioritized as follows:
 
 1. COMPLETE: Correct router authentication (CR-001) and enforce first-run credential rotation (CR-002).
 2. COMPLETE: Reduce secret exposure and make token storage/lifecycle consistent (CR-003 and CR-007).
-3. Restore artifact integrity guarantees and remove public path disclosure (CR-004 and CR-005).
+3. COMPLETE (Tech debt created): Restore artifact integrity guarantees and remove public path disclosure (CR-004 and CR-005).
 4. Add login throttling and background-task failure observability (CR-006 and CR-008).
 5. Fix runtime download resource handling and frontend error/accessibility behavior (CR-009 through CR-011).
 6. Strengthen CI coverage/browser gates and unify version metadata (CR-013).

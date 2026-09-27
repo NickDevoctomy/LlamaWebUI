@@ -55,7 +55,7 @@ export interface Profile {
   model_path: string
   configuration: Record<string, unknown>
   enabled: boolean
-  validation_state: 'available' | 'broken'
+  validation_state: 'available' | 'unverified' | 'broken'
   source_download: {
     id: string
     repo_id: string
