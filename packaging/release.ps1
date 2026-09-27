@@ -61,7 +61,12 @@ if (-not $SkipQualityGates) {
 }
 
 Invoke-Checked $python @('packaging/generate-release-notes.py', '--tag', $tag, '--output', 'release-notes.md')
-Invoke-Checked (Join-Path $root 'packaging/build-windows.ps1') @('-Output', $Output)
+Invoke-Checked 'powershell.exe' @(
+    '-NoProfile',
+    '-ExecutionPolicy', 'Bypass',
+    '-File', (Join-Path $root 'packaging/build-windows.ps1'),
+    '-Output', $Output
+)
 
 if ($Publish) {
     Invoke-Checked 'git' @('add', 'VERSION', 'release-notes.md', 'backend/pyproject.toml', 'frontend/package.json', 'frontend/package-lock.json', 'backend/src/llamawebui/static')
