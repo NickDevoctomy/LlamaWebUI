@@ -4,12 +4,32 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import keyring
 import pytest
 from fastapi.testclient import TestClient
 
 from llamawebui.services.auth_service import CSRF_HEADER, CSRF_HEADER_VALUE
 
 Login = Callable[[TestClient], TestClient]
+
+
+@pytest.fixture(autouse=True)
+def isolated_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Use a deterministic credential store without requiring a desktop keyring."""
+    credentials: dict[tuple[str, str], str] = {}
+
+    def set_password(service: str, username: str, password: str) -> None:
+        credentials[(service, username)] = password
+
+    def get_password(service: str, username: str) -> str | None:
+        return credentials.get((service, username))
+
+    def delete_password(service: str, username: str) -> None:
+        credentials.pop((service, username), None)
+
+    monkeypatch.setattr(keyring, "set_password", set_password)
+    monkeypatch.setattr(keyring, "get_password", get_password)
+    monkeypatch.setattr(keyring, "delete_password", delete_password)
 
 
 @pytest.fixture
