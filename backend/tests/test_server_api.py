@@ -209,9 +209,7 @@ def test_server_start_status_and_stop(tmp_path: Path, login: Login) -> None:
     assert runs.json()[0]["ended_at"] is not None
     assert launched[0][0] == str(executable.resolve())
     assert launched[0][-2] == "--api-key-file"
-    assert Path(launched[0][-1]).read_text(encoding="utf-8").strip() == (
-        created_token.json()["token"]
-    )
+    assert not Path(launched[0][-1]).exists()
     preset_path = Path(launched[0][2])
     assert "[local-model]" in preset_path.read_text(encoding="utf-8")
 
@@ -656,6 +654,11 @@ async def test_server_lifecycle_requests_are_serialized(tmp_path: Path) -> None:
             )
             assert login_response.status_code == 200
             client.headers.update({CSRF_HEADER: CSRF_HEADER_VALUE})
+            password_response = await client.post(
+                "/api/auth/password",
+                json={"current_password": "admin", "new_password": "test-admin-password"},
+            )
+            assert password_response.status_code == 200
             runtime_id = (
                 await client.post(
                     "/api/runtimes",
@@ -742,6 +745,11 @@ async def test_server_recovers_with_durable_attempt_history(tmp_path: Path) -> N
             )
             assert login_response.status_code == 200
             client.headers.update({CSRF_HEADER: CSRF_HEADER_VALUE})
+            password_response = await client.post(
+                "/api/auth/password",
+                json={"current_password": "admin", "new_password": "test-admin-password"},
+            )
+            assert password_response.status_code == 200
             runtime_id = (
                 await client.post(
                     "/api/runtimes",
