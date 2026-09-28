@@ -136,7 +136,7 @@ Severity is prioritized as follows:
 2. COMPLETE: Reduce secret exposure and make token storage/lifecycle consistent (CR-003 and CR-007).
 3. COMPLETE (Tech debt created): Restore artifact integrity guarantees and remove public path disclosure (CR-004 and CR-005).
 4. COMPLETE : Add login throttling and background-task failure observability (CR-006 and CR-008).
-5. Fix runtime download resource handling and frontend error/accessibility behavior (CR-009 through CR-011).
+5. COMPLETE : Fix runtime download resource handling and frontend error/accessibility behavior (CR-009 through CR-011).
 6. Strengthen CI coverage/browser gates and unify version metadata (CR-013).
 
 ## DEFFERED
