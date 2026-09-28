@@ -20,6 +20,7 @@ def test_health_creates_data_directory_without_exposing_token(tmp_path: Path) ->
     assert response.status_code == 200
     assert response.json() == {
         "status": "ok",
+        "version": "0.3.1",
     }
     assert "hf_private" not in response.text
     assert data_dir.is_dir()

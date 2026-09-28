@@ -121,14 +121,14 @@ Severity is prioritized as follows:
 - **Action:** Add focused frontend coverage thresholds and a small Playwright smoke suite for login, protected navigation, destructive confirmation, and the primary download/profile path. Align the backend threshold with the documented 90% branch target after measuring and closing gaps.
 - **Done when:** CI fails below the agreed coverage thresholds and runs deterministic browser tests against mocked/local services without network or model downloads.
 
-### CR-013 — Application version metadata is inconsistent
+### COMPLETE: CR-013 — Application version metadata is inconsistent
 
 - **Severity:** P3 — Low
 - **Location:** `backend/src/llamawebui/app.py:685`; canonical version files `VERSION`, `backend/pyproject.toml:5-9`, and `frontend/src/version.ts`
 - **Evidence:** The FastAPI application is constructed with version `0.1.0` while the repository release is `0.3.1`.
 - **Impact:** OpenAPI documents, health/debug output, and support reports can identify a different version from the packaged application, complicating incident triage and compatibility checks.
 - **Action:** Define one release-version source and inject it into backend metadata, frontend display, packaging, and diagnostics during the build.
-- **Done when:** A release-version consistency test compares all emitted version values with `VERSION`.
+- **Done:** `VERSION` is synchronized into backend and frontend package metadata by `packaging/sync-version.py`; FastAPI OpenAPI and `/api/health` use the generated backend version module; `backend/tests/test_version.py` compares emitted metadata with `VERSION`.
 
 ## Recommended implementation order
 
@@ -137,7 +137,7 @@ Severity is prioritized as follows:
 3. COMPLETE (Tech debt created): Restore artifact integrity guarantees and remove public path disclosure (CR-004 and CR-005).
 4. COMPLETE : Add login throttling and background-task failure observability (CR-006 and CR-008).
 5. COMPLETE : Fix runtime download resource handling and frontend error/accessibility behavior (CR-009 through CR-011).
-6. Strengthen CI coverage/browser gates and unify version metadata (CR-013).
+6. COMPLETE: Unify version metadata (CR-013). CI coverage/browser gates remain deferred with CR-012.
 
 ## DEFFERED
 

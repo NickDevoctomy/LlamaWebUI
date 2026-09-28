@@ -112,6 +112,7 @@ from llamawebui.services.runtime_registry import (
 from llamawebui.services.server_run_registry import ServerRunRegistry
 from llamawebui.services.system_metrics import collect_system_metrics
 from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRegistry
+from llamawebui.version import __version__
 
 MODEL_EVENT_KEEPALIVE_SECONDS = 15.0
 LOGGER = logging.getLogger("llamawebui.app")
@@ -708,7 +709,7 @@ def create_app(
                 extra={"component": "application", "event": "stopped"},
             )
 
-    app = FastAPI(title="LlamaWebUI", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="LlamaWebUI", version=__version__, lifespan=lifespan)
 
     PUBLIC_API_PATHS = {"/api/health", "/api/auth/login", "/api/auth/logout"}
     BOOTSTRAP_ALLOWED_PATHS = {
@@ -884,6 +885,7 @@ def create_app(
     async def health() -> dict[str, object]:
         return {
             "status": "ok",
+            "version": __version__,
         }
 
     @app.post("/api/auth/login")
