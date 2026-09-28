@@ -307,6 +307,50 @@ describe('App', () => {
     expect(screen.getByRole('dialog').querySelector('pre')?.textContent).toBe(command)
   })
 
+  it('shows profile command failures instead of failing silently', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CPU', executable_path: 'C:\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset'], usable: true }
+    const profile = { id: 'profile-1', alias: 'qwen-local', runtime_id: 'runtime-1', model_path: 'C:\\models\\qwen.gguf', configuration: {}, enabled: true }
+    const fetchMock = renderApp({ runtimeList: [runtime], profileList: [profile], onRequest: (path) => {
+      if (path === '/api/profiles/profile-1/command') return undefined
+      return undefined
+    } })
+    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url, 'http://localhost').pathname
+      if (path === '/api/profiles/profile-1/command') return Promise.resolve(new Response(JSON.stringify({ detail: 'command unavailable' }), { status: 502, headers: { 'Content-Type': 'application/json' } }))
+      return Promise.resolve(new Response(JSON.stringify(responses[path] ?? []), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Command' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('command unavailable')
+  })
+
+  it('closes dialogs with Escape and restores focus', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CPU', executable_path: 'C:\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset'], usable: true }
+    renderApp({ runtimeList: [runtime] })
+    fireEvent.click(screen.getByRole('button', { name: 'Runtimes' }))
+    const register = screen.getAllByRole('button', { name: 'Register runtime' })[0]
+    register.focus()
+    fireEvent.mouseDown(register)
+    fireEvent.click(register)
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(document.activeElement).toBe(register)
+  })
+
+  it('uses an accessible confirmation dialog for user deletion', async () => {
+    const user = { id: 'operator-1', username: 'operator', description: null, role_id: 'user', role: 'User', default_credentials: false }
+    const fetchMock = renderApp({
+      currentUser: { ...(responses['/api/auth/me'] as object), privileges: ['auth.read', 'auth.write'] },
+      onRequest: (path) => path === '/api/auth/users' ? [user] : undefined,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Users' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete operator' }))
+    expect(await screen.findByRole('heading', { name: 'Delete user?' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Keep user' }))
+    expect(screen.queryByRole('heading', { name: 'Delete user?' })).not.toBeInTheDocument()
+  })
+
   it('refreshes library and live models when a download completes', async () => {
     const downloading = { id: 'download-1', repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), group_key: 'model-Q4_K_M', files: [], destination: 'E:\\models', total_bytes: 1000, completed_bytes: 400, state: 'downloading', error: null }
     let downloadList = [downloading]
