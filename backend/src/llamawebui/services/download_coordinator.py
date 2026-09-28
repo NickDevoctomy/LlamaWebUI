@@ -44,7 +44,7 @@ class DownloadCoordinator:
             extra={"component": "download", "event": "started", "job_id": job_id},
         )
         self._publish(job_id, "started")
-        task.add_done_callback(lambda _: self._task_finished(job_id))
+        task.add_done_callback(lambda completed: self._task_finished(job_id, completed))
 
     async def cancel(self, job_id: str) -> DownloadJobRecord:
         record = self._registry.transition(job_id, DownloadState.CANCELLED)
@@ -66,8 +66,39 @@ class DownloadCoordinator:
                 },
             )
 
-    def _task_finished(self, job_id: str) -> None:
+    def _task_finished(self, job_id: str, task: asyncio.Task[None]) -> None:
         self._tasks.pop(job_id, None)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            LOGGER.error(
+                "download_task_failed",
+                extra={
+                    "component": "download",
+                    "event": "task_failed",
+                    "job_id": job_id,
+                    "error": str(error),
+                },
+            )
+            try:
+                current_state = DownloadState(self._registry.get(job_id).state)
+                if current_state is DownloadState.QUEUED:
+                    self._registry.transition(job_id, DownloadState.DOWNLOADING)
+                failed = self._registry.fail(job_id, str(error))
+                if self._event_broker is not None and failed.state == DownloadState.FAILED:
+                    self._publish(job_id, DownloadState.FAILED.value)
+            except Exception as failure:
+                LOGGER.error(
+                    "download_task_failure_persist_failed",
+                    extra={
+                        "component": "download",
+                        "event": "task_failure_persist_failed",
+                        "job_id": job_id,
+                        "error": str(failure),
+                    },
+                )
+            return
         if self._event_broker is None:
             return
         state = DownloadState(self._registry.get(job_id).state)

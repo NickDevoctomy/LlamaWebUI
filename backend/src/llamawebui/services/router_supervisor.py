@@ -232,8 +232,14 @@ class RouterSupervisor:
         self._process = process
         self._notify_state()
         self._watch_task = asyncio.create_task(self._watch(process))
+        self._watch_task.add_done_callback(
+            lambda task: self._background_task_done("watch", task)
+        )
         if process.stdout is not None:
             self._log_task = asyncio.create_task(self._capture_logs(process.stdout))
+            self._log_task.add_done_callback(
+                lambda task: self._background_task_done("log_capture", task)
+            )
 
     async def wait_until_ready(
         self,
@@ -332,6 +338,9 @@ class RouterSupervisor:
         ):
             return
         self._restart_task = asyncio.create_task(self._restart_loop())
+        self._restart_task.add_done_callback(
+            lambda task: self._background_task_done("restart", task)
+        )
 
     async def _restart_loop(self) -> None:
         policy = self._restart_policy
@@ -376,6 +385,42 @@ class RouterSupervisor:
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+
+    def _background_task_done(self, name: str, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            return
+        if error is None:
+            return
+        LOGGER.error(
+            "router_background_task_failed",
+            extra={
+                "component": "router",
+                "event": "background_task_failed",
+                "task": name,
+                "error": str(error),
+            },
+        )
+        if name == "watch" and self._state not in {
+            RouterState.STOPPED,
+            RouterState.STOPPING,
+        }:
+            process = self._process
+            self._last_exit_code = process.returncode if process is not None else None
+            self._process = None
+            if self._state in {RouterState.STARTING, RouterState.READY, RouterState.DEGRADED}:
+                self._set_state(RouterState.CRASHED)
+            if process is not None and process.returncode is None:
+                cleanup = asyncio.create_task(process.terminate_tree(force=True))
+                cleanup.add_done_callback(
+                    lambda completed: self._background_task_done("cleanup", completed)
+                )
+            self._schedule_restart()
+        elif name == "log_capture" and self._state is RouterState.READY:
+            self._set_state(RouterState.DEGRADED)
 
     async def _capture_logs(self, output: RouterOutput) -> None:
         while line := await output.readline():

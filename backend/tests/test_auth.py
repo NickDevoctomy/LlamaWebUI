@@ -117,6 +117,48 @@ def test_login_rejects_bad_credentials(tmp_path: Path) -> None:
     assert response.status_code == 401
 
 
+def test_login_throttle_returns_retry_after_after_repeated_failures(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        login_failure_threshold=2,
+        login_backoff_base_seconds=0,
+    )
+    with TestClient(create_app(settings)) as client:
+        for _ in range(2):
+            response = client.post(
+                "/api/auth/login", json={"username": "admin", "password": "wrong"}
+            )
+            assert response.status_code == 401
+        locked = client.post(
+            "/api/auth/login", json={"username": "admin", "password": "admin"}
+        )
+
+    assert locked.status_code == 429
+    assert locked.headers["retry-after"]
+
+
+def test_successful_login_clears_throttle_failures(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        login_failure_threshold=2,
+        login_backoff_base_seconds=0,
+    )
+    with TestClient(create_app(settings)) as client:
+        failed = client.post(
+            "/api/auth/login", json={"username": "admin", "password": "wrong"}
+        )
+        assert failed.status_code == 401
+        assert client.post(
+            "/api/auth/login", json={"username": "admin", "password": "admin"}
+        ).status_code == 200
+        assert client.post(
+            "/api/auth/login", json={"username": "admin", "password": "wrong"}
+        ).status_code == 401
+        assert client.post(
+            "/api/auth/login", json={"username": "admin", "password": "admin"}
+        ).status_code == 200
+
+
 def test_change_password_and_default_flag_clears(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         login = client.post(

@@ -83,6 +83,7 @@ from llamawebui.services.llama_release_installer import (
     group_runtime_assets,
 )
 from llamawebui.services.logical_model_registry import LogicalModelRegistry
+from llamawebui.services.login_throttle import LoginRateLimitedError, LoginThrottle
 from llamawebui.services.model_artifact_registry import ModelArtifactError, ModelArtifactRegistry
 from llamawebui.services.model_event_stream import stream_model_events
 from llamawebui.services.model_library import ModelLibrary
@@ -597,6 +598,12 @@ def create_app(
         app.state.token_registry.remove_materialized_tokens()
         app.state.auth_service = AuthService(engine)
         app.state.auth_service.ensure_default_admin()
+        app.state.login_throttle = LoginThrottle(
+            failure_threshold=app_settings.login_failure_threshold,
+            lockout_seconds=app_settings.login_lockout_seconds,
+            backoff_base_seconds=app_settings.login_backoff_base_seconds,
+            backoff_max_seconds=app_settings.login_backoff_max_seconds,
+        )
         app.state.download_registry = DownloadRegistry(engine, app_settings.data_dir / "models")
         app.state.model_library = ModelLibrary(
             app.state.download_registry, app_settings.data_dir / "models"
@@ -611,7 +618,11 @@ def create_app(
         transfer = file_transfer or HuggingFaceFileTransfer(token)
         app.state.download_coordinator = DownloadCoordinator(
             app.state.download_registry,
-            DownloadWorker(app.state.download_registry, transfer),
+            DownloadWorker(
+                app.state.download_registry,
+                transfer,
+                stall_timeout_seconds=app_settings.download_stall_timeout_seconds,
+            ),
             event_broker=app.state.event_broker,
         )
         app.state.download_coordinator.start_pending()
@@ -878,12 +889,29 @@ def create_app(
     @app.post("/api/auth/login")
     async def login(login_request: LoginRequest, request: Request) -> JSONResponse:
         auth = _auth_service(request)
+        throttle = cast(LoginThrottle, request.app.state.login_throttle)
+        client_ip = request.client.host if request.client is not None else "unknown"
         try:
+            attempt = throttle.begin(login_request.username, client_ip)
+        except LoginRateLimitedError as error:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=str(error),
+                headers={"Retry-After": str(error.retry_after)},
+            ) from error
+        try:
+            if attempt.delay_seconds:
+                await asyncio.sleep(attempt.delay_seconds)
             user = auth.authenticate(login_request.username, login_request.password)
         except AuthenticationError as error:
+            throttle.failure(attempt)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)
             ) from error
+        except BaseException:
+            throttle.abort(attempt)
+            raise
+        throttle.success(attempt)
         session = auth.create_session(user.id)
         authenticated = auth.resolve_session(session.id)
         secure = request.url.scheme == "https"
