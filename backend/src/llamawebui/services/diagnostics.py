@@ -12,13 +12,14 @@ from typing import Any
 from sqlalchemy import Engine, inspect, text
 
 from llamawebui.config import Settings
-from llamawebui.domain.model_profile import ProfileValidationError, validate_profile
-from llamawebui.domain.runtime_capabilities import RuntimeCapabilities
+from llamawebui.domain.argument_catalog import ArgumentCatalog, default_catalog
+from llamawebui.domain.model_profile import validate_profile
+from llamawebui.domain.profile_arguments import errors_of
 from llamawebui.models import ModelProfileRecord
 from llamawebui.services.logging_utils import recent_logs, redact_text
 from llamawebui.services.model_artifact_registry import ModelArtifactRegistry
-from llamawebui.services.profile_registry import ProfileRegistry
-from llamawebui.services.runtime_registry import RuntimeRegistry
+from llamawebui.services.profile_registry import ProfileRegistry, profile_from_record
+from llamawebui.services.runtime_registry import RuntimeRegistry, runtime_capabilities
 
 _MAX_RECORDS = 100
 _EXPECTED_TABLES = (
@@ -47,9 +48,12 @@ def _path_summary(value: str) -> dict[str, object]:
 
 
 class DiagnosticsExporter:
-    def __init__(self, settings: Settings, engine: Engine) -> None:
+    def __init__(
+        self, settings: Settings, engine: Engine, catalog: ArgumentCatalog | None = None
+    ) -> None:
         self._settings = settings
         self._engine = engine
+        self._catalog = catalog or default_catalog()
 
     def export(
         self,
@@ -133,17 +137,10 @@ class DiagnosticsExporter:
         if runtime is None:
             errors = (f"runtime not found: {record.runtime_id}",)
         else:
-            try:
-                configuration = dict(record.configuration)
-                configuration.update({"alias": record.alias, "runtime_id": record.runtime_id})
-                from llamawebui.app import ProfileCreateRequest
-                profile = ProfileCreateRequest.model_validate(configuration).to_domain()
-                errors = validate_profile(
-                    profile,
-                    RuntimeCapabilities(options=frozenset(runtime.options), raw_help=""),
-                )
-            except (ValueError, ProfileValidationError) as error:
-                errors = (str(error),)
+            profile = profile_from_record(record, self._catalog)
+            errors = errors_of(
+                validate_profile(profile, self._catalog, runtime_capabilities(runtime))
+            )
         return {
             "id": record.id, "alias": _safe_text(record.alias), "runtime_id": record.runtime_id,
             "enabled": record.enabled, "model": _path_summary(record.model_path),

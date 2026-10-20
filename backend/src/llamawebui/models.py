@@ -21,7 +21,9 @@ class RuntimeRecord(Base):
     backend: Mapped[str | None] = mapped_column(String(50))
     devices: Mapped[list[str]] = mapped_column(JSON, default=list)
     options: Mapped[list[str]] = mapped_column(JSON, default=list)
+    option_details: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     help_sha256: Mapped[str] = mapped_column(String(64))
+    flags_sha256: Mapped[str | None] = mapped_column(String(64))
     probe_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

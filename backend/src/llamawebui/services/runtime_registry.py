@@ -10,6 +10,7 @@ from sqlalchemy import Engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeOption
 from llamawebui.models import RuntimeRecord
 from llamawebui.services.runtime_probe import RuntimeProber, RuntimeProbeResult
 
@@ -28,6 +29,19 @@ class RuntimeInUseError(ValueError):
 
 class RuntimeReferencedError(RuntimeInUseError):
     pass
+
+
+def runtime_capabilities(record: RuntimeRecord) -> RuntimeCapabilities:
+    """Rebuild the probed capabilities stored for a registered runtime."""
+    return RuntimeCapabilities(
+        options=frozenset(record.options),
+        raw_help="",
+        details=tuple(
+            RuntimeOption.from_payload(item)
+            for item in (record.option_details or [])
+            if isinstance(item, dict)
+        ),
+    )
 
 
 class RuntimeRegistry:
@@ -61,7 +75,9 @@ class RuntimeRegistry:
             commit=None,
             devices=[],
             options=[],
+            option_details=[],
             help_sha256="",
+            flags_sha256=None,
             probe_error=None,
         )
         self._apply_probe(record, probe)
@@ -119,5 +135,7 @@ class RuntimeRegistry:
         record.commit = probe.version.commit
         record.devices = probe.devices_output.splitlines() if probe.devices_output else []
         record.options = sorted(probe.capabilities.options)
+        record.option_details = [option.to_payload() for option in probe.capabilities.details]
         record.help_sha256 = hashlib.sha256(raw_help.encode()).hexdigest()
+        record.flags_sha256 = probe.capabilities.flags_sha256
         record.probe_error = "\n".join(probe.errors) or None

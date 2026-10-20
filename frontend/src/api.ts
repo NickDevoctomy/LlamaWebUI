@@ -199,12 +199,127 @@ export interface RuntimeRelease {
   groups: { key: string; primary: string; companions: string[] }[]
 }
 
+export type ArgumentValueType = 'boolean' | 'integer' | 'number' | 'string' | 'path' | 'enum' | 'list' | 'json'
+export type ArgumentControl = 'editable' | 'managed' | 'informational' | 'removed'
+export type EffectDirection = 'increase' | 'decrease' | 'tradeoff' | 'neutral'
+export type RuntimeArgumentStatus = 'advertised' | 'alias' | 'not-advertised' | 'unknown'
+export type RawOrigin = 'runtime' | 'custom' | 'catalog-mismatch' | 'deprecated'
+
+export interface ArgumentValueSchema {
+  type: ArgumentValueType
+  default?: string | number | boolean
+  minimum?: number
+  maximum?: number
+  unit?: string
+  options: { value: string; label?: string }[]
+  separator?: string
+  repeat: boolean
+  itemType?: 'string' | 'integer' | 'number' | 'path'
+  pathKind?: 'file' | 'directory' | 'any'
+  pattern?: string
+  specialValues: string[]
+  negation?: string
+  negationAliases: string[]
+  arity: number
+}
+
+export interface ArgumentEffect {
+  text: string
+  direction: EffectDirection
+  tags: string[]
+}
+
+export interface ArgumentDefinition {
+  id: string
+  flag: string
+  aliases: string[]
+  label: string
+  category: string
+  isAdvanced: boolean
+  commonRank?: number
+  control: ArgumentControl
+  controlReason?: string
+  value: ArgumentValueSchema
+  help: { summary: string; details?: string; syntax?: string; examples: string[]; notes: string[]; effects: ArgumentEffect[] }
+  effectTags: string[]
+  safety?: { level: 'info' | 'warning' | 'danger'; warning: string; requiresConfirmation: boolean; sensitive: boolean }
+  deprecated?: { message: string; replacement?: string }
+  conflicts: string[]
+  requires: string[]
+  runtime?: { status: RuntimeArgumentStatus; advertisedAs: string | null; syntax: string | null; help: string | null; default: string | null }
+}
+
+export interface RuntimeOptionInfo {
+  flag: string
+  aliases: string[]
+  syntax: string
+  help: string
+  default: string | null
+}
+
+export interface ArgumentCategory {
+  id: string
+  label: string
+  sortOrder: number
+  description?: string
+}
+
+export interface CatalogIssue {
+  level: 'info' | 'warning' | 'error'
+  code: string
+  message: string
+}
+
+export interface ArgumentCatalog {
+  catalogId: string
+  catalogVersion: string
+  source: { url: string; retrieved: string; reference?: string }
+  categories: ArgumentCategory[]
+  effectTags: Record<string, { label: string; color: string; description?: string }>
+  arguments: ArgumentDefinition[]
+}
+
+export interface EffectiveArgumentCatalog extends ArgumentCatalog {
+  runtime: { id?: string; name?: string; build?: string | null; helpParsed: boolean; flagsSha256?: string | null; counts: Record<RuntimeArgumentStatus, number> }
+  uncatalogued: RuntimeOptionInfo[]
+  issues: CatalogIssue[]
+}
+
+export type StoredArgumentValue = string | number | boolean | (string | number)[]
+export type StoredArgument =
+  | { id: string; value: StoredArgumentValue }
+  | { flag: string; value: string | true; origin: RawOrigin }
+
+export interface ProfileIssue {
+  level: 'error' | 'warning'
+  code: string
+  message: string
+  argument: string | null
+}
+
+export interface ProfileValidation {
+  valid: boolean
+  errors: string[]
+  warnings: string[]
+  issues: ProfileIssue[]
+}
+
+export interface ProfilePreview extends ProfileValidation {
+  arguments: string[]
+  command: string
+  preset: string
+  router_arguments: string[]
+}
+
 export interface ProfileCreate {
   alias: string
   runtime_id: string
   model_path: string
   enabled: boolean
-  no_reasoning_preserve: boolean
+  arguments?: StoredArgument[]
+  acknowledged?: string[]
+  /** Legacy flat fields, used only by the fallback editor when the catalog cannot load. */
+  no_reasoning_preserve?: boolean
   n_gpu_layers?: number
   ctx_size?: number
   flash_attn?: string
@@ -213,6 +328,17 @@ export interface ProfileCreate {
   threads?: number
   batch_size?: number
   ubatch_size?: number
+}
+
+function errorDetail(detail: unknown): string {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => typeof item === 'string' ? item : typeof item === 'object' && item && 'msg' in item ? String((item as { msg: unknown }).msg) : '')
+      .filter(Boolean)
+      .join('; ')
+  }
+  return ''
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -229,8 +355,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null
-    const detail = typeof payload?.detail === 'string' ? payload.detail : response.statusText
-    const error = new Error(detail || 'Request failed') as Error & { status?: number }
+    const error = new Error(errorDetail(payload?.detail) || response.statusText || 'Request failed') as Error & { status?: number }
     error.status = response.status
     throw error
   }
@@ -326,7 +451,12 @@ export const api = {
   updateProfile: (profileId: string, profile: ProfileCreate) =>
     request<Profile>(`/api/profiles/${profileId}`, { method: 'PUT', body: JSON.stringify(profile) }),
   validateProfile: (profileId: string) =>
-    request<{ valid: boolean; errors: string[]; preset: string }>(`/api/profiles/${profileId}/validate`, { method: 'POST' }),
+    request<ProfileValidation & { preset: string; arguments: string[] }>(`/api/profiles/${profileId}/validate`, { method: 'POST' }),
+  previewProfile: (profile: ProfileCreate) =>
+    request<ProfilePreview>('/api/profiles/preview', { method: 'POST', body: JSON.stringify(profile) }),
+  argumentCatalog: () => request<ArgumentCatalog>('/api/argument-catalog'),
+  runtimeArgumentCatalog: (runtimeId: string) =>
+    request<EffectiveArgumentCatalog>(`/api/runtimes/${encodeURIComponent(runtimeId)}/argument-catalog`),
   resetProfile: (profileId: string) =>
     request<Profile>(`/api/profiles/${profileId}/reset`, { method: 'POST' }),
   cloneProfile: (profileId: string, alias: string) =>
@@ -349,7 +479,7 @@ export const api = {
       body: JSON.stringify({ document, alias: alias || null }),
     }),
   importProfileCommand: (command: string, alias: string, runtimeId: string) =>
-    request<Profile>('/api/profiles/import-command', {
+    request<Profile & { ignored_arguments?: string[]; warnings?: string[] }>('/api/profiles/import-command', {
       method: 'POST',
       body: JSON.stringify({ command, alias, runtime_id: runtimeId, enabled: false }),
     }),

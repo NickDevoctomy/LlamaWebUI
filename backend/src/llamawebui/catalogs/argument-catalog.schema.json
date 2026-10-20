@@ -1,0 +1,713 @@
+{
+  "$defs": {
+    "ArgumentDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "flag": {
+          "pattern": "^--[a-z0-9][a-z0-9-]*$",
+          "title": "Flag",
+          "type": "string"
+        },
+        "aliases": {
+          "default": [],
+          "items": {
+            "pattern": "^-{1,2}[A-Za-z0-9][A-Za-z0-9-]*$",
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "category": {
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "title": "Category",
+          "type": "string"
+        },
+        "isAdvanced": {
+          "default": true,
+          "title": "Isadvanced",
+          "type": "boolean"
+        },
+        "commonRank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Commonrank"
+        },
+        "control": {
+          "default": "editable",
+          "enum": [
+            "editable",
+            "managed",
+            "informational",
+            "removed"
+          ],
+          "title": "Control",
+          "type": "string"
+        },
+        "controlReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Controlreason"
+        },
+        "value": {
+          "$ref": "#/$defs/ValueSchema"
+        },
+        "help": {
+          "$ref": "#/$defs/ArgumentHelp"
+        },
+        "effectTags": {
+          "default": [],
+          "items": {
+            "pattern": "^[a-z0-9][a-z0-9-]*$",
+            "type": "string"
+          },
+          "title": "Effecttags",
+          "type": "array"
+        },
+        "safety": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Safety"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "deprecated": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Deprecation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "conflicts": {
+          "default": [],
+          "items": {
+            "pattern": "^[a-z0-9][a-z0-9-]*$",
+            "type": "string"
+          },
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "requires": {
+          "default": [],
+          "items": {
+            "pattern": "^[a-z0-9][a-z0-9-]*$",
+            "type": "string"
+          },
+          "title": "Requires",
+          "type": "array"
+        },
+        "availability": {
+          "$ref": "#/$defs/Availability",
+          "default": {
+            "requiresAdvertisedFlag": true
+          }
+        }
+      },
+      "required": [
+        "id",
+        "flag",
+        "label",
+        "category",
+        "value",
+        "help"
+      ],
+      "title": "ArgumentDefinition",
+      "type": "object"
+    },
+    "ArgumentHelp": {
+      "additionalProperties": false,
+      "properties": {
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "details": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Details"
+        },
+        "syntax": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Syntax"
+        },
+        "examples": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Examples",
+          "type": "array"
+        },
+        "notes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
+        },
+        "effects": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Effect"
+          },
+          "title": "Effects",
+          "type": "array"
+        }
+      },
+      "required": [
+        "summary"
+      ],
+      "title": "ArgumentHelp",
+      "type": "object"
+    },
+    "Availability": {
+      "additionalProperties": false,
+      "properties": {
+        "requiresAdvertisedFlag": {
+          "default": true,
+          "title": "Requiresadvertisedflag",
+          "type": "boolean"
+        }
+      },
+      "title": "Availability",
+      "type": "object"
+    },
+    "CatalogSource": {
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        },
+        "retrieved": {
+          "minLength": 1,
+          "title": "Retrieved",
+          "type": "string"
+        },
+        "reference": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference"
+        }
+      },
+      "required": [
+        "url",
+        "retrieved"
+      ],
+      "title": "CatalogSource",
+      "type": "object"
+    },
+    "Category": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "sortOrder": {
+          "title": "Sortorder",
+          "type": "integer"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "sortOrder"
+      ],
+      "title": "Category",
+      "type": "object"
+    },
+    "Deprecation": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "replacement": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Replacement"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "title": "Deprecation",
+      "type": "object"
+    },
+    "Effect": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "increase",
+            "decrease",
+            "tradeoff",
+            "neutral"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "tags": {
+          "default": [],
+          "items": {
+            "pattern": "^[a-z0-9][a-z0-9-]*$",
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        }
+      },
+      "required": [
+        "text",
+        "direction"
+      ],
+      "title": "Effect",
+      "type": "object"
+    },
+    "EffectTag": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "color": {
+          "minLength": 1,
+          "title": "Color",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "label",
+        "color"
+      ],
+      "title": "EffectTag",
+      "type": "object"
+    },
+    "EnumOption": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "EnumOption",
+      "type": "object"
+    },
+    "Safety": {
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "enum": [
+            "info",
+            "warning",
+            "danger"
+          ],
+          "title": "Level",
+          "type": "string"
+        },
+        "warning": {
+          "minLength": 1,
+          "title": "Warning",
+          "type": "string"
+        },
+        "requiresConfirmation": {
+          "default": false,
+          "title": "Requiresconfirmation",
+          "type": "boolean"
+        },
+        "sensitive": {
+          "default": false,
+          "title": "Sensitive",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "level",
+        "warning"
+      ],
+      "title": "Safety",
+      "type": "object"
+    },
+    "ValueSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "boolean",
+            "integer",
+            "number",
+            "string",
+            "path",
+            "enum",
+            "list",
+            "json"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "default": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default"
+        },
+        "minimum": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum"
+        },
+        "maximum": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        },
+        "options": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EnumOption"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "separator": {
+          "anyOf": [
+            {
+              "maxLength": 1,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Separator"
+        },
+        "repeat": {
+          "default": false,
+          "title": "Repeat",
+          "type": "boolean"
+        },
+        "itemType": {
+          "anyOf": [
+            {
+              "enum": [
+                "string",
+                "integer",
+                "number",
+                "path"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Itemtype"
+        },
+        "pathKind": {
+          "anyOf": [
+            {
+              "enum": [
+                "file",
+                "directory",
+                "any"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pathkind"
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pattern"
+        },
+        "specialValues": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Specialvalues",
+          "type": "array"
+        },
+        "negation": {
+          "anyOf": [
+            {
+              "pattern": "^--[a-z0-9][a-z0-9-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Negation"
+        },
+        "negationAliases": {
+          "default": [],
+          "items": {
+            "pattern": "^-{1,2}[A-Za-z0-9][A-Za-z0-9-]*$",
+            "type": "string"
+          },
+          "title": "Negationaliases",
+          "type": "array"
+        },
+        "arity": {
+          "default": 1,
+          "maximum": 2,
+          "minimum": 1,
+          "title": "Arity",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ValueSchema",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "$Schema"
+    },
+    "catalogId": {
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "title": "Catalogid",
+      "type": "string"
+    },
+    "catalogVersion": {
+      "minLength": 1,
+      "title": "Catalogversion",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/CatalogSource"
+    },
+    "categories": {
+      "items": {
+        "$ref": "#/$defs/Category"
+      },
+      "title": "Categories",
+      "type": "array"
+    },
+    "effectTags": {
+      "patternProperties": {
+        "^[a-z0-9][a-z0-9-]*$": {
+          "$ref": "#/$defs/EffectTag"
+        }
+      },
+      "title": "Effecttags",
+      "type": "object"
+    },
+    "arguments": {
+      "items": {
+        "$ref": "#/$defs/ArgumentDefinition"
+      },
+      "title": "Arguments",
+      "type": "array"
+    }
+  },
+  "required": [
+    "catalogId",
+    "catalogVersion",
+    "source",
+    "categories",
+    "effectTags",
+    "arguments"
+  ],
+  "title": "LlamaWebUI argument catalog",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -124,7 +124,7 @@ Every registered runtime is probed with:
 
 Store the executable path, reported version/build/commit, backend asset, devices, raw help text hash, parsed option catalog, and probe result. Re-probe whenever the executable changes.
 
-The parsed option catalog drives the profile editor. Known options receive typed controls and help text. Newly introduced options remain usable through an advanced argument editor. Before launch, reject only options that the selected executable does not advertise; provide a clear compatibility error and preserve the profile.
+The parsed option catalog drives the profile editor. Known options receive typed controls and help text. Newly introduced options remain usable through an advanced argument editor. Options the selected executable does not advertise are reported as compatibility warnings and still passed through, because `--help` output can be incomplete; the profile is always preserved. See [`plans/active/dynamic-cli-argument-ui-plan.md`](active/dynamic-cli-argument-ui-plan.md) for the catalog-driven editor and the definite faults that do block launch.
 
 ### 4.3 Upgrade and rollback
 

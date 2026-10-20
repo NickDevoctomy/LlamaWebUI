@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   Check,
@@ -15,8 +15,18 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import { type ChangeEvent, type FormEvent, useEffect, useId, useRef, useState } from 'react'
-import { api, type LibraryModel, type Profile, type ProfileCreate, type Runtime, type RuntimeRelease } from './api'
+import { type ChangeEvent, type FormEvent, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { api, type LibraryModel, type Profile, type ProfileCreate, type ProfileValidation, type Runtime, type RuntimeRelease, type StoredArgument } from './api'
+import {
+  type EditorEntry,
+  catalogIndex,
+  clientIssues,
+  entriesFromStored,
+  isSet,
+  storedArguments,
+  unadvertisedOnRuntime,
+} from './argumentCatalog'
+import { LaunchPreview, ProfileArgumentEditor } from './ProfileArgumentEditor'
 
 function optionalNumber(value: string) {
   return value === '' ? undefined : Number(value)
@@ -54,11 +64,12 @@ export function Field({ label, hint, children }: {
   )
 }
 
-export function Dialog({ title, description, onClose, children }: {
+export function Dialog({ title, description, onClose, children, wide = false }: {
   title: string
   description: string
   onClose: () => void
   children: React.ReactNode
+  wide?: boolean
 }) {
   const dialogId = useId()
   const titleId = `${dialogId}-title`
@@ -111,7 +122,7 @@ export function Dialog({ title, description, onClose, children }: {
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose()
     }}>
-      <section ref={dialogRef} aria-describedby={descriptionId} aria-labelledby={titleId} aria-modal="true" className="dialog" role="dialog">
+      <section ref={dialogRef} aria-describedby={descriptionId} aria-labelledby={titleId} aria-modal="true" className={wide ? 'dialog wide' : 'dialog'} role="dialog">
         <header className="dialog-header">
           <div><p className="eyebrow">Configuration</p><h2 id={titleId}>{title}</h2><p id={descriptionId}>{description}</p></div>
           <button aria-label="Close" className="icon-button" onClick={onClose} type="button"><X size={18} /></button>
@@ -227,6 +238,20 @@ function suggestedAlias(model: LibraryModel) {
   return repository.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-|-$/g, '').slice(0, 64)
 }
 
+/** Catalog ids the legacy fallback form edits directly. */
+const LEGACY_FORM_IDS = new Set(['ctx-size', 'n-gpu-layers', 'threads', 'batch-size', 'flash-attn', 'reasoning-preserve'])
+
+function storedList(configuration: Record<string, unknown>): StoredArgument[] {
+  return Array.isArray(configuration.arguments) ? configuration.arguments as StoredArgument[] : []
+}
+
+function storedValue(stored: StoredArgument[], id: string) {
+  const item = stored.find((argument) => 'id' in argument && argument.id === id)
+  return item?.value
+}
+
+type ProfileTab = 'basic' | 'arguments' | 'preview'
+
 export function ProfilePanel({ profiles, runtimes, library, initialModel, onInitialModelConsumed, running }: {
   profiles: Profile[]
   runtimes: Runtime[]
@@ -236,11 +261,17 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
   running: boolean
 }) {
   const [open, setOpen] = useState(false)
-  const [tab, setTab] = useState<'basic' | 'advanced'>('basic')
+  const [tab, setTab] = useState<ProfileTab>('basic')
   const [alias, setAlias] = useState('')
   const [modelPath, setModelPath] = useState('')
   const [selectedLibraryModel, setSelectedLibraryModel] = useState<LibraryModel>()
   const [runtimeId, setRuntimeId] = useState(runtimes.find((item) => item.usable)?.id ?? '')
+  const [entries, setEntries] = useState<EditorEntry[]>([])
+  const [acknowledged, setAcknowledged] = useState<string[]>([])
+  const [storedArgs, setStoredArgs] = useState<StoredArgument[]>([])
+  const [pendingStored, setPendingStored] = useState<StoredArgument[]>()
+  const [loadedRuntimeId, setLoadedRuntimeId] = useState<string>()
+  // Legacy fallback form, shown only when the argument catalog cannot be loaded.
   const [contextSize, setContextSize] = useState('')
   const [gpuLayers, setGpuLayers] = useState('')
   const [threads, setThreads] = useState('')
@@ -252,9 +283,10 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
   const [cloneAlias, setCloneAlias] = useState('')
   const [editing, setEditing] = useState<Profile>()
   const [repairing, setRepairing] = useState<Profile>()
-  const [validation, setValidation] = useState<{ alias: string; valid: boolean; errors: string[]; preset: string }>()
+  const [validation, setValidation] = useState<ProfileValidation & { alias: string; preset: string }>()
   const [resetting, setResetting] = useState<Profile>()
   const [importError, setImportError] = useState('')
+  const [importNotice, setImportNotice] = useState('')
   const [commandImportOpen, setCommandImportOpen] = useState(false)
   const [commandImport, setCommandImport] = useState('')
   const [commandImportAlias, setCommandImportAlias] = useState('')
@@ -269,6 +301,31 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
   const availableLibrary = selectedLibraryModel && !library.some((item) => item.download_id === selectedLibraryModel.download_id)
     ? [selectedLibraryModel, ...library]
     : library
+  const catalogQuery = useQuery({
+    queryKey: ['argument-catalog', runtimeId],
+    queryFn: () => api.runtimeArgumentCatalog(runtimeId),
+    enabled: open && Boolean(runtimeId),
+    staleTime: 60_000,
+    refetchInterval: false,
+    retry: false,
+  })
+  const catalog = catalogQuery.data
+  const fallback = catalogQuery.isError
+  const issues = useMemo(
+    () => (catalog ? clientIssues(catalog, entries, acknowledged, runtime?.options) : []),
+    [catalog, entries, acknowledged, runtime?.options],
+  )
+  const blockers = issues.filter((issue) => issue.level === 'error')
+  const runtimeSwitchFlags = useMemo(
+    () => (catalog && editing && loadedRuntimeId && loadedRuntimeId !== runtimeId ? unadvertisedOnRuntime(catalog, entries, runtime?.options ?? []) : []),
+    [catalog, editing, loadedRuntimeId, runtimeId, entries, runtime?.options],
+  )
+
+  useEffect(() => {
+    if (!catalog || pendingStored === undefined) return
+    setEntries(entriesFromStored(catalog, pendingStored))
+    setPendingStored(undefined)
+  }, [catalog, pendingStored])
 
   function resetEditor() {
     setEditing(undefined)
@@ -277,6 +334,11 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
     setModelPath('')
     setSelectedLibraryModel(undefined)
     setRuntimeId(runtimes.find((item) => item.usable)?.id ?? '')
+    setEntries([])
+    setAcknowledged([])
+    setStoredArgs([])
+    setPendingStored(undefined)
+    setLoadedRuntimeId(undefined)
     setContextSize('')
     setGpuLayers('')
     setThreads('')
@@ -288,6 +350,11 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
   function openCreate() {
     resetEditor()
     setOpen(true)
+  }
+
+  function closeEditor() {
+    setOpen(false)
+    resetEditor()
   }
 
   useEffect(() => {
@@ -305,63 +372,84 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
     onInitialModelConsumed()
   }, [initialModel, onInitialModelConsumed])
 
-  const creation = useMutation({
-    mutationFn: () => {
-      const profile: ProfileCreate = {
-        alias,
-        runtime_id: runtimeId,
-        model_path: modelPath,
-        enabled: true,
-        no_reasoning_preserve: !preserveReasoning,
-        ctx_size: supports('ctx-size') ? optionalNumber(contextSize) : undefined,
-        n_gpu_layers: supports('n-gpu-layers') ? optionalNumber(gpuLayers) : undefined,
-        threads: supports('threads') ? optionalNumber(threads) : undefined,
-        batch_size: supports('batch-size') ? optionalNumber(batchSize) : undefined,
-        flash_attn: supports('flash-attn') && flashAttention ? flashAttention : undefined,
-      }
-      return api.createProfile(profile)
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['profiles'] })
-      setOpen(false)
-      resetEditor()
-    },
-  })
-  const update = useMutation({
-    mutationFn: () => api.updateProfile(editing!.id, {
-      ...(editing!.configuration as Partial<ProfileCreate>),
-      alias,
-      runtime_id: runtimeId,
-      model_path: modelPath,
-      enabled: editing!.enabled,
+  function presentIds(): Set<string> {
+    if (!catalog) return new Set(acknowledged)
+    const { byFlag } = catalogIndex(catalog)
+    return new Set(entries.flatMap((entry) => {
+      if (entry.kind === 'catalog') return isSet(entry.draft) ? [entry.id] : []
+      const definition = byFlag.get(entry.flag)
+      return definition ? [definition.id] : []
+    }))
+  }
+
+  function profilePayload(): ProfileCreate {
+    const base = { alias, runtime_id: runtimeId, model_path: modelPath, enabled: editing ? editing.enabled : true }
+    if (catalog && !fallback) {
+      const present = presentIds()
+      return { ...base, arguments: storedArguments(catalog, entries), acknowledged: acknowledged.filter((id) => present.has(id)) }
+    }
+    return {
+      ...base,
+      // Keep every stored argument the fallback form does not edit, so nothing is lost.
+      arguments: storedArgs.filter((argument) => !('id' in argument && LEGACY_FORM_IDS.has(argument.id))),
+      acknowledged,
       no_reasoning_preserve: !preserveReasoning,
       ctx_size: supports('ctx-size') ? optionalNumber(contextSize) : undefined,
       n_gpu_layers: supports('n-gpu-layers') ? optionalNumber(gpuLayers) : undefined,
       threads: supports('threads') ? optionalNumber(threads) : undefined,
       batch_size: supports('batch-size') ? optionalNumber(batchSize) : undefined,
       flash_attn: supports('flash-attn') && flashAttention ? flashAttention : undefined,
-    }),
+    }
+  }
+
+  const payload = profilePayload()
+  const payloadKey = JSON.stringify(payload)
+  const preview = useMutation({ mutationFn: (value: ProfileCreate) => api.previewProfile(value) })
+  const runPreview = preview.mutate
+  useEffect(() => {
+    if (!open || tab !== 'preview' || !runtimeId) return
+    const timer = window.setTimeout(() => runPreview(JSON.parse(payloadKey) as ProfileCreate), 300)
+    return () => window.clearTimeout(timer)
+  }, [open, tab, runtimeId, payloadKey, runPreview])
+
+  const creation = useMutation({
+    mutationFn: () => api.createProfile(payload),
     onSuccess: async () => {
-      setEditing(undefined)
-      setOpen(false)
+      await queryClient.invalidateQueries({ queryKey: ['profiles'] })
+      closeEditor()
+    },
+  })
+  const update = useMutation({
+    mutationFn: () => api.updateProfile(editing!.id, payload),
+    onSuccess: async () => {
+      closeEditor()
       await queryClient.invalidateQueries({ queryKey: ['profiles'] })
     },
   })
 
   function editProfile(profile: Profile) {
+    resetEditor()
     setEditing(profile)
     setAlias(profile.alias)
     setModelPath(profile.model_path)
     setRuntimeId(profile.runtime_id)
+    setLoadedRuntimeId(profile.runtime_id)
     const configuration = profile.configuration
-    setContextSize(configuration.ctx_size == null ? '' : String(configuration.ctx_size))
-    setGpuLayers(configuration.n_gpu_layers == null ? '' : String(configuration.n_gpu_layers))
-    setThreads(configuration.threads == null ? '' : String(configuration.threads))
-    setBatchSize(configuration.batch_size == null ? '' : String(configuration.batch_size))
-    setFlashAttention(typeof configuration.flash_attn === 'string' ? configuration.flash_attn : '')
-    setPreserveReasoning(configuration.no_reasoning_preserve !== true)
+    const stored = storedList(configuration)
+    setStoredArgs(stored)
+    setPendingStored(stored)
+    setAcknowledged(Array.isArray(configuration.acknowledged) ? configuration.acknowledged.filter((item): item is string => typeof item === 'string') : [])
+    const text = (id: string) => {
+      const value = storedValue(stored, id)
+      return value === undefined ? '' : String(value)
+    }
+    setContextSize(text('ctx-size'))
+    setGpuLayers(text('n-gpu-layers'))
+    setThreads(text('threads'))
+    setBatchSize(text('batch-size'))
+    setFlashAttention(text('flash-attn'))
+    setPreserveReasoning(storedValue(stored, 'reasoning-preserve') !== false)
     setSelectedLibraryModel(library.find((item) => item.primary_path === profile.model_path))
-    setTab('basic')
     setOpen(true)
   }
   async function exportProfile(profile: Profile) {
@@ -438,11 +526,18 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
   })
   const commandImportMutation = useMutation({
     mutationFn: () => api.importProfileCommand(commandImport, commandImportAlias, runtimeId),
-    onSuccess: async () => {
+    onSuccess: async (profile) => {
       setCommandImportOpen(false)
       setCommandImport('')
       setCommandImportAlias('')
       setImportError('')
+      const ignored = profile.ignored_arguments ?? []
+      const warnings = profile.warnings ?? []
+      setImportNotice([
+        `Imported ${profile.alias} as a disabled profile.`,
+        ignored.length ? `Skipped options managed by LlamaWebUI: ${ignored.join(', ')}.` : '',
+        warnings.length ? `Warnings: ${warnings.join(' ')}` : '',
+      ].filter(Boolean).join(' '))
       await queryClient.invalidateQueries({ queryKey: ['profiles'] })
     },
     onError: (error: Error) => setImportError(error.message),
@@ -466,6 +561,9 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
     else creation.mutate()
   }
 
+  const saveError = creation.error ?? update.error
+  const catalogBlocked = Boolean(catalog) && !fallback && blockers.length > 0
+
   return (
     <>
       <section className="data-panel">
@@ -474,6 +572,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
           <div className="row-actions"><label className="button secondary compact" htmlFor="profile-import"><Upload size={15} /> Import profile</label><input accept="application/json,.json" id="profile-import" onChange={importProfile} style={{ display: 'none' }} type="file" /><button className="button secondary compact" disabled={!runtimes.length} onClick={() => setCommandImportOpen(true)} type="button"><TerminalSquare size={15} /> Import command</button><button className="button primary compact" disabled={!runtimes.length} onClick={openCreate} type="button"><Plus size={15} /> Create profile</button></div>
         </div>
         {(importError || actionError) && <div className="form-error" role="alert"><AlertCircle size={15} /> {importError || actionError}</div>}
+        {importNotice && <div className="inline-notice" role="status"><Check size={15} /> <span>{importNotice}</span><button aria-label="Dismiss import notice" className="icon-button small" onClick={() => setImportNotice('')} type="button"><X size={14} /></button></div>}
         {profiles.length ? <div className="record-list">{profiles.map((profile) => (
           <article className="record-row" key={profile.id}>
             <span className="record-icon"><FileCog size={18} /></span>
@@ -484,14 +583,18 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
           </article>
         ))}</div> : <div className="empty"><FileCog size={28} /><strong>No profiles configured</strong><span>{runtimes.length ? 'Create a profile for a local GGUF model.' : 'Register a runtime before creating a model profile.'}</span>{runtimes.length > 0 && <button className="button primary" onClick={openCreate} type="button"><Plus size={15} /> Create profile</button>}</div>}
       </section>
-      {open && <Dialog title={editing ? 'Edit model profile' : 'Create model profile'} description="Basic identity and capability-aware llama.cpp launch settings." onClose={() => { setOpen(false); resetEditor() }}>
+      {open && <Dialog title={editing ? 'Edit model profile' : 'Create model profile'} description="Identity, catalog-driven llama.cpp arguments, and a launch preview." onClose={closeEditor} wide>
         <form onSubmit={submit}>
-          <div className="segmented" role="tablist" aria-label="Profile settings"><button aria-selected={tab === 'basic'} onClick={() => setTab('basic')} role="tab" type="button">Basic</button><button aria-selected={tab === 'advanced'} onClick={() => setTab('advanced')} role="tab" type="button">Advanced</button></div>
+          <div className="segmented" role="tablist" aria-label="Profile settings">
+            <button aria-selected={tab === 'basic'} onClick={() => setTab('basic')} role="tab" type="button">Basic</button>
+            <button aria-selected={tab === 'arguments'} onClick={() => setTab('arguments')} role="tab" type="button">Arguments{entries.length ? ` (${entries.length})` : ''}</button>
+            <button aria-selected={tab === 'preview'} onClick={() => setTab('preview')} role="tab" type="button">Launch preview</button>
+          </div>
           <div className="form-body">
-            {tab === 'basic' ? <>
+            {tab === 'basic' && <>
               <div className="form-grid">
                 <Field label="API model alias" hint="Lowercase letters, numbers, dots, underscores, or hyphens."><input autoFocus aria-invalid={Boolean(alias) && !aliasValid} maxLength={64} onChange={(event) => setAlias(event.target.value.toLowerCase().replace(/\s+/g, '-'))} placeholder="qwen3.8-flash" required value={alias} /></Field>
-                <Field label="Runtime"><select onChange={(event) => setRuntimeId(event.target.value)} required value={runtimeId}><option value="">Select runtime</option>{runtimes.filter((item) => item.usable).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.build ?? 'unknown'}</option>)}</select></Field>
+                <Field label="Runtime" hint={editing && loadedRuntimeId && runtimeId !== loadedRuntimeId ? 'Switching runtimes keeps every setting; unsupported ones are flagged on the Arguments tab.' : undefined}><select onChange={(event) => setRuntimeId(event.target.value)} required value={runtimeId}><option value="">Select runtime</option>{runtimes.filter((item) => item.usable).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.build ?? 'unknown'}</option>)}</select></Field>
               </div>
               <Field label="Primary GGUF file" hint="For sharded models, select the first 00001-of-000NN file."><input onChange={(event) => setModelPath(event.target.value)} placeholder="E:\\models\\model-00001-of-00003.gguf" required value={modelPath} /></Field>
               {availableLibrary.length > 0 && <Field label="Downloaded model" hint="Only completed downloads whose files and sizes still validate are listed."><select onChange={(event) => {
@@ -501,28 +604,39 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
                 setSelectedLibraryModel(model)
                 if (!alias) setAlias(suggestedAlias(model))
               }} value={selectedLibraryModel?.download_id ?? ''}><option value="">Select a validated download</option>{availableLibrary.map((model) => <option disabled={profiles.some((profile) => profile.model_path === model.primary_path)} key={model.download_id} value={model.download_id}>{model.repo_id} · {model.group_key}</option>)}</select></Field>}
-              <label className="toggle-row"><span><strong>Preserve reasoning</strong><small>Keep reasoning content when the model supports it.</small></span><input checked={preserveReasoning} onChange={(event) => setPreserveReasoning(event.target.checked)} type="checkbox" /></label>
-            </> : <>
-              <div className="capability-note"><Gauge size={16} /><span>Fields unavailable in <strong>{runtime?.name ?? 'the selected runtime'}</strong> are disabled.</span></div>
-              <div className="form-grid advanced-grid">
-                <Field label="Context size"><input disabled={!supports('ctx-size')} min="1" onChange={(event) => setContextSize(event.target.value)} placeholder="262144" type="number" value={contextSize} /></Field>
-                <Field label="GPU layers"><input disabled={!supports('n-gpu-layers')} min="0" onChange={(event) => setGpuLayers(event.target.value)} placeholder="Auto" type="number" value={gpuLayers} /></Field>
-                <Field label="CPU threads"><input disabled={!supports('threads')} min="1" onChange={(event) => setThreads(event.target.value)} placeholder="Auto" type="number" value={threads} /></Field>
-                <Field label="Batch size"><input disabled={!supports('batch-size')} min="1" onChange={(event) => setBatchSize(event.target.value)} placeholder="Auto" type="number" value={batchSize} /></Field>
-                <Field label="Flash attention"><select disabled={!supports('flash-attn')} onChange={(event) => setFlashAttention(event.target.value)} value={flashAttention}><option value="">Runtime default</option><option value="auto">Auto</option><option value="on">On</option><option value="off">Off</option></select></Field>
-              </div>
             </>}
-            {creation.error && <div className="form-error"><AlertCircle size={15} /> {creation.error.message}</div>}
+            {tab === 'arguments' && (!runtimeId ? <div className="capability-note"><Gauge size={16} /><span>Select a runtime on the Basic tab to load its arguments.</span></div>
+              : fallback ? <>
+                <div className="capability-note warning" role="status"><AlertCircle size={16} /><span>The argument catalog could not be loaded ({catalogQuery.error?.message}). Showing the basic editor; other saved arguments are kept unchanged.</span></div>
+                <div className="form-grid advanced-grid">
+                  <Field label="Context size"><input disabled={!supports('ctx-size')} min="0" onChange={(event) => setContextSize(event.target.value)} placeholder="262144" type="number" value={contextSize} /></Field>
+                  <Field label="GPU layers"><input disabled={!supports('n-gpu-layers')} min="0" onChange={(event) => setGpuLayers(event.target.value)} placeholder="Auto" type="number" value={gpuLayers} /></Field>
+                  <Field label="CPU threads"><input disabled={!supports('threads')} min="-1" onChange={(event) => setThreads(event.target.value)} placeholder="Auto" type="number" value={threads} /></Field>
+                  <Field label="Batch size"><input disabled={!supports('batch-size')} min="1" onChange={(event) => setBatchSize(event.target.value)} placeholder="Auto" type="number" value={batchSize} /></Field>
+                  <Field label="Flash attention"><select disabled={!supports('flash-attn')} onChange={(event) => setFlashAttention(event.target.value)} value={flashAttention}><option value="">Runtime default</option><option value="auto">Auto</option><option value="on">On</option><option value="off">Off</option></select></Field>
+                </div>
+                <label className="toggle-row"><span><strong>Preserve reasoning</strong><small>Keep reasoning content when the model supports it.</small></span><input checked={preserveReasoning} onChange={(event) => setPreserveReasoning(event.target.checked)} type="checkbox" /></label>
+              </>
+              : !catalog || pendingStored !== undefined ? <div className="capability-note" role="status"><LoaderCircle className="spin" size={16} /><span>Loading the argument catalog for {runtime?.name ?? 'the runtime'}…</span></div>
+              : <ProfileArgumentEditor acknowledged={acknowledged} catalog={catalog} entries={entries} issues={issues} onAcknowledgedChange={setAcknowledged} onEntriesChange={setEntries} runtimeName={runtime?.name ?? 'This runtime'} runtimeSwitchFlags={runtimeSwitchFlags} />)}
+            {tab === 'preview' && (runtimeId
+              ? <LaunchPreview clientIssues={issues} error={preview.error?.message} onRefresh={() => preview.mutate(payload)} pending={preview.isPending} preview={preview.data} />
+              : <div className="capability-note"><Gauge size={16} /><span>Select a runtime to preview the launch arguments.</span></div>)}
+            {saveError && <div className="form-error" role="alert"><AlertCircle size={15} /> {saveError.message}</div>}
           </div>
-          <footer className="dialog-actions"><button className="button secondary" onClick={() => { setOpen(false); resetEditor() }} type="button">Cancel</button><button className="button primary" disabled={creation.isPending || update.isPending || !aliasValid || !runtimeId || !modelPath.trim()} type="submit">{creation.isPending || update.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {editing ? 'Save profile' : 'Create profile'}</button></footer>
+          <footer className="dialog-actions">
+            {catalogBlocked && <button className="blocker-link" onClick={() => setTab('preview')} type="button"><AlertCircle size={14} /> {blockers.length} blocker{blockers.length === 1 ? '' : 's'}</button>}
+            <button className="button secondary" onClick={closeEditor} type="button">Cancel</button>
+            <button className="button primary" disabled={creation.isPending || update.isPending || !aliasValid || !runtimeId || !modelPath.trim() || catalogBlocked} type="submit">{creation.isPending || update.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {editing ? 'Save profile' : 'Create profile'}</button>
+          </footer>
         </form>
       </Dialog>}
       {deleting && <Dialog title="Delete model profile?" description="This removes only the profile. Downloaded model files are not affected." onClose={() => setDeleting(undefined)}><div className="confirm-body"><Trash2 size={24} /><p>Profile <strong>{deleting.alias}</strong> will be permanently removed.</p>{deletion.error && <div className="form-error"><AlertCircle size={15} /> {deletion.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep profile</button><button className="button danger" disabled={deletion.isPending} onClick={() => deletion.mutate(deleting.id)} type="button">{deletion.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete profile</button></footer></Dialog>}
       {cloning && <Dialog title="Clone model profile" description="Create a disabled copy that can be edited before enabling." onClose={() => setCloning(undefined)}><form onSubmit={(event) => { event.preventDefault(); clone.mutate() }}><div className="form-body"><Field label="New API model alias"><input autoFocus value={cloneAlias} onChange={(event) => setCloneAlias(event.target.value.toLowerCase().replace(/\s+/g, '-'))} required /></Field>{clone.error && <div className="form-error"><AlertCircle size={15} /> {clone.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setCloning(undefined)} type="button">Cancel</button><button className="button primary" disabled={clone.isPending || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(cloneAlias)} type="submit">{clone.isPending ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} Clone profile</button></footer></form></Dialog>}
-      {validation && <Dialog title={`Validate ${validation.alias}`} description="No files or settings are changed by validation." onClose={() => setValidation(undefined)}><div className="confirm-body">{validation.valid ? <><Check size={24} /><p>This profile is valid for its selected runtime and model files.</p></> : <><AlertCircle size={24} /><div><p>Validation found {validation.errors.length} issue(s):</p><ul>{validation.errors.map((error) => <li key={error}>{error}</li>)}</ul></div></>}{validation.valid && <details><summary>Generated preset</summary><pre className="mono">{validation.preset}</pre></details>}</div><footer className="dialog-actions"><button className="button primary" onClick={() => setValidation(undefined)} type="button">Close</button></footer></Dialog>}
-      {command && <Dialog title={`Command for ${command.alias}`} description="Readable export only; this command is never executed by the control plane." onClose={() => setCommand(undefined)}><div className="confirm-body"><TerminalSquare size={24} /><pre className="mono">{command.value}</pre></div><footer className="dialog-actions"><button className="button primary" onClick={() => setCommand(undefined)} type="button">Close</button></footer></Dialog>}
-      {commandImportOpen && <Dialog title="Import command" description="Tokenize a llama-server command without executing it. Unknown flags are retained as advanced options." onClose={() => setCommandImportOpen(false)}><div className="form-body"><Field label="Profile alias"><input autoFocus value={commandImportAlias} onChange={(event) => setCommandImportAlias(event.target.value.toLowerCase().replace(/\s+/g, '-'))} /></Field><Field label="Runtime"><select value={runtimeId} onChange={(event) => setRuntimeId(event.target.value)}><option value="">Select runtime</option>{runtimes.filter((item) => item.usable).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field><Field label="llama-server command"><textarea rows={7} value={commandImport} onChange={(event) => setCommandImport(event.target.value)} /></Field>{commandImportMutation.error && <div className="form-error"><AlertCircle size={15} /> {commandImportMutation.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setCommandImportOpen(false)} type="button">Cancel</button><button className="button primary" disabled={commandImportMutation.isPending || !commandImportAliasValid || !runtimeId || !commandImport.includes('--model')} onClick={() => commandImportMutation.mutate()} type="button">Import command</button></footer></Dialog>}
-      {resetting && <Dialog title="Reset profile settings?" description="This removes advanced and typed launch overrides, retaining the alias and model path." onClose={() => setResetting(undefined)}><div className="confirm-body"><AlertCircle size={24} /><p>Reset <strong>{resetting.alias}</strong> to the selected runtime defaults?</p>{reset.error && <div className="form-error"><AlertCircle size={15} /> {reset.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setResetting(undefined)} type="button">Cancel</button><button className="button danger" disabled={reset.isPending} onClick={() => reset.mutate()} type="button">{reset.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Reset settings</button></footer></Dialog>}
+      {validation && <Dialog title={`Validate ${validation.alias}`} description="No files or settings are changed by validation." onClose={() => setValidation(undefined)}><div className="confirm-body">{validation.valid ? <><Check size={24} /><p>This profile is valid for its selected runtime and model files.</p></> : <><AlertCircle size={24} /><div><p>Validation found {validation.errors.length} blocking issue(s):</p><ul>{validation.errors.map((error) => <li key={error}>{error}</li>)}</ul></div></>}{validation.warnings.length > 0 && <div className="validation-warnings"><p>{validation.warnings.length} warning(s) that do not block launch:</p><ul>{validation.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>}{validation.valid && <details><summary>Generated preset</summary><pre className="mono">{validation.preset}</pre></details>}</div><footer className="dialog-actions"><button className="button primary" onClick={() => setValidation(undefined)} type="button">Close</button></footer></Dialog>}
+      {command && <Dialog title={`Command for ${command.alias}`} description="Readable export only; this command is never executed by the control plane. Sensitive values are masked." onClose={() => setCommand(undefined)}><div className="confirm-body"><TerminalSquare size={24} /><pre className="mono">{command.value}</pre></div><footer className="dialog-actions"><button className="button primary" onClick={() => setCommand(undefined)} type="button">Close</button></footer></Dialog>}
+      {commandImportOpen && <Dialog title="Import command" description="Tokenize a llama-server command without executing it. Catalogued flags become typed settings; others are kept as custom parameters." onClose={() => setCommandImportOpen(false)}><div className="form-body"><Field label="Profile alias"><input autoFocus value={commandImportAlias} onChange={(event) => setCommandImportAlias(event.target.value.toLowerCase().replace(/\s+/g, '-'))} /></Field><Field label="Runtime"><select value={runtimeId} onChange={(event) => setRuntimeId(event.target.value)}><option value="">Select runtime</option>{runtimes.filter((item) => item.usable).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field><Field label="llama-server command"><textarea rows={7} value={commandImport} onChange={(event) => setCommandImport(event.target.value)} /></Field>{commandImportMutation.error && <div className="form-error"><AlertCircle size={15} /> {commandImportMutation.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setCommandImportOpen(false)} type="button">Cancel</button><button className="button primary" disabled={commandImportMutation.isPending || !commandImportAliasValid || !runtimeId || !/(^|\s)(-m|--model)(\s|=)/.test(commandImport)} onClick={() => commandImportMutation.mutate()} type="button">Import command</button></footer></Dialog>}
+      {resetting && <Dialog title="Reset profile settings?" description="This removes every launch argument and custom parameter, retaining the alias and model path." onClose={() => setResetting(undefined)}><div className="confirm-body"><AlertCircle size={24} /><p>Reset <strong>{resetting.alias}</strong> to the selected runtime defaults?</p>{reset.error && <div className="form-error"><AlertCircle size={15} /> {reset.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setResetting(undefined)} type="button">Cancel</button><button className="button danger" disabled={reset.isPending} onClick={() => reset.mutate()} type="button">{reset.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Reset settings</button></footer></Dialog>}
       {repairing?.source_download && <Dialog title="Re-download missing model?" description="The exact pinned model artifact will be downloaded again and repair this profile." onClose={() => setRepairing(undefined)}><div className="confirm-body"><ShieldAlert size={24} /><p><strong>{repairing.source_download.repo_id}</strong> · <span className="mono">{repairing.source_download.group_key}</span> is missing for profile <strong>{repairing.alias}</strong>. Re-download revision <span className="mono">{repairing.source_download.revision.slice(0, 9)}</span>?</p>{redownload.error && <div className="form-error"><AlertCircle size={15} /> {redownload.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setRepairing(undefined)} type="button">Not now</button><button className="button primary" disabled={redownload.isPending} onClick={() => redownload.mutate(repairing.source_download!.id)} type="button">{redownload.isPending ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />} Re-download</button></footer></Dialog>}
     </>
   )

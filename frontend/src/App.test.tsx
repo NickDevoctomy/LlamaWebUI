@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
+import { catalogFixture } from './test/catalogFixture'
 import { APP_VERSION } from './version'
 
 const responses: Record<string, unknown> = {
@@ -277,9 +278,9 @@ describe('App', () => {
       onRequest: (path, init) => {
         if (path === '/api/profiles/import-command' && init?.method === 'POST') {
           const request = JSON.parse(String(init.body)) as { alias: string; runtime_id: string; enabled: boolean }
-          const profile = { id: 'profile-imported', alias: request.alias, runtime_id: request.runtime_id, model_path: 'C:\\models\\shard 00001-of-00003.gguf', configuration: { ctx_size: 4096 }, enabled: request.enabled }
+          const profile = { id: 'profile-imported', alias: request.alias, runtime_id: request.runtime_id, model_path: 'C:\\models\\shard 00001-of-00003.gguf', configuration: { schema_version: 2, arguments: [{ id: 'ctx-size', value: 4096 }], acknowledged: [] }, enabled: request.enabled }
           profiles.push(profile)
-          return profile
+          return { ...profile, ignored_arguments: ['--port 8080'], warnings: ['runtime does not advertise --fit'] }
         }
         if (path === '/api/profiles') return profiles
         return undefined
@@ -302,6 +303,8 @@ describe('App', () => {
       body: JSON.stringify({ command, alias: 'qwen-roundtrip', runtime_id: 'runtime-1', enabled: false }),
     })))
     expect(await screen.findByText('Disabled')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Skipped options managed by LlamaWebUI: --port 8080. Warnings: runtime does not advertise --fit')
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss import notice' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Command' }))
     expect(await screen.findByRole('heading', { name: 'Command for qwen-roundtrip' })).toBeInTheDocument()
     expect(screen.getByRole('dialog').querySelector('pre')?.textContent).toBe(command)
@@ -457,26 +460,110 @@ describe('App', () => {
     })))
   })
 
-  it('creates a profile with only supported advanced options', async () => {
+  it('creates a profile from catalog arguments and previews the exact launch vector', async () => {
     const runtime = { id: 'runtime-1', name: 'Local CPU', executable_path: 'E:\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset', 'ctx-size'], usable: true }
-    const fetchMock = renderApp({ runtimeList: [runtime] })
+    const preview = { valid: true, errors: [], warnings: ['runtime does not advertise --fit'], issues: [], arguments: ['E:\\llama-server.exe', '--model', 'E:\\models\\qwen.gguf', '--ctx-size', '32768'], command: '', preset: '[qwen-local]', router_arguments: ['E:\\llama-server.exe', '--models-preset', 'llama-models.ini'] }
+    const fetchMock = renderApp({ runtimeList: [runtime], onRequest: (path) => {
+      if (path === '/api/runtimes/runtime-1/argument-catalog') return catalogFixture()
+      if (path === '/api/profiles/preview') return preview
+      return undefined
+    } })
     fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
     const createButton = screen.getAllByRole('button', { name: 'Create profile' })[0]
     await waitFor(() => expect(createButton).toBeEnabled())
     fireEvent.click(createButton)
     fireEvent.change(screen.getByLabelText(/API model alias/i), { target: { value: 'Qwen Local' } })
     fireEvent.change(screen.getByLabelText(/Primary GGUF file/i), { target: { value: 'E:\\models\\qwen.gguf' } })
-    fireEvent.click(screen.getByRole('tab', { name: 'Advanced' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Arguments' }))
+    const context = await screen.findByLabelText('Context size')
+    fireEvent.change(context, { target: { value: 'lots' } })
+    const dialog = screen.getByRole('dialog', { name: 'Create model profile' })
+    expect(within(dialog).getByRole('button', { name: 'Create profile' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: /1 blocker/ })).toBeInTheDocument()
+    fireEvent.change(context, { target: { value: '32768' } })
+    fireEvent.click(screen.getByRole('tab', { name: 'Launch preview' }))
+
+    expect(await screen.findByText('No launch blockers')).toBeInTheDocument()
+    expect(await screen.findByText('runtime does not advertise --fit')).toBeInTheDocument()
+    const call = fetchMock.mock.calls.find(([path, init]) => path === '/api/profiles/preview' && init?.method === 'POST')
+    expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ arguments: [{ id: 'ctx-size', value: 32768 }] })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create profile' }))
+
+    await waitFor(() => {
+      const create = fetchMock.mock.calls.find(([path, init]) => path === '/api/profiles' && init?.method === 'POST')
+      expect(JSON.parse(String(create?.[1]?.body))).toEqual({ alias: 'qwen-local', runtime_id: 'runtime-1', model_path: 'E:\\models\\qwen.gguf', enabled: true, arguments: [{ id: 'ctx-size', value: 32768 }], acknowledged: [] })
+    })
+  })
+
+  it('keeps the legacy editor as a fallback when the catalog cannot load', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CPU', executable_path: 'E:\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset', 'ctx-size'], usable: true }
+    const fetchMock = renderApp({ runtimeList: [runtime] })
+    fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
+    const createButton = screen.getAllByRole('button', { name: 'Create profile' })[0]
+    await waitFor(() => expect(createButton).toBeEnabled())
+    fireEvent.click(createButton)
+    fireEvent.change(screen.getByLabelText(/API model alias/i), { target: { value: 'qwen-local' } })
+    fireEvent.change(screen.getByLabelText(/Primary GGUF file/i), { target: { value: 'E:\\models\\qwen.gguf' } })
+    fireEvent.click(screen.getByRole('tab', { name: 'Arguments' }))
+    expect(await screen.findByText(/argument catalog could not be loaded/)).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Context size'), { target: { value: '32768' } })
     expect(screen.getByLabelText('GPU layers')).toBeDisabled()
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create profile' }))
 
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(([path, init]) => path === '/api/profiles' && init?.method === 'POST')
-      expect(call).toBeDefined()
-      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ alias: 'qwen-local', runtime_id: 'runtime-1', ctx_size: 32768 })
+      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ alias: 'qwen-local', runtime_id: 'runtime-1', ctx_size: 32768, arguments: [] })
       expect(JSON.parse(String(call?.[1]?.body))).not.toHaveProperty('n_gpu_layers')
     })
+  })
+
+  it('edits a stored profile in order without losing runtime or custom parameters', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CPU', executable_path: 'E:\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset', 'ctx-size'], usable: true }
+    const other = { ...runtime, id: 'runtime-2', name: 'Old build', options: ['model', 'models-preset'] }
+    const stored = [{ id: 'warmup', value: false }, { id: 'ctx-size', value: 8192 }, { flag: '--brand-new', value: '2', origin: 'runtime' }, { flag: '--future', value: true, origin: 'catalog-mismatch' }]
+    const profile = { id: 'profile-1', alias: 'qwen-local', runtime_id: 'runtime-1', model_path: 'E:\\models\\qwen.gguf', configuration: { schema_version: 2, arguments: stored, acknowledged: [] }, enabled: false, validation_state: 'available', source_download: null }
+    const fetchMock = renderApp({ runtimeList: [runtime, other], profileList: [profile], onRequest: (path) => {
+      if (path.endsWith('/argument-catalog')) return catalogFixture()
+      return undefined
+    } })
+    fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    fireEvent.change(screen.getByLabelText('Runtime'), { target: { value: 'runtime-2' } })
+    fireEvent.click(screen.getByRole('tab', { name: /Arguments/ }))
+
+    expect(await screen.findByLabelText('Context size')).toHaveValue('8192')
+    expect(screen.getByText('Old build').closest('.capability-note')).toHaveTextContent('Old build does not advertise --no-warmup, --ctx-size, --brand-new, --future')
+    expect(within(screen.getByRole('region', { name: 'Custom parameters' })).getByDisplayValue('--future')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Context size'), { target: { value: '16384' } })
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Save profile' }))
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([path, init]) => path === '/api/profiles/profile-1' && init?.method === 'PUT')
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+        alias: 'qwen-local',
+        runtime_id: 'runtime-2',
+        model_path: 'E:\\models\\qwen.gguf',
+        enabled: false,
+        arguments: [{ id: 'warmup', value: false }, { id: 'ctx-size', value: 16384 }, { flag: '--brand-new', value: '2', origin: 'runtime' }, { flag: '--future', value: true, origin: 'catalog-mismatch' }],
+        acknowledged: [],
+      })
+    })
+  })
+
+  it('shows validation warnings separately from blocking errors', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CPU', executable_path: 'E:\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset'], usable: true }
+    const profile = { id: 'profile-1', alias: 'qwen-local', runtime_id: 'runtime-1', model_path: 'E:\\models\\qwen.gguf', configuration: {}, enabled: true, validation_state: 'available', source_download: null }
+    renderApp({ runtimeList: [runtime], profileList: [profile], onRequest: (path) => (
+      path === '/api/profiles/profile-1/validate'
+        ? { valid: true, errors: [], warnings: ['runtime does not advertise --fit'], issues: [], preset: 'version = 1', arguments: [] }
+        : undefined
+    ) })
+    fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Validate' }))
+
+    expect(await screen.findByText('This profile is valid for its selected runtime and model files.')).toBeInTheDocument()
+    expect(screen.getByText('1 warning(s) that do not block launch:')).toBeInTheDocument()
+    expect(screen.getByText('runtime does not advertise --fit')).toBeInTheDocument()
   })
 
   it('shows a created key once and removes plaintext when closed', async () => {

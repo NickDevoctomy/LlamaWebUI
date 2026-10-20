@@ -75,7 +75,7 @@ def privilege_for_request(path: str, method: str) -> str | None:
         resource = "tokens"
     elif path.startswith("/api/runtimes"):
         resource = "runtimes"
-    elif path.startswith("/api/profiles"):
+    elif path.startswith(("/api/profiles", "/api/argument-catalog")):
         resource = "profiles"
     elif path.startswith("/api/huggingface/"):
         resource = "huggingface"

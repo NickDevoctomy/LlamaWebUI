@@ -1,6 +1,6 @@
 # Dynamic `llama-server` Argument UI Plan
 
-**Status:** Proposed, separate from the main implementation plan  
+**Status:** Implemented (Slices 1–3), awaiting maintainer review. See §6 for implementation notes  
 **Plan date:** 2026-09-21  
 **Reference:** [`docs/llama-server-v0.4.1-cli-reference.md`](../llama-server-v0.4.1-cli-reference.md)  
 **Scope:** Dynamically describe, validate, render, explain, and persist the complete `llama-server` launch-argument surface.
@@ -150,3 +150,33 @@ Catalogs live in versioned package paths (e.g., `backend/src/llamawebui/catalogs
 - **Profile integrity:** Migrated profiles round-trip with zero dropped keys and generate byte-for-byte identical launch vectors.
 - **Safety enforcement:** Malformed inputs, conflicting flags, and unconfirmed security options trigger explicit errors/warnings; raw command injection is impossible.
 - **Responsive accessibility:** Full keyboard navigation, screen reader accessibility, and error-free layouts verified across desktop and mobile (`390x844`).
+---
+
+## 6. Implementation Notes
+
+**Catalog and contract**
+- Bundled catalog: `backend/src/llamawebui/catalogs/llama-server-v0.4.1.json` (214 arguments). That is every row of the v0.4.1 reference plus `--cache-type-k/v`, which the reference lists only in its summary.
+- The data contract is the pydantic model set in `domain/argument_catalog.py`. `argument-catalog.schema.json` is generated from it, and a test keeps the two identical. The catalog is loaded and validated before startup touches any state, so an invalid catalog stops the app. The loader rejects duplicate ids or flags (aliases and negations included), unknown categories or effect tags, dangling `conflicts`/`requires`/`replacement` references, and malformed value schemas.
+- Besides `editable`, `control` can be `managed` (LlamaWebUI sets it: model, preset, host, port, keys, alias, router-wide `--models-*`, runtime model downloads), `informational` (print-and-exit options) or `removed`.
+- A `--help` row parser (`domain/runtime_capabilities.py`) records each option's canonical flag, aliases, syntax, help text and default. These are stored per runtime with a `flags_sha256` fingerprint (Alembic `0014_runtime_option_details`). Runtimes registered earlier need a re-probe to show per-option help.
+
+**Profile storage and migration**
+- Configurations are stored as `schema_version: 2`: an ordered `arguments` list of `{id, value}` catalog entries or `{flag, value, origin}` raw entries (`runtime`, `custom`, `catalog-mismatch`, `deprecated`), plus `acknowledged`.
+- Legacy flat configurations are converted at startup without changing the stored preset. A legacy option becomes a typed argument only when it emits byte-identical text; otherwise it is kept raw. The original document is kept under `legacy_configuration` until the next edit.
+- The API still accepts the legacy flat fields, and imports accept `llamawebui-profile-v1` documents. Exports are `llamawebui-profile-v2`.
+
+**Validation**
+- Launch blockers: invalid types, bounds, enum values, patterns or JSON; newlines or control characters; shell syntax in raw values; duplicate flags; a missing or incomplete model; unacknowledged security options; flags LlamaWebUI manages or that only print and exit. The router-start pre-flight re-checks every enabled profile.
+- Warnings only: flags the runtime does not advertise, deprecated or removed flags, conflicts, missing dependencies, relative or missing paths, and open CORS.
+- Shell-syntax blocking applies only to raw values and targets substitution and whitespace-delimited operators. Legitimate values such as `top_k;top_p` or regexes with `|` are allowed.
+
+**Display and API**
+- Sensitive values (`--hf-token`, `--mcp-servers-json`) are masked in logs, command views, the launch preview and the preset shown in the UI. The preset file and profile export keep the real value.
+- New endpoints: `GET /api/argument-catalog`, `GET /api/runtimes/{id}/argument-catalog` and `POST /api/profiles/preview`.
+
+**Editor**
+- The profile editor has Basic, Arguments and Launch preview tabs. Arguments contains Common settings (the six fields the earlier UI exposed), Advanced search, uncatalogued runtime options and custom parameters.
+- The previous fixed form remains only as a fallback for when the catalog cannot load. It preserves the arguments it does not edit.
+
+**Out of scope**
+- The profile list's row actions still overflow at 390px. This is the deferred `docs/tech-debt/profile-panel-responsive-layout.md`, not the argument editor.

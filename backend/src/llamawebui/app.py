@@ -17,17 +17,30 @@ from pydantic import BaseModel, Field, field_validator
 
 from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
+from llamawebui.domain.argument_catalog import ArgumentCatalog, default_catalog
+from llamawebui.domain.effective_catalog import build_effective_catalog
 from llamawebui.domain.model_profile import (
-    AdvancedOption,
     ModelProfile,
     ProfileValidationError,
+    launch_vector,
     parse_command,
+    redact_preset,
     render_command,
+    render_preset_unchecked,
     validate_profile,
     write_combined_preset_atomic,
 )
+from llamawebui.domain.profile_arguments import (
+    LEGACY_FIELDS,
+    ArgumentIssue,
+    ArgumentValueError,
+    build_arguments,
+    errors_of,
+    migrate_legacy_configuration,
+    normalize_configuration,
+    warnings_of,
+)
 from llamawebui.domain.router_lifecycle import RouterLaunch, RouterState
-from llamawebui.domain.runtime_capabilities import RuntimeCapabilities
 from llamawebui.models import (
     AccessTokenRecord,
     DownloadJobRecord,
@@ -91,6 +104,8 @@ from llamawebui.services.profile_registry import (
     ProfileAliasExistsError,
     ProfileNotFoundError,
     ProfileRegistry,
+    configuration_payload,
+    profile_from_record,
 )
 from llamawebui.services.router_client import (
     HttpRouterClient,
@@ -108,6 +123,7 @@ from llamawebui.services.runtime_registry import (
     RuntimeInUseError,
     RuntimeNotFoundError,
     RuntimeRegistry,
+    runtime_capabilities,
 )
 from llamawebui.services.server_run_registry import ServerRunRegistry
 from llamawebui.services.system_metrics import collect_system_metrics
@@ -115,6 +131,8 @@ from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRe
 from llamawebui.version import __version__
 
 MODEL_EVENT_KEEPALIVE_SECONDS = 15.0
+PROFILE_EXPORT_FORMAT = "llamawebui-profile-v2"
+PROFILE_IMPORT_FORMATS = frozenset({"llamawebui-profile-v1", PROFILE_EXPORT_FORMAT})
 LOGGER = logging.getLogger("llamawebui.app")
 
 
@@ -131,8 +149,22 @@ class RuntimeInstallRequest(BaseModel):
 
 
 class AdvancedOptionRequest(BaseModel):
+    """Legacy ``advanced`` entry, accepted for backwards compatibility."""
+
     name: str
     value: str | int | bool = True
+
+
+ArgumentValueInput = str | int | float | bool | list[str | int | float]
+
+
+class ProfileArgumentRequest(BaseModel):
+    """A catalog argument (``id``) or a raw custom/runtime parameter (``flag``)."""
+
+    id: str | None = Field(default=None, max_length=100)
+    flag: str | None = Field(default=None, max_length=200)
+    value: ArgumentValueInput | None = True
+    origin: str | None = Field(default=None, max_length=40)
 
 
 class ProfileCreateRequest(BaseModel):
@@ -140,6 +172,9 @@ class ProfileCreateRequest(BaseModel):
     runtime_id: str
     model_path: str
     enabled: bool = True
+    arguments: list[ProfileArgumentRequest] | None = None
+    acknowledged: list[str] = Field(default_factory=list, max_length=300)
+    # Legacy flat fields remain accepted and are migrated onto catalog arguments.
     no_reasoning_preserve: bool = False
     n_gpu_layers: int | None = None
     ctx_size: int | None = None
@@ -156,25 +191,26 @@ class ProfileCreateRequest(BaseModel):
     ubatch_size: int | None = None
     advanced: tuple[AdvancedOptionRequest, ...] = ()
 
-    def to_domain(self) -> ModelProfile:
+    def to_domain(self, catalog: ArgumentCatalog) -> ModelProfile:
+        """Build the domain profile, migrating any legacy fields before structured ones."""
+        legacy = {
+            key: value
+            for key, value in self.model_dump(include=set(LEGACY_FIELDS)).items()
+            # Identity checks: a legacy value of 0 is meaningful and must not compare as False.
+            if value is not None and value is not False and value != () and value != []
+        }
+        migrated = migrate_legacy_configuration(legacy, catalog).arguments if legacy else ()
+        try:
+            structured = build_arguments(
+                [entry.model_dump(exclude_none=True) for entry in self.arguments or []], catalog
+            )
+        except ArgumentValueError as error:
+            raise ProfileValidationError(tuple(str(error).split("; "))) from error
         return ModelProfile(
             alias=self.alias,
             model_path=Path(self.model_path),
-            no_reasoning_preserve=self.no_reasoning_preserve,
-            n_gpu_layers=self.n_gpu_layers,
-            ctx_size=self.ctx_size,
-            flash_attn=self.flash_attn,
-            load_mode=self.load_mode,
-            lazy_mode=self.lazy_mode,
-            cache_ram=self.cache_ram,
-            fit=self.fit,
-            override_tensor=self.override_tensor,
-            cache_type_k=self.cache_type_k,
-            cache_type_v=self.cache_type_v,
-            threads=self.threads,
-            batch_size=self.batch_size,
-            ubatch_size=self.ubatch_size,
-            advanced=tuple(AdvancedOption(option.name, option.value) for option in self.advanced),
+            arguments=(*migrated, *structured),
+            acknowledged=frozenset(self.acknowledged),
         )
 
 
@@ -291,6 +327,8 @@ def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
         "missing_router_options": list(missing_router_options),
         "diagnostics": diagnostics,
         "help_sha256": runtime.help_sha256,
+        "flags_sha256": runtime.flags_sha256,
+        "option_details_count": len(runtime.option_details or []),
     }
 
 
@@ -307,8 +345,58 @@ def _router_diagnostics(runtime: RuntimeRecord) -> tuple[str, ...]:
     return tuple(diagnostics)
 
 
+def _issues_payload(issues: tuple[ArgumentIssue, ...]) -> dict[str, object]:
+    errors = errors_of(issues)
+    return {
+        "valid": not errors,
+        "errors": list(errors),
+        "warnings": list(warnings_of(issues)),
+        "issues": [issue.to_payload() for issue in issues],
+    }
+
+
+def _argument_catalog(request: Request) -> ArgumentCatalog:
+    return cast(ArgumentCatalog, request.app.state.argument_catalog)
+
+
+def _registered_runtime(request: Request, runtime_id: str) -> RuntimeRecord:
+    registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+    try:
+        return registry.get(runtime_id)
+    except RuntimeNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+
+def _profile_issues(
+    request: Request, profile: ModelProfile, runtime: RuntimeRecord
+) -> tuple[ArgumentIssue, ...]:
+    issues = validate_profile(profile, _argument_catalog(request), runtime_capabilities(runtime))
+    router = tuple(
+        ArgumentIssue("error", "router-incompatible", message)
+        for message in _router_diagnostics(runtime)
+    )
+    return (*issues, *router)
+
+
+def _saved_profile_payload(
+    request: Request, record: ModelProfileRecord, profile: ModelProfile
+) -> dict[str, object]:
+    """Profile payload plus the non-blocking warnings that applied when it was saved."""
+    catalog = _argument_catalog(request)
+    artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+    payload = _profile_payload(record, artifacts, catalog=catalog)
+    registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+    runtime = registry.get(record.runtime_id)
+    issues = validate_profile(profile, catalog, runtime_capabilities(runtime))
+    payload["warnings"] = list(warnings_of(issues))
+    return payload
+
+
 def _profile_payload(
-    profile: ModelProfileRecord, artifacts: ModelArtifactRegistry | None = None
+    profile: ModelProfileRecord,
+    artifacts: ModelArtifactRegistry | None = None,
+    *,
+    catalog: ArgumentCatalog,
 ) -> dict[str, object]:
     source = artifacts.source_for_profile(profile) if artifacts is not None else None
     validation_state = "available"
@@ -329,8 +417,8 @@ def _profile_payload(
         "alias": profile.alias,
         "runtime_id": profile.runtime_id,
         "model_path": profile.model_path,
-        "configuration": profile.configuration,
-        "preset": profile.preset,
+        "configuration": configuration_payload(profile, catalog),
+        "preset": redact_preset(profile.preset, catalog),
         "enabled": profile.enabled,
         "validation_state": validation_state,
         "source_download": (
@@ -566,6 +654,7 @@ def create_app(
     router_port_probe: RouterPortProbe = probe_router_port,
     router_client: RouterClient | None = None,
     static_dir: Path | None = None,
+    argument_catalog: ArgumentCatalog | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
     packaged_static_dir = static_dir or Path(__file__).parent / "static"
@@ -582,6 +671,9 @@ def create_app(
                 "hf_token_configured": app_settings.hf_token is not None,
             },
         )
+        # Load and validate the bundled catalog before touching any state, so an invalid
+        # catalog stops startup instead of surfacing later as broken profile editing.
+        app.state.argument_catalog = argument_catalog or default_catalog()
         app_settings.data_dir.mkdir(parents=True, exist_ok=True)
         backup_database(app_settings.database_path, app_settings.database_backup_dir)
         upgrade_database(app_settings.database_path)
@@ -593,7 +685,18 @@ def create_app(
             prober=runtime_prober,
             releases=app.state.release_client,
         )
-        app.state.profile_registry = ProfileRegistry(engine)
+        app.state.profile_registry = ProfileRegistry(engine, app.state.argument_catalog)
+        migration = app.state.profile_registry.migrate_legacy_configurations()
+        if migration.migrated:
+            LOGGER.info(
+                "profile_configurations_migrated",
+                extra={
+                    "component": "profiles",
+                    "event": "migrated",
+                    "count": migration.migrated,
+                    "preset_mismatches": len(migration.preset_mismatches),
+                },
+            )
         app.state.token_registry = TokenRegistry(engine, app_settings.data_dir)
         app.state.token_registry.reconcile_legacy_materialized_tokens()
         app.state.token_registry.remove_materialized_tokens()
@@ -644,7 +747,9 @@ def create_app(
             app.state.router_client, app.state.event_broker
         )
         app.state.server_run_registry = ServerRunRegistry(engine)
-        app.state.diagnostics_exporter = DiagnosticsExporter(app_settings, engine)
+        app.state.diagnostics_exporter = DiagnosticsExporter(
+            app_settings, engine, app.state.argument_catalog
+        )
         app.state.active_server_run_id = None
         app.state.router_lifecycle_lock = asyncio.Lock()
 
@@ -758,6 +863,25 @@ def create_app(
                 )
         return await call_next(request)
 
+    def _generated_preset_path() -> Path:
+        return app_settings.data_dir / "generated" / "llama-models.ini"
+
+    def _router_preview(request: Request, runtime: RuntimeRecord) -> list[str]:
+        """The router-level arguments LlamaWebUI adds when it launches llama-server."""
+        tokens = cast(TokenRegistry, request.app.state.token_registry)
+        arguments = [
+            runtime.executable_path,
+            "--models-preset",
+            str(_generated_preset_path()),
+            "--host",
+            app_settings.router_host,
+            "--port",
+            str(app_settings.router_port),
+        ]
+        if tokens.has_enabled():
+            arguments.extend(("--api-key-file", str(tokens.key_file)))
+        return arguments
+
     async def start_router(runtime_id: str, request: Request) -> dict[str, object]:
         runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
         profiles = cast(ProfileRegistry, request.app.state.profile_registry)
@@ -796,8 +920,27 @@ def create_app(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"enabled model profiles are broken: {', '.join(broken)}",
             )
+        catalog = _argument_catalog(request)
+        capabilities = runtime_capabilities(runtime)
+        launch_profiles = tuple(
+            profile_from_record(profile, catalog) for profile in enabled_profiles
+        )
+        launch_issues = {
+            profile.alias: validate_profile(profile, catalog, capabilities)
+            for profile in launch_profiles
+        }
+        blockers = [
+            f"{alias}: {message}"
+            for alias, issues in launch_issues.items()
+            for message in errors_of(issues)
+        ]
+        if blockers:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="enabled model profiles cannot launch: " + "; ".join(blockers),
+            )
 
-        preset_path = app_settings.data_dir / "generated" / "llama-models.ini"
+        preset_path = _generated_preset_path()
         write_combined_preset_atomic(
             preset_path, tuple(profile.preset for profile in enabled_profiles)
         )
@@ -810,19 +953,13 @@ def create_app(
             api_key_file=tokens.key_file if tokens.has_enabled() else None,
         )
         supervisor.record_log("llama-server router command: " + " ".join(launch.arguments()))
-        for profile in enabled_profiles:
-            profile_request = ProfileCreateRequest.model_validate(
-                {
-                    **profile.configuration,
-                    "alias": profile.alias,
-                    "runtime_id": profile.runtime_id,
-                    "model_path": profile.model_path,
-                }
-            )
+        for launch_profile in launch_profiles:
             supervisor.record_log(
                 "llama-server model command (preset equivalent): "
-                + render_command(profile_request.to_domain(), Path(runtime.executable_path))
+                + render_command(launch_profile, catalog, Path(runtime.executable_path))
             )
+            for warning in warnings_of(launch_issues[launch_profile.alias]):
+                supervisor.record_log(f"profile {launch_profile.alias} warning: {warning}")
         endpoint = f"http://{app_settings.router_host}:{app_settings.router_port}"
         run = run_registry.create(runtime.id, endpoint)
         request.app.state.active_server_run_id = run.id
@@ -1509,20 +1646,76 @@ def create_app(
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
+    @app.get("/api/argument-catalog")
+    async def get_argument_catalog(request: Request) -> dict[str, object]:
+        return _argument_catalog(request).to_payload()
+
+    @app.get("/api/runtimes/{runtime_id}/argument-catalog")
+    async def get_runtime_argument_catalog(
+        runtime_id: str, request: Request
+    ) -> dict[str, object]:
+        runtime = _registered_runtime(request, runtime_id)
+        return build_effective_catalog(
+            _argument_catalog(request),
+            runtime_capabilities(runtime),
+            {
+                "id": runtime.id,
+                "name": runtime.name,
+                "build": runtime.build,
+                "helpSha256": runtime.help_sha256,
+                "flagsSha256": runtime.flags_sha256,
+            },
+        )
+
     @app.get("/api/profiles")
     async def list_profiles(request: Request) -> list[dict[str, object]]:
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-        return [_profile_payload(profile, artifacts) for profile in registry.list()]
+        catalog = _argument_catalog(request)
+        return [
+            _profile_payload(profile, artifacts, catalog=catalog) for profile in registry.list()
+        ]
+
+    @app.post("/api/profiles/preview")
+    async def preview_profile(
+        profile_request: ProfileCreateRequest, request: Request
+    ) -> dict[str, object]:
+        """Validate an unsaved profile and show the exact launch vector it would produce."""
+        catalog = _argument_catalog(request)
+        runtime = _registered_runtime(request, profile_request.runtime_id)
+        try:
+            profile = profile_request.to_domain(catalog)
+        except ProfileValidationError as error:
+            issues = tuple(
+                ArgumentIssue("error", "invalid-value", message) for message in error.errors
+            )
+            return {
+                **_issues_payload(issues),
+                "arguments": [],
+                "command": "",
+                "preset": "",
+                "router_arguments": _router_preview(request, runtime),
+            }
+        issues = _profile_issues(request, profile, runtime)
+        executable = Path(runtime.executable_path)
+        return {
+            **_issues_payload(issues),
+            "arguments": list(launch_vector(profile, catalog, executable)),
+            "command": render_command(profile, catalog, executable),
+            "preset": render_preset_unchecked(profile, catalog, redact=True),
+            "router_arguments": _router_preview(request, runtime),
+        }
 
     @app.post("/api/profiles", status_code=status.HTTP_201_CREATED)
     async def create_profile(
         profile_request: ProfileCreateRequest, request: Request
     ) -> dict[str, object]:
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        catalog = _argument_catalog(request)
         try:
-            profile = registry.create(
-                profile=profile_request.to_domain(),
+            profile = profile_request.to_domain(catalog)
+            record = registry.create(
+                profile=profile,
                 runtime_id=profile_request.runtime_id,
                 enabled=profile_request.enabled,
             )
@@ -1534,8 +1727,7 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
             ) from error
-        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-        return _profile_payload(profile, artifacts)
+        return _saved_profile_payload(request, record, profile)
 
     @app.put("/api/profiles/{profile_id}")
     async def update_profile(
@@ -1548,25 +1740,26 @@ def create_app(
                 detail="stop the router before editing a profile",
             )
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        catalog = _argument_catalog(request)
         try:
-            profile = registry.update(
+            profile = profile_request.to_domain(catalog)
+            record = registry.update(
                 profile_id,
-                profile=profile_request.to_domain(),
+                profile=profile,
                 runtime_id=profile_request.runtime_id,
                 enabled=profile_request.enabled,
             )
         except RuntimeNotFoundError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         except ProfileNotFoundError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         except ProfileAliasExistsError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         except ProfileValidationError as error:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
             ) from error
-        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-        return _profile_payload(profile, artifacts)
+        return _saved_profile_payload(request, record, profile)
 
     @app.post("/api/profiles/{profile_id}/clone", status_code=status.HTTP_201_CREATED)
     async def clone_profile(
@@ -1576,15 +1769,15 @@ def create_app(
         try:
             profile = registry.clone(profile_id, clone_request.alias)
         except ProfileNotFoundError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         except ProfileAliasExistsError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
             ) from error
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-        return _profile_payload(profile, artifacts)
+        return _profile_payload(profile, artifacts, catalog=_argument_catalog(request))
 
     @app.delete("/api/profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def remove_profile(profile_id: str, request: Request) -> None:
@@ -1605,28 +1798,20 @@ def create_app(
         profile_id: str, request: Request
     ) -> dict[str, object]:
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
-        profile = next((item for item in registry.list() if item.id == profile_id), None)
-        if profile is None:
+        try:
+            record = registry.get(profile_id)
+        except ProfileNotFoundError as error:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="model profile not found"
-            )
-        runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
-        try:
-            runtime = runtimes.get(profile.runtime_id)
-        except RuntimeNotFoundError as error:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-        try:
-            configuration = dict(profile.configuration)
-            configuration["alias"] = profile.alias
-            configuration["runtime_id"] = profile.runtime_id
-            validated = ProfileCreateRequest.model_validate(configuration).to_domain()
-            errors = list(validate_profile(
-                validated, RuntimeCapabilities(options=frozenset(runtime.options), raw_help="")
-            ))
-            errors.extend(_router_diagnostics(runtime))
-        except ProfileValidationError as error:
-            errors = list(error.errors)
-        return {"valid": not errors, "errors": list(errors), "preset": profile.preset}
+            ) from error
+        runtime = _registered_runtime(request, record.runtime_id)
+        catalog = _argument_catalog(request)
+        profile = profile_from_record(record, catalog)
+        return {
+            **_issues_payload(_profile_issues(request, profile, runtime)),
+            "preset": redact_preset(record.preset, catalog),
+            "arguments": list(launch_vector(profile, catalog, Path(runtime.executable_path))),
+        }
 
     @app.post("/api/profiles/{profile_id}/reset")
     async def reset_profile_configuration(profile_id: str, request: Request) -> dict[str, object]:
@@ -1642,24 +1827,27 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(error)) from error
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileValidationError as error:
+            raise HTTPException(status_code=422, detail=list(error.errors)) from error
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-        return _profile_payload(profile, artifacts)
+        return _profile_payload(profile, artifacts, catalog=_argument_catalog(request))
 
     @app.get("/api/profiles/{profile_id}/export", response_class=PlainTextResponse)
     async def export_profile(profile_id: str, request: Request) -> PlainTextResponse:
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
-        profile = next((item for item in registry.list() if item.id == profile_id), None)
-        if profile is None:
+        try:
+            profile = registry.get(profile_id)
+        except ProfileNotFoundError as error:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="model profile not found"
-            )
+            ) from error
         payload = json.dumps(
             {
-                "format": "llamawebui-profile-v1",
+                "format": PROFILE_EXPORT_FORMAT,
                 "alias": profile.alias,
                 "runtime_id": profile.runtime_id,
                 "enabled": profile.enabled,
-                "configuration": profile.configuration,
+                "configuration": configuration_payload(profile, _argument_catalog(request)),
                 "preset": profile.preset,
             },
             indent=2,
@@ -1674,24 +1862,14 @@ def create_app(
     @app.get("/api/profiles/{profile_id}/command", response_class=PlainTextResponse)
     async def export_profile_command(profile_id: str, request: Request) -> PlainTextResponse:
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
-        profile = next((item for item in registry.list() if item.id == profile_id), None)
-        if profile is None:
-            raise HTTPException(status_code=404, detail="model profile not found")
-        runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
         try:
-            runtime = runtimes.get(profile.runtime_id)
-        except RuntimeNotFoundError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
+            record = registry.get(profile_id)
+        except ProfileNotFoundError as error:
+            raise HTTPException(status_code=404, detail="model profile not found") from error
+        runtime = _registered_runtime(request, record.runtime_id)
+        catalog = _argument_catalog(request)
         command = render_command(
-            ProfileCreateRequest.model_validate(
-                {
-                    **profile.configuration,
-                    "alias": profile.alias,
-                    "runtime_id": profile.runtime_id,
-                    "model_path": profile.model_path,
-                }
-            ).to_domain(),
-            Path(runtime.executable_path),
+            profile_from_record(record, catalog), catalog, Path(runtime.executable_path)
         )
         return PlainTextResponse(command, media_type="text/plain")
 
@@ -1700,7 +1878,7 @@ def create_app(
         import_request: ProfileImportRequest, request: Request
     ) -> dict[str, object]:
         document = import_request.document
-        if document.get("format") != "llamawebui-profile-v1":
+        if document.get("format") not in PROFILE_IMPORT_FORMATS:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="unsupported profile export format",
@@ -1724,24 +1902,24 @@ def create_app(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="profile export enabled value is invalid",
             )
+        catalog = _argument_catalog(request)
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        normalized = normalize_configuration(configuration, catalog)
+        imported_model_path = configuration.get("model_path")
         try:
-            imported_model_path = configuration.get("model_path")
             if not isinstance(imported_model_path, str) or not Path(imported_model_path).is_file():
-                registry = cast(ProfileRegistry, request.app.state.profile_registry)
-                profile = registry.create_unresolved_import(
-                    alias=alias,
-                    runtime_id=runtime_id,
-                    configuration=configuration,
+                record = registry.create_unresolved_import(
+                    alias=alias, runtime_id=runtime_id, configuration=normalized
                 )
                 artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-                return _profile_payload(profile, artifacts)
-            profile_request = ProfileCreateRequest.model_validate(
-                {**configuration, "alias": alias, "runtime_id": runtime_id, "enabled": enabled}
+                return _profile_payload(record, artifacts, catalog=catalog)
+            profile = ModelProfile(
+                alias=alias,
+                model_path=Path(imported_model_path),
+                arguments=normalized.arguments,
+                acknowledged=normalized.acknowledged,
             )
-            registry = cast(ProfileRegistry, request.app.state.profile_registry)
-            profile = registry.create(
-                profile=profile_request.to_domain(), runtime_id=runtime_id, enabled=enabled
-            )
+            record = registry.create(profile=profile, runtime_id=runtime_id, enabled=enabled)
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ProfileAliasExistsError as error:
@@ -1750,39 +1928,36 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
             ) from error
-        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-        return _profile_payload(profile, artifacts)
+        return _saved_profile_payload(request, record, profile)
 
     @app.post("/api/profiles/import-command", status_code=status.HTTP_201_CREATED)
     async def import_profile_command(
         import_request: ProfileCommandImportRequest, request: Request
     ) -> dict[str, object]:
+        runtime = _registered_runtime(request, import_request.runtime_id)
+        catalog = _argument_catalog(request)
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
         try:
-            configuration = parse_command(import_request.command)
-            profile_request = ProfileCreateRequest.model_validate(
-                {
-                    **configuration,
-                    "alias": import_request.alias,
-                    "runtime_id": import_request.runtime_id,
-                    "enabled": import_request.enabled,
-                }
+            parsed = parse_command(
+                import_request.command, catalog, capabilities=runtime_capabilities(runtime)
             )
-            registry = cast(ProfileRegistry, request.app.state.profile_registry)
-            profile = registry.create(
-                profile=profile_request.to_domain(),
-                runtime_id=import_request.runtime_id,
-                enabled=False,
+            profile = ModelProfile(
+                alias=import_request.alias,
+                model_path=Path(parsed.model_path),
+                arguments=parsed.arguments,
             )
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+            record = registry.create(profile=profile, runtime_id=runtime.id, enabled=False)
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ProfileAliasExistsError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except ProfileValidationError as error:
             raise HTTPException(status_code=422, detail=list(error.errors)) from error
-        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-        return _profile_payload(profile, artifacts)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        payload = _saved_profile_payload(request, record, profile)
+        payload["ignored_arguments"] = list(parsed.ignored)
+        return payload
 
     @app.get("/api/huggingface/models")
     async def search_huggingface_models(
@@ -1976,7 +2151,9 @@ def create_app(
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
         try:
             created = registry.create(
-                profile=profile.to_domain(), runtime_id=profile.runtime_id, enabled=False
+                profile=profile.to_domain(_argument_catalog(request)),
+                runtime_id=profile.runtime_id,
+                enabled=False,
             )
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
@@ -1985,7 +2162,7 @@ def create_app(
         except ProfileValidationError as error:
             raise HTTPException(status_code=422, detail=list(error.errors)) from error
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-        return _profile_payload(created, artifacts)
+        return _profile_payload(created, artifacts, catalog=_argument_catalog(request))
 
     @app.delete("/api/library/{download_id}")
     async def delete_library_model(download_id: str, request: Request) -> dict[str, object]:
