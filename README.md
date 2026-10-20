@@ -387,7 +387,7 @@ npm test
 npm run build
 ```
 
-The backend test configuration enforces the configured 90% branch-coverage floor. A small number of live-stream and platform integration behaviors are documented separately as technical debt and are not unit-test substitutes for `llama-server`.
+The backend test configuration enforces an 85% branch-coverage floor (see `backend/pyproject.toml`); raising it to the 90% target is tracked in `docs/code-review.md` as deferred item CR-012. A small number of live-stream and platform integration behaviors are documented separately as technical debt and are not unit-test substitutes for `llama-server`.
 
 ## Useful API endpoints
 
