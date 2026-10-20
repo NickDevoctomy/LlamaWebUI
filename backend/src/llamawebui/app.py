@@ -83,6 +83,7 @@ from llamawebui.services.llama_release_installer import (
     group_runtime_assets,
 )
 from llamawebui.services.logical_model_registry import LogicalModelRegistry
+from llamawebui.services.login_throttle import LoginRateLimitedError, LoginThrottle
 from llamawebui.services.model_artifact_registry import ModelArtifactError, ModelArtifactRegistry
 from llamawebui.services.model_event_stream import stream_model_events
 from llamawebui.services.model_library import ModelLibrary
@@ -111,6 +112,7 @@ from llamawebui.services.runtime_registry import (
 from llamawebui.services.server_run_registry import ServerRunRegistry
 from llamawebui.services.system_metrics import collect_system_metrics
 from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRegistry
+from llamawebui.version import __version__
 
 MODEL_EVENT_KEEPALIVE_SECONDS = 15.0
 LOGGER = logging.getLogger("llamawebui.app")
@@ -309,7 +311,19 @@ def _profile_payload(
     profile: ModelProfileRecord, artifacts: ModelArtifactRegistry | None = None
 ) -> dict[str, object]:
     source = artifacts.source_for_profile(profile) if artifacts is not None else None
-    available = artifacts.profile_available(profile) if artifacts is not None else True
+    validation_state = "available"
+    if artifacts is not None:
+        matches = artifacts.matching_jobs(profile)
+        validation_state = (
+            "available"
+            if not matches and Path(profile.model_path).is_file()
+            else "broken"
+            if not matches
+            else max(
+                (artifacts.validation_state(job) for job in matches),
+                key=("broken", "unverified", "available").index,
+            )
+        )
     return {
         "id": profile.id,
         "alias": profile.alias,
@@ -318,7 +332,7 @@ def _profile_payload(
         "configuration": profile.configuration,
         "preset": profile.preset,
         "enabled": profile.enabled,
-        "validation_state": "available" if available else "broken",
+        "validation_state": validation_state,
         "source_download": (
             {
                 "id": source.download_id,
@@ -581,8 +595,16 @@ def create_app(
         )
         app.state.profile_registry = ProfileRegistry(engine)
         app.state.token_registry = TokenRegistry(engine, app_settings.data_dir)
+        app.state.token_registry.reconcile_legacy_materialized_tokens()
+        app.state.token_registry.remove_materialized_tokens()
         app.state.auth_service = AuthService(engine)
         app.state.auth_service.ensure_default_admin()
+        app.state.login_throttle = LoginThrottle(
+            failure_threshold=app_settings.login_failure_threshold,
+            lockout_seconds=app_settings.login_lockout_seconds,
+            backoff_base_seconds=app_settings.login_backoff_base_seconds,
+            backoff_max_seconds=app_settings.login_backoff_max_seconds,
+        )
         app.state.download_registry = DownloadRegistry(engine, app_settings.data_dir / "models")
         app.state.model_library = ModelLibrary(
             app.state.download_registry, app_settings.data_dir / "models"
@@ -597,7 +619,11 @@ def create_app(
         transfer = file_transfer or HuggingFaceFileTransfer(token)
         app.state.download_coordinator = DownloadCoordinator(
             app.state.download_registry,
-            DownloadWorker(app.state.download_registry, transfer),
+            DownloadWorker(
+                app.state.download_registry,
+                transfer,
+                stall_timeout_seconds=app_settings.download_stall_timeout_seconds,
+            ),
             event_broker=app.state.event_broker,
         )
         app.state.download_coordinator.start_pending()
@@ -673,6 +699,7 @@ def create_app(
             )
             async with app.state.router_lifecycle_lock:
                 await app.state.router_supervisor.stop()
+            app.state.token_registry.remove_materialized_tokens()
             app.state.router_supervisor.set_state_observer(None)
             await app.state.router_event_synchronizer.shutdown()
             await app.state.download_coordinator.shutdown()
@@ -682,9 +709,14 @@ def create_app(
                 extra={"component": "application", "event": "stopped"},
             )
 
-    app = FastAPI(title="LlamaWebUI", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="LlamaWebUI", version=__version__, lifespan=lifespan)
 
     PUBLIC_API_PATHS = {"/api/health", "/api/auth/login", "/api/auth/logout"}
+    BOOTSTRAP_ALLOWED_PATHS = {
+        "/api/auth/me",
+        "/api/auth/password",
+        "/api/auth/logout",
+    }
 
     @app.middleware("http")
     async def require_control_plane_auth(request: Request, call_next: Any) -> Any:
@@ -702,6 +734,13 @@ def create_app(
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     content={"detail": str(error)},
+                )
+            if user.default_credentials and path not in BOOTSTRAP_ALLOWED_PATHS:
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={
+                        "detail": "change the bootstrap password before using the control plane"
+                    },
                 )
             if (
                 request.method not in {"GET", "HEAD", "OPTIONS"}
@@ -762,6 +801,7 @@ def create_app(
         write_combined_preset_atomic(
             preset_path, tuple(profile.preset for profile in enabled_profiles)
         )
+        tokens.materialize_enabled_tokens()
         launch = RouterLaunch(
             executable=Path(runtime.executable_path),
             preset_path=preset_path,
@@ -806,6 +846,7 @@ def create_app(
                 launch, timeout_seconds=app_settings.router_ready_timeout_seconds
             )
         except TimeoutError as error:
+            tokens.remove_materialized_tokens()
             run_registry.update(
                 run.id,
                 supervisor.state,
@@ -817,6 +858,7 @@ def create_app(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(error)
             ) from error
         except (OSError, RuntimeError) as error:
+            tokens.remove_materialized_tokens()
             run_registry.update(
                 run.id,
                 supervisor.state,
@@ -828,6 +870,7 @@ def create_app(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)
             ) from error
         except ValueError as error:
+            tokens.remove_materialized_tokens()
             run_registry.update(
                 run.id,
                 supervisor.state,
@@ -842,20 +885,35 @@ def create_app(
     async def health() -> dict[str, object]:
         return {
             "status": "ok",
-            "data_dir": str(app_settings.data_dir),
-            "database_path": str(app_settings.database_path),
-            "hugging_face_token_configured": app_settings.hf_token is not None,
+            "version": __version__,
         }
 
     @app.post("/api/auth/login")
     async def login(login_request: LoginRequest, request: Request) -> JSONResponse:
         auth = _auth_service(request)
+        throttle = cast(LoginThrottle, request.app.state.login_throttle)
+        client_ip = request.client.host if request.client is not None else "unknown"
         try:
+            attempt = throttle.begin(login_request.username, client_ip)
+        except LoginRateLimitedError as error:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=str(error),
+                headers={"Retry-After": str(error.retry_after)},
+            ) from error
+        try:
+            if attempt.delay_seconds:
+                await asyncio.sleep(attempt.delay_seconds)
             user = auth.authenticate(login_request.username, login_request.password)
         except AuthenticationError as error:
+            throttle.failure(attempt)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)
             ) from error
+        except BaseException:
+            throttle.abort(attempt)
+            raise
+        throttle.success(attempt)
         session = auth.create_session(user.id)
         authenticated = auth.resolve_session(session.id)
         secure = request.url.scheme == "https"
@@ -1108,6 +1166,7 @@ def create_app(
     @app.post("/api/server/stop")
     async def stop_server(request: Request) -> dict[str, object]:
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        tokens = cast(TokenRegistry, request.app.state.token_registry)
         lock = cast(asyncio.Lock, request.app.state.router_lifecycle_lock)
         async with lock:
             try:
@@ -1116,6 +1175,7 @@ def create_app(
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT, detail=str(error)
                 ) from error
+            tokens.remove_materialized_tokens()
         return _server_payload(supervisor, app_settings)
 
     @app.post("/api/server/restart")

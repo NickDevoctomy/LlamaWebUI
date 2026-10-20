@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,19 @@ def create_completed_artifact(
     manifest = RepositoryManifest(
         "owner/model-GGUF",
         "a" * 40,
-        (GgufGroup("model-Q4", "Q4", (HubFile("model-Q4.gguf", 4),), 4, True),),
+        (
+            GgufGroup(
+                "model-Q4",
+                "Q4",
+                (
+                    HubFile(
+                        "model-Q4.gguf", 4, hashlib.sha256(b"gguf").hexdigest()
+                    ),
+                ),
+                4,
+                True,
+            ),
+        ),
     )
     job = registry.create(manifest, "model-Q4")
     destination = Path(job.destination)
@@ -78,12 +91,28 @@ def test_deleting_one_group_preserves_other_group_in_shared_destination(
         RepositoryManifest(
             "owner/model-GGUF",
             revision,
-            (GgufGroup("model-Q4", "Q4", (HubFile("model-Q4.gguf", 4),), 4, True),),
+            (
+                GgufGroup(
+                    "model-Q4",
+                    "Q4",
+                    (HubFile("model-Q4.gguf", 4, hashlib.sha256(b"four").hexdigest()),),
+                    4,
+                    True,
+                ),
+            ),
         ),
         RepositoryManifest(
             "owner/model-GGUF",
             revision,
-            (GgufGroup("model-Q8", "Q8", (HubFile("model-Q8.gguf", 8),), 8, True),),
+            (
+                GgufGroup(
+                    "model-Q8",
+                    "Q8",
+                    (HubFile("model-Q8.gguf", 8, hashlib.sha256(b"eight888").hexdigest()),),
+                    8,
+                    True,
+                ),
+            ),
         ),
     )
     jobs = tuple(registry.create(manifest, manifest.groups[0].key) for manifest in manifests)
@@ -175,6 +204,18 @@ def test_profile_health_falls_back_to_external_path(tmp_path: Path) -> None:
     external.unlink()
     assert not artifacts.profile_available(profile)
     assert artifacts.source_for_profile(profile) is None
+
+
+def test_same_size_mutation_invalidates_managed_artifact(tmp_path: Path) -> None:
+    registry, artifacts, job_id = create_completed_artifact(tmp_path)
+    job = registry.get(job_id)
+    artifact = Path(job.destination) / "model-Q4.gguf"
+    artifact.write_bytes(b"gguf")
+    assert artifacts.is_valid(job)
+
+    artifact.write_bytes(b"gguf"[:-1] + b"!")
+
+    assert not artifacts.is_valid(job)
 
 
 @pytest.mark.parametrize(

@@ -15,7 +15,7 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import { type ChangeEvent, type FormEvent, useEffect, useId, useState } from 'react'
+import { type ChangeEvent, type FormEvent, useEffect, useId, useRef, useState } from 'react'
 import { api, type LibraryModel, type Profile, type ProfileCreate, type Runtime, type RuntimeRelease } from './api'
 
 function optionalNumber(value: string) {
@@ -63,11 +63,55 @@ export function Dialog({ title, description, onClose, children }: {
   const dialogId = useId()
   const titleId = `${dialogId}-title`
   const descriptionId = `${dialogId}-description`
+  const dialogRef = useRef<HTMLElement>(null)
+  const previousFocus = useRef<HTMLElement | null>(
+    document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  )
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (!dialog) return
+    const focusable = dialog.querySelector<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    )
+    focusable?.focus()
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onCloseRef.current()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const elements = Array.from(dialog?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      ) ?? [])
+      if (!elements.length) return
+      const first = elements[0]
+      const last = elements[elements.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      previousFocus.current?.focus()
+    }
+  }, [])
+
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose()
     }}>
-      <section aria-describedby={descriptionId} aria-labelledby={titleId} aria-modal="true" className="dialog" role="dialog">
+      <section ref={dialogRef} aria-describedby={descriptionId} aria-labelledby={titleId} aria-modal="true" className="dialog" role="dialog">
         <header className="dialog-header">
           <div><p className="eyebrow">Configuration</p><h2 id={titleId}>{title}</h2><p id={descriptionId}>{description}</p></div>
           <button aria-label="Close" className="icon-button" onClick={onClose} type="button"><X size={18} /></button>
@@ -215,6 +259,8 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
   const [commandImport, setCommandImport] = useState('')
   const [commandImportAlias, setCommandImportAlias] = useState('')
   const [command, setCommand] = useState<{ alias: string; value: string }>()
+  const [actionError, setActionError] = useState('')
+  const [actionPending, setActionPending] = useState<string>()
   const queryClient = useQueryClient()
   const runtime = runtimes.find((item) => item.id === runtimeId)
   const supports = (option: string) => runtime?.options.includes(option) ?? false
@@ -319,16 +365,32 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
     setOpen(true)
   }
   async function exportProfile(profile: Profile) {
-    const blob = await api.exportProfile(profile.id)
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = `${profile.alias}.json`
-    anchor.click()
-    URL.revokeObjectURL(url)
+    setActionError('')
+    setActionPending(`export:${profile.id}`)
+    try {
+      const blob = await api.exportProfile(profile.id)
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `${profile.alias}.json`
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Profile export failed.')
+    } finally {
+      setActionPending(undefined)
+    }
   }
   async function showCommand(profile: Profile) {
-    setCommand({ alias: profile.alias, value: await api.profileCommand(profile.id) })
+    setActionError('')
+    setActionPending(`command:${profile.id}`)
+    try {
+      setCommand({ alias: profile.alias, value: await api.profileCommand(profile.id) })
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Command generation failed.')
+    } finally {
+      setActionPending(undefined)
+    }
   }
   const deletion = useMutation({
     mutationFn: (profileId: string) => api.deleteProfile(profileId),
@@ -411,14 +473,14 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
           <div><h2>Model profiles</h2><p>Named models and launch settings published to the router.</p></div>
           <div className="row-actions"><label className="button secondary compact" htmlFor="profile-import"><Upload size={15} /> Import profile</label><input accept="application/json,.json" id="profile-import" onChange={importProfile} style={{ display: 'none' }} type="file" /><button className="button secondary compact" disabled={!runtimes.length} onClick={() => setCommandImportOpen(true)} type="button"><TerminalSquare size={15} /> Import command</button><button className="button primary compact" disabled={!runtimes.length} onClick={openCreate} type="button"><Plus size={15} /> Create profile</button></div>
         </div>
-        {importError && <div className="form-error"><AlertCircle size={15} /> {importError}</div>}
+        {(importError || actionError) && <div className="form-error" role="alert"><AlertCircle size={15} /> {importError || actionError}</div>}
         {profiles.length ? <div className="record-list">{profiles.map((profile) => (
           <article className="record-row" key={profile.id}>
             <span className="record-icon"><FileCog size={18} /></span>
             <div className="record-copy"><button className="record-link" onClick={() => editProfile(profile)} type="button"><strong>{profile.alias}</strong></button><span>{profile.model_path}</span></div>
             <div className="record-meta wide"><small>Runtime</small><span>{runtimes.find((item) => item.id === profile.runtime_id)?.name ?? 'Missing runtime'}</span></div>
-            {profile.validation_state === 'broken' ? <button className="state-pill error" disabled={running || !profile.source_download} onClick={() => setRepairing(profile)} title={profile.source_download ? 'Repair missing model' : 'Model file is missing'} type="button">Broken</button> : <span className={`state-pill ${profile.enabled ? 'ready' : ''}`}>{profile.enabled ? 'Enabled' : 'Disabled'}</span>}
-            <div className="row-actions"><button className="button row-button" disabled={running || validate.isPending} onClick={() => validate.mutate(profile)} type="button">Validate</button><button className="button row-button" disabled={running} onClick={() => editProfile(profile)} type="button">Edit</button><button className="button row-button" disabled={running} onClick={() => setResetting(profile)} type="button">Reset</button><button className="button row-button" disabled={running} onClick={() => void exportProfile(profile)} type="button"><Download size={13} /> Export</button><button className="button row-button" disabled={running} onClick={() => void showCommand(profile)} type="button"><TerminalSquare size={13} /> Command</button><button className="button row-button" disabled={running} onClick={() => { setCloning(profile); setCloneAlias(`${profile.alias}-copy`) }} type="button"><Plus size={13} /> Clone</button><button aria-label={`Delete profile ${profile.alias}`} className="icon-button small danger-icon" disabled={running} onClick={() => setDeleting(profile)} title="Delete profile" type="button"><Trash2 size={16} /></button></div>
+            {profile.validation_state === 'broken' ? <button className="state-pill error" disabled={running || !profile.source_download} onClick={() => setRepairing(profile)} title={profile.source_download ? 'Repair missing model' : 'Model file is missing'} type="button">Broken</button> : <span className={`state-pill ${profile.validation_state === 'unverified' ? 'warning' : profile.enabled ? 'ready' : ''}`} title={profile.validation_state === 'unverified' ? 'File size verified; checksum unavailable for this legacy download' : undefined}>{profile.validation_state === 'unverified' ? 'Unverified' : profile.enabled ? 'Enabled' : 'Disabled'}</span>}
+            <div className="row-actions"><button className="button row-button" disabled={running || validate.isPending} onClick={() => validate.mutate(profile)} type="button">Validate</button><button className="button row-button" disabled={running} onClick={() => editProfile(profile)} type="button">Edit</button><button className="button row-button" disabled={running} onClick={() => setResetting(profile)} type="button">Reset</button><button className="button row-button" disabled={running || actionPending !== undefined} onClick={() => void exportProfile(profile)} type="button">{actionPending === `export:${profile.id}` ? <LoaderCircle className="spin" size={13} /> : <Download size={13} />} Export</button><button className="button row-button" disabled={running || actionPending !== undefined} onClick={() => void showCommand(profile)} type="button">{actionPending === `command:${profile.id}` ? <LoaderCircle className="spin" size={13} /> : <TerminalSquare size={13} />} Command</button><button className="button row-button" disabled={running} onClick={() => { setCloning(profile); setCloneAlias(`${profile.alias}-copy`) }} type="button"><Plus size={13} /> Clone</button><button aria-label={`Delete profile ${profile.alias}`} className="icon-button small danger-icon" disabled={running} onClick={() => setDeleting(profile)} title="Delete profile" type="button"><Trash2 size={16} /></button></div>
           </article>
         ))}</div> : <div className="empty"><FileCog size={28} /><strong>No profiles configured</strong><span>{runtimes.length ? 'Create a profile for a local GGUF model.' : 'Register a runtime before creating a model profile.'}</span>{runtimes.length > 0 && <button className="button primary" onClick={openCreate} type="button"><Plus size={15} /> Create profile</button>}</div>}
       </section>

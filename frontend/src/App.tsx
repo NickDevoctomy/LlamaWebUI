@@ -82,22 +82,26 @@ function App() {
     queryKey: ['auth-user'],
     queryFn: api.currentUser,
     retry: false,
-    placeholderData: { username: '', default_credentials: false, description: null, role: '', privileges: ['server.read', 'library.read', 'huggingface.read', 'downloads.read', 'profiles.read', 'tokens.read', 'runtimes.read', 'settings.read', 'auth.read'] },
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
   })
   const logout = useMutation({
     mutationFn: api.logout,
-    onSuccess: () => { queryClient.setQueryData(['auth-user'], undefined) },
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ['auth-user'], exact: true })
+    },
   })
   if (auth.isError) {
     const authError = auth.error as Error & { status?: number }
     if (authError.status === 401) return <LoginScreen onLoggedIn={(user) => queryClient.setQueryData(['auth-user'], user)} />
     return <div className="auth-state"><AlertCircle size={20} /> Unable to check the control-plane session: {auth.error.message}</div>
   }
-  return <AuthenticatedApp user={auth.data!} authReady={!auth.isPlaceholderData} onLogout={() => logout.mutate()} loggingOut={logout.isPending} />
+  if (auth.isPending || !auth.data) return <div className="auth-state">Checking control-plane session…</div>
+  return <AuthenticatedApp user={auth.data} authReady onLogout={() => logout.mutate()} loggingOut={logout.isPending} />
 }
 
 function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: Awaited<ReturnType<typeof api.currentUser>>) => void }) {
-  const [username, setUsername] = useState('admin')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const login = useMutation({ mutationFn: () => api.login(username, password), onSuccess: onLoggedIn })
   return <main className="auth-shell">
@@ -112,23 +116,29 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: Awaited<ReturnType<typ
         {login.error && <div className="form-error"><AlertCircle size={15} /> {login.error.message}</div>}
         <button className="button primary" disabled={login.isPending || !username || !password} type="submit">{login.isPending ? <LoaderCircle className="spin" size={15} /> : <ShieldCheck size={15} />} Sign in</button>
       </form>
-      <p className="auth-footnote">Default local credentials: <span className="mono">admin / admin</span></p>
     </section>
   </main>
 }
 
 function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awaited<ReturnType<typeof api.currentUser>>; authReady: boolean; onLogout: () => void; loggingOut: boolean }) {
-  const [section, setSection] = useState('Dashboard')
+  const [section, setSection] = useState(user.default_credentials ? 'Account' : 'Dashboard')
   const [discoveryRepository, setDiscoveryRepository] = useState<string>()
   const [selectedRuntime, setSelectedRuntime] = useState('')
   const [profileSeed, setProfileSeed] = useState<LibraryModel>()
   const queryClient = useQueryClient()
   const canRead = (privilege: string) => user.privileges?.includes(privilege) ?? false
-  const visibleNavigation = navigation.filter(([, , privilege]) => canRead(privilege))
+  const visibleNavigation = user.default_credentials
+    ? []
+    : navigation.filter(([, , privilege]) => canRead(privilege))
   const hasVisibleSection = section === 'Account' || visibleNavigation.some(([label]) => label === section)
   useEffect(() => {
-    if (authReady && !hasVisibleSection) setSection(visibleNavigation[0]?.[0] ?? '')
-  }, [authReady, hasVisibleSection, visibleNavigation])
+    if (!authReady) return
+    if (user.default_credentials) {
+      setSection('Account')
+    } else if (!hasVisibleSection) {
+      setSection(visibleNavigation[0]?.[0] ?? '')
+    }
+  }, [authReady, hasVisibleSection, user.default_credentials, visibleNavigation])
   const status = useQuery({
     queryKey: ['server'],
     queryFn: api.serverStatus,
@@ -511,12 +521,16 @@ function AccountPanel({ user }: { user: Awaited<ReturnType<typeof api.currentUse
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmation, setConfirmation] = useState('')
+  const [successMessage, setSuccessMessage] = useState('')
+  const queryClient = useQueryClient()
   const changePassword = useMutation({
     mutationFn: () => api.changePassword(currentPassword, newPassword),
     onSuccess: () => {
       setCurrentPassword('')
       setNewPassword('')
-      setConfirmation('Password changed. Other sessions have been signed out.')
+      setConfirmation('')
+      setSuccessMessage('Password changed. Other sessions have been signed out.')
+      void queryClient.invalidateQueries({ queryKey: ['auth-user'] })
     },
   })
   const valid = currentPassword.length > 0 && newPassword.length >= 8 && newPassword === confirmation
@@ -526,15 +540,14 @@ function AccountPanel({ user }: { user: Awaited<ReturnType<typeof api.currentUse
       <div className="account-summary"><span className="metric-icon"><UserRound size={18} /></span><div><small>Signed in as</small><strong>{user.username}</strong></div>{user.default_credentials && <span className="profile-tag warning-tag">Default password active</span>}</div>
       {user.default_credentials && <div className="inline-notice"><ShieldAlert size={15} /> Change the default password before exposing the control plane beyond this local machine.</div>}
       <form className="form-body" onSubmit={(event) => { event.preventDefault(); changePassword.mutate() }}>
-        <label className="form-field"><span>Current password</span><input autoComplete="current-password" type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
-        <label className="form-field"><span>New password</span><input autoComplete="new-password" type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /><small>Use at least 8 characters. Existing passwords are never displayed.</small></label>
-        <label className="form-field"><span>Confirm new password</span><input autoComplete="new-password" type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} aria-invalid={confirmation.length > 0 && confirmation !== newPassword} /></label>
+        <label className="form-field" htmlFor="current-password"><span>Current password</span><input id="current-password" autoComplete="current-password" type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
+        <label className="form-field" htmlFor="new-password"><span>New password</span><input id="new-password" autoComplete="new-password" type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /><small>Use at least 8 characters. Existing passwords are never displayed.</small></label>
+        <label className="form-field" htmlFor="confirm-new-password"><span>Confirm new password</span><input id="confirm-new-password" autoComplete="new-password" type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} aria-invalid={confirmation.length > 0 && confirmation !== newPassword} /></label>
         {changePassword.error && <div className="form-error"><AlertCircle size={15} /> {changePassword.error.message}</div>}
         {confirmation && <div className={confirmation === newPassword ? 'form-success' : 'form-error'}>{confirmation === newPassword ? 'Passwords match.' : 'Passwords do not match.'}</div>}
-        {changePassword.isSuccess && <div className="form-success">{changePassword.data.changed ? 'Password changed successfully.' : ''}</div>}
+        {successMessage && <div className="form-success">{successMessage}</div>}
         <button className="button primary" disabled={!valid || changePassword.isPending} type="submit">{changePassword.isPending ? <LoaderCircle className="spin" size={15} /> : <ShieldCheck size={15} />} Change password</button>
       </form>
-      {changePassword.isSuccess && <div className="panel-footer"><span>{confirmation}</span></div>}
     </section>
   </section>
 }
@@ -546,6 +559,7 @@ function UsersPanel({ users, roles, canManage }: { users: Awaited<ReturnType<typ
   const [password, setPassword] = useState('')
   const [description, setDescription] = useState('')
   const [roleId, setRoleId] = useState('')
+  const [deleting, setDeleting] = useState<Awaited<ReturnType<typeof api.users>>[number]>()
   const queryClient = useQueryClient()
   const createUser = useMutation({
     mutationFn: () => api.createUser(username, password, description, roleId),
@@ -564,18 +578,22 @@ function UsersPanel({ users, roles, canManage }: { users: Awaited<ReturnType<typ
   })
   const deleteUser = useMutation({
     mutationFn: (id: string) => api.deleteUser(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
+    onSuccess: async () => {
+      setDeleting(undefined)
+      await queryClient.invalidateQueries({ queryKey: ['users'] })
+    },
   })
   const openCreate = () => { setRoleId(roles.find((role) => role.name === 'User')?.id ?? roles.find((role) => role.name === 'Administrator')?.id ?? roles[0]?.id ?? ''); setOpen(true) }
   const openEdit = (user: typeof editing) => { setEditing(user); setDescription(user?.description ?? ''); setRoleId(user?.role_id ?? '') }
   return <section className="data-panel">
     <div className="panel-heading"><div><h2>Users</h2><p>Control-plane accounts and assigned roles.</p></div><button className="button primary compact" disabled={!canManage} onClick={openCreate} type="button"><UserRound size={14} /> Add user</button></div>
-    <div className="record-list">{users.map((managedUser) => <div className="record-row" key={managedUser.id}><span className="record-icon"><UserRound size={17} /></span><div className="record-copy"><strong>{managedUser.username}</strong><span>{managedUser.description || 'No description'}</span></div><span className="profile-tag">{managedUser.role}</span><button className="icon-button small" disabled={!canManage} aria-label={`Edit ${managedUser.username}`} onClick={() => openEdit(managedUser)} type="button"><Pencil size={14} /></button><button className="icon-button small danger-icon" disabled={!canManage || managedUser.username === 'admin' || deleteUser.isPending} aria-label={`Delete ${managedUser.username}`} title={managedUser.username === 'admin' ? 'The default admin account cannot be deleted' : 'Delete user'} onClick={() => { if (window.confirm(`Delete user ${managedUser.username}?`)) deleteUser.mutate(managedUser.id) }} type="button"><Trash2 size={14} /></button></div>)}</div>
+    <div className="record-list">{users.map((managedUser) => <div className="record-row" key={managedUser.id}><span className="record-icon"><UserRound size={17} /></span><div className="record-copy"><strong>{managedUser.username}</strong><span>{managedUser.description || 'No description'}</span></div><span className="profile-tag">{managedUser.role}</span><button className="icon-button small" disabled={!canManage} aria-label={`Edit ${managedUser.username}`} onClick={() => openEdit(managedUser)} type="button"><Pencil size={14} /></button><button className="icon-button small danger-icon" disabled={!canManage || managedUser.username === 'admin' || deleteUser.isPending} aria-label={`Delete ${managedUser.username}`} title={managedUser.username === 'admin' ? 'The default admin account cannot be deleted' : 'Delete user'} onClick={() => setDeleting(managedUser)} type="button"><Trash2 size={14} /></button></div>)}</div>
     {!users.length && <div className="empty"><UserRound size={28} /><strong>No users found</strong><span>The account list is unavailable or empty.</span></div>}
     <div className="panel-footer"><span>{users.length} account(s)</span><span>Descriptions and role assignments are editable.</span></div>
     {deleteUser.error && <div className="form-error"><AlertCircle size={15} /> {deleteUser.error.message}</div>}
     {open && <Dialog title="Add user" description="Create a control-plane account with a selected role." onClose={() => setOpen(false)}><form className="form-body" onSubmit={(event) => { event.preventDefault(); createUser.mutate() }}><label className="form-field"><span>Username</span><input autoFocus autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></label><label className="form-field"><span>Temporary password</span><input autoComplete="new-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label><label className="form-field"><span>Description <small>(optional)</small></span><input value={description} onChange={(event) => setDescription(event.target.value)} /></label><label className="form-field"><span>Role</span><select value={roleId} onChange={(event) => setRoleId(event.target.value)}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>{createUser.error && <div className="form-error"><AlertCircle size={15} /> {createUser.error.message}</div>}<footer className="dialog-actions"><button className="button secondary" onClick={() => setOpen(false)} type="button">Cancel</button><button className="button primary" disabled={createUser.isPending || !roleId || username.trim().length < 1 || password.length < 8} type="submit">{createUser.isPending ? <LoaderCircle className="spin" size={15} /> : <UserRound size={15} />} Add user</button></footer></form></Dialog>}
     {editing && <Dialog title={`Edit ${editing.username}`} description="Update the account description and role." onClose={() => setEditing(undefined)}><form className="form-body" onSubmit={(event) => { event.preventDefault(); updateUser.mutate() }}><label className="form-field"><span>Description <small>(optional)</small></span><input autoFocus value={description} onChange={(event) => setDescription(event.target.value)} /></label><label className="form-field"><span>Role</span><select value={roleId} onChange={(event) => setRoleId(event.target.value)}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>{updateUser.error && <div className="form-error"><AlertCircle size={15} /> {updateUser.error.message}</div>}<footer className="dialog-actions"><button className="button secondary" onClick={() => setEditing(undefined)} type="button">Cancel</button><button className="button primary" disabled={updateUser.isPending || !roleId} type="submit">{updateUser.isPending ? <LoaderCircle className="spin" size={15} /> : <Pencil size={15} />} Save user</button></footer></form></Dialog>}
+    {deleting && <Dialog title="Delete user?" description="This permanently removes the control-plane account and its active sessions." onClose={() => setDeleting(undefined)}><div className="confirm-body"><Trash2 size={24} /><p>User <strong>{deleting.username}</strong> will be permanently removed.</p>{deleteUser.error && <div className="form-error" role="alert"><AlertCircle size={15} /> {deleteUser.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep user</button><button className="button danger" disabled={deleteUser.isPending} onClick={() => deleteUser.mutate(deleting.id)} type="button">{deleteUser.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete user</button></footer></Dialog>}
   </section>
 }
 
@@ -585,16 +603,18 @@ function RolesPanel({ roles, canManage }: { roles: Awaited<ReturnType<typeof api
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [privileges, setPrivileges] = useState<string[]>([])
+  const [deleting, setDeleting] = useState<Awaited<ReturnType<typeof api.roles>>[number]>()
   const queryClient = useQueryClient()
   const save = useMutation({ mutationFn: () => editing ? api.updateRole(editing.id, name, description, privileges) : api.createRole(name, description, privileges), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['roles'] }); setOpen(false); setEditing(undefined) } })
-  const remove = useMutation({ mutationFn: (id: string) => api.deleteRole(id), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['roles'] }) })
+  const remove = useMutation({ mutationFn: (id: string) => api.deleteRole(id), onSuccess: async () => { setDeleting(undefined); await queryClient.invalidateQueries({ queryKey: ['roles'] }) } })
   const allPrivileges = ['auth.read', 'auth.write', 'server.read', 'server.write', 'tokens.read', 'tokens.write', 'runtimes.read', 'runtimes.write', 'profiles.read', 'profiles.write', 'huggingface.read', 'huggingface.write', 'downloads.read', 'downloads.write', 'library.read', 'library.write', 'diagnostics.read', 'diagnostics.write', 'integrations.read', 'integrations.write', 'settings.read', 'settings.write']
   const begin = (role?: typeof editing) => { setEditing(role); setName(role?.name ?? ''); setDescription(role?.description ?? ''); setPrivileges(role?.privileges ?? []); setOpen(true) }
   return <section className="data-panel">
     <div className="panel-heading"><div><h2>Roles</h2><p>Assign separate read and write privileges to control-plane accounts.</p></div><button className="button primary compact" disabled={!canManage} onClick={() => begin()} type="button"><Shield size={14} /> Add role</button></div>
-    <div className="record-list">{roles.map((role) => <div className="record-row" key={role.id}><span className="record-icon"><Shield size={17} /></span><div className="record-copy"><strong>{role.name}</strong><span>{role.description || 'No description'} · {role.user_count} user(s)</span></div><span className="profile-tag">{role.protected ? 'Protected' : `${role.privileges.length} privileges`}</span>{!role.protected && <><button className="icon-button small" disabled={!canManage} aria-label={`Edit ${role.name}`} onClick={() => begin(role)} type="button"><Pencil size={14} /></button><button className="icon-button small danger-icon" disabled={!canManage} aria-label={`Delete ${role.name}`} onClick={() => { if (window.confirm(`Delete role ${role.name}?`)) remove.mutate(role.id) }} type="button"><Trash2 size={14} /></button></>}</div>)}</div>
+    <div className="record-list">{roles.map((role) => <div className="record-row" key={role.id}><span className="record-icon"><Shield size={17} /></span><div className="record-copy"><strong>{role.name}</strong><span>{role.description || 'No description'} · {role.user_count} user(s)</span></div><span className="profile-tag">{role.protected ? 'Protected' : `${role.privileges.length} privileges`}</span>{!role.protected && <><button className="icon-button small" disabled={!canManage} aria-label={`Edit ${role.name}`} onClick={() => begin(role)} type="button"><Pencil size={14} /></button><button className="icon-button small danger-icon" disabled={!canManage || remove.isPending} aria-label={`Delete ${role.name}`} onClick={() => setDeleting(role)} type="button"><Trash2 size={14} /></button></>}</div>)}</div>
     {!roles.length && <div className="empty"><Shield size={28} /><strong>No roles found</strong><span>The protected Administrator role should be present.</span></div>}
     {open && <Dialog title={editing ? `Edit ${editing.name}` : 'Add role'} description="Choose the control-plane read and write privileges for this role." onClose={() => setOpen(false)}><form className="form-body" onSubmit={(event) => { event.preventDefault(); save.mutate() }}><label className="form-field"><span>Name</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label><label className="form-field"><span>Description <small>(optional)</small></span><input value={description} onChange={(event) => setDescription(event.target.value)} /></label><div className="privilege-grid">{allPrivileges.map((privilege) => <label className="check-row" key={privilege}><input type="checkbox" checked={privileges.includes(privilege)} onChange={(event) => setPrivileges(event.target.checked ? [...privileges, privilege] : privileges.filter((item) => item !== privilege))} /><span>{privilege}</span></label>)}</div>{save.error && <div className="form-error"><AlertCircle size={15} /> {save.error.message}</div>}<footer className="dialog-actions"><button className="button secondary" onClick={() => setOpen(false)} type="button">Cancel</button><button className="button primary" disabled={save.isPending || !name.trim()} type="submit">{save.isPending ? <LoaderCircle className="spin" size={15} /> : <Shield size={15} />} Save role</button></footer></form></Dialog>}
+    {deleting && <Dialog title="Delete role?" description="This permanently removes the role. Users must not be assigned to it." onClose={() => setDeleting(undefined)}><div className="confirm-body"><Trash2 size={24} /><p>Role <strong>{deleting.name}</strong> will be permanently removed.</p>{remove.error && <div className="form-error" role="alert"><AlertCircle size={15} /> {remove.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep role</button><button className="button danger" disabled={remove.isPending} onClick={() => remove.mutate(deleting.id)} type="button">{remove.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete role</button></footer></Dialog>}
   </section>
 }
 

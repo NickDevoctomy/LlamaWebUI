@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 from contextlib import suppress
 from dataclasses import dataclass
@@ -14,6 +15,9 @@ from llamawebui.services.download_registry import DownloadRegistry
 
 class ModelArtifactError(ValueError):
     pass
+
+
+ArtifactValidationState = str
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,17 +46,48 @@ class ModelArtifactRegistry:
         return self._source(selected) if selected is not None else None
 
     def profile_available(self, profile: ModelProfileRecord) -> bool:
-        matches = self._matching_jobs(profile)
+        matches = self.matching_jobs(profile)
         if not matches:
             return Path(profile.model_path).is_file()
-        return any(self.is_valid(job) for job in matches)
+        return any(self.validation_state(job) != "broken" for job in matches)
 
-    def is_valid(self, job: DownloadJobRecord) -> bool:
+    def matching_jobs(self, profile: ModelProfileRecord) -> tuple[DownloadJobRecord, ...]:
+        return self._matching_jobs(profile)
+
+    def validation_state(self, job: DownloadJobRecord) -> ArtifactValidationState:
         if DownloadState(job.state) is not DownloadState.COMPLETED:
-            return False
+            return "broken"
         destination = self._safe_destination(job)
         expected = self._expected_paths(job, destination)
-        return all(path.is_file() and path.stat().st_size == size for path, size in expected)
+        unverified = False
+        for index, (path, size) in enumerate(expected):
+            metadata = job.files[index]
+            if not path.is_file() or path.stat().st_size != size:
+                return "broken"
+            if metadata.get("sha256") is None:
+                unverified = True
+                continue
+            if not self._file_matches(path, size, metadata):
+                return "broken"
+        return "unverified" if unverified else "available"
+
+    def is_valid(self, job: DownloadJobRecord) -> bool:
+        return self.validation_state(job) == "available"
+
+    @staticmethod
+    def _file_matches(path: Path, size: int, metadata: dict[str, object]) -> bool:
+        if not path.is_file() or path.stat().st_size != size:
+            return False
+        expected_sha256 = metadata.get("sha256")
+        if expected_sha256 is None:
+            return False
+        if not isinstance(expected_sha256, str):
+            raise ModelArtifactError("model artifact checksum metadata is invalid")
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest() == expected_sha256.lower()
 
     def delete(self, download_id: str) -> DownloadJobRecord:
         job = self._downloads.get(download_id)

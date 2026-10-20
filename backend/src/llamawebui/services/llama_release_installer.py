@@ -128,6 +128,12 @@ class RuntimeInstaller:
         if group is None:
             raise ReleaseInstallError(f"release asset not found: {asset_name}")
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        required_bytes = sum(asset.size for asset in group.assets if asset.size > 0)
+        if required_bytes and shutil.disk_usage(self.runtime_dir).free < required_bytes:
+            raise ReleaseInstallError(
+                "insufficient disk space for runtime assets: "
+                f"requires {required_bytes} bytes"
+            )
         staging = Path(tempfile.mkdtemp(prefix=".install-", dir=self.runtime_dir))
         try:
             extracted = staging / "payload"
@@ -135,14 +141,7 @@ class RuntimeInstaller:
             async with httpx.AsyncClient(timeout=None) as client:
                 for asset in group.assets:
                     archive = staging / asset.name
-                    response = await client.get(asset.url, follow_redirects=True)
-                    response.raise_for_status()
-                    content = response.content
-                    if asset.digest and not _digest_matches(content, asset.digest):
-                        raise ReleaseInstallError(
-                            f"release asset digest verification failed: {asset.name}"
-                        )
-                    archive.write_bytes(content)
+                    await _download_asset(client, asset, archive)
                     _extract_archive(archive, extracted)
             executable = _find_executable(extracted)
             probe = await self.prober(executable)
@@ -155,6 +154,51 @@ class RuntimeInstaller:
             raise ReleaseInstallError("runtime download or extraction failed") from error
         finally:
             shutil.rmtree(staging, ignore_errors=True)
+
+
+async def _download_asset(
+    client: httpx.AsyncClient, asset: ReleaseAsset, destination: Path
+) -> None:
+    """Stream one release asset to staging while validating size and digest."""
+    digest = hashlib.sha256() if asset.digest else None
+    received = 0
+    async with client.stream("GET", asset.url, follow_redirects=True) as response:
+        response.raise_for_status()
+        content_length = response.headers.get("Content-Length")
+        if (
+            content_length is not None
+            and content_length.isdigit()
+            and asset.size
+            and int(content_length) > asset.size
+        ):
+            raise ReleaseInstallError(f"release asset exceeds published size: {asset.name}")
+        with destination.open("wb") as output:
+            async for chunk in response.aiter_bytes(1024 * 1024):
+                if not chunk:
+                    continue
+                received += len(chunk)
+                if asset.size and received > asset.size:
+                    raise ReleaseInstallError(
+                        f"release asset exceeds published size: {asset.name}"
+                    )
+                output.write(chunk)
+                if digest is not None:
+                    digest.update(chunk)
+    if asset.size and received != asset.size:
+        raise ReleaseInstallError(
+            f"release asset size mismatch: {asset.name} "
+            f"(expected {asset.size}, got {received})"
+        )
+    if asset.digest:
+        algorithm, _, expected = asset.digest.partition(":")
+        if (
+            algorithm.lower() != "sha256"
+            or digest is None
+            or digest.hexdigest().lower() != expected.lower()
+        ):
+            raise ReleaseInstallError(
+                f"release asset digest verification failed: {asset.name}"
+            )
 
 
 def _parse_assets(raw: Any) -> tuple[ReleaseAsset, ...]:

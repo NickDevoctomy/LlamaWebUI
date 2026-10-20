@@ -112,6 +112,7 @@ function renderApp({
   })
   vi.stubGlobal('fetch', fetchMock)
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  client.setQueryData(['auth-user'], currentUser)
   render(<QueryClientProvider client={client}><App /></QueryClientProvider>)
   return Object.assign(fetchMock, { client })
 }
@@ -167,6 +168,33 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Account' }))
     expect(screen.getByRole('heading', { name: 'Account', level: 2 })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Change password' })).toBeInTheDocument()
+  })
+
+  it('clears password fields after a successful password change', async () => {
+    renderApp({
+      onRequest: (path, init) => {
+        if (path === '/api/auth/password' && init?.method === 'POST') return { changed: true }
+        return undefined
+      },
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Account' }))
+    expect(await screen.findByRole('heading', { name: 'Account', level: 2 })).toBeInTheDocument()
+    const current = await screen.findByLabelText('Current password')
+    const next = await screen.findByLabelText(/New password/)
+    const confirmation = await screen.findByLabelText('Confirm new password')
+    fireEvent.change(current, { target: { value: 'admin' } })
+    fireEvent.change(next, { target: { value: 'new-password' } })
+    fireEvent.change(confirmation, { target: { value: 'new-password' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Password changed. Other sessions have been signed out.')).toBeInTheDocument()
+      expect(current).toHaveValue('')
+      expect(next).toHaveValue('')
+      expect(confirmation).toHaveValue('')
+    })
+    expect(screen.queryByText('Passwords do not match.')).not.toBeInTheDocument()
   })
 
   it('renders Settings as an empty full-width section for users with settings access', async () => {
@@ -277,6 +305,50 @@ describe('App', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Command' }))
     expect(await screen.findByRole('heading', { name: 'Command for qwen-roundtrip' })).toBeInTheDocument()
     expect(screen.getByRole('dialog').querySelector('pre')?.textContent).toBe(command)
+  })
+
+  it('shows profile command failures instead of failing silently', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CPU', executable_path: 'C:\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset'], usable: true }
+    const profile = { id: 'profile-1', alias: 'qwen-local', runtime_id: 'runtime-1', model_path: 'C:\\models\\qwen.gguf', configuration: {}, enabled: true }
+    const fetchMock = renderApp({ runtimeList: [runtime], profileList: [profile], onRequest: (path) => {
+      if (path === '/api/profiles/profile-1/command') return undefined
+      return undefined
+    } })
+    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url, 'http://localhost').pathname
+      if (path === '/api/profiles/profile-1/command') return Promise.resolve(new Response(JSON.stringify({ detail: 'command unavailable' }), { status: 502, headers: { 'Content-Type': 'application/json' } }))
+      return Promise.resolve(new Response(JSON.stringify(responses[path] ?? []), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Command' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('command unavailable')
+  })
+
+  it('closes dialogs with Escape and restores focus', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CPU', executable_path: 'C:\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset'], usable: true }
+    renderApp({ runtimeList: [runtime] })
+    fireEvent.click(screen.getByRole('button', { name: 'Runtimes' }))
+    const register = screen.getAllByRole('button', { name: 'Register runtime' })[0]
+    register.focus()
+    fireEvent.mouseDown(register)
+    fireEvent.click(register)
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(document.activeElement).toBe(register)
+  })
+
+  it('uses an accessible confirmation dialog for user deletion', async () => {
+    const user = { id: 'operator-1', username: 'operator', description: null, role_id: 'user', role: 'User', default_credentials: false }
+    const fetchMock = renderApp({
+      currentUser: { ...(responses['/api/auth/me'] as object), privileges: ['auth.read', 'auth.write'] },
+      onRequest: (path) => path === '/api/auth/users' ? [user] : undefined,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Users' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete operator' }))
+    expect(await screen.findByRole('heading', { name: 'Delete user?' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Keep user' }))
+    expect(screen.queryByRole('heading', { name: 'Delete user?' })).not.toBeInTheDocument()
   })
 
   it('refreshes library and live models when a download completes', async () => {

@@ -86,6 +86,10 @@ def _copy_database(source: Path, destination: Path) -> None:
 
 
 def _retain_backups(backup_dir: Path, keep: int) -> None:
-    backups = sorted(backup_dir.glob("llamawebui-*.db"), key=lambda path: path.stat().st_mtime)
+    # Use the timestamp embedded in the filename as the primary ordering key.
+    # Filesystem mtimes can have coarse or identical resolution, especially on
+    # WSL-mounted Windows volumes, which can otherwise cause the newest backup
+    # to be deleted when retention is applied.
+    backups = sorted(backup_dir.glob("llamawebui-*.db"), key=lambda path: path.name)
     for path in backups[:-keep]:
         path.unlink(missing_ok=True)

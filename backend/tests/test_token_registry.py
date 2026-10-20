@@ -15,6 +15,7 @@ def registry(tmp_path: Path) -> TokenRegistry:
 def test_token_is_returned_once_and_only_hash_is_persisted(tmp_path: Path) -> None:
     tokens = registry(tmp_path)
     created = tokens.create("OpenCode")
+    tokens.materialize_enabled_tokens()
 
     assert created.token.startswith("lwui_")
     assert created.record.last_four == created.token[-4:]
@@ -30,6 +31,7 @@ def test_revoke_removes_plaintext_and_is_idempotent(tmp_path: Path) -> None:
     tokens = registry(tmp_path)
     first = tokens.create("First")
     second = tokens.create("Second")
+    tokens.materialize_enabled_tokens()
 
     revoked = tokens.revoke(first.record.id)
     revoked_again = tokens.revoke(first.record.id)
@@ -73,3 +75,17 @@ def test_token_creation_rolls_back_key_file_when_database_commit_fails(tmp_path:
         tokens.create("Rollback")
 
     assert tokens._read_tokens() == ()
+
+
+def test_materialized_keys_are_removed_and_recreated_from_credential_store(tmp_path: Path) -> None:
+    tokens = registry(tmp_path)
+    created = tokens.create("Lifecycle")
+
+    tokens.materialize_enabled_tokens()
+    assert created.token in tokens.key_file.read_text(encoding="utf-8")
+
+    tokens.remove_materialized_tokens()
+    assert not tokens.key_file.exists()
+
+    tokens.materialize_enabled_tokens()
+    assert tokens.key_file.read_text(encoding="utf-8") == f"{created.token}\n"

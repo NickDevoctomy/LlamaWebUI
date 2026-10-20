@@ -6,11 +6,14 @@ import hashlib
 import hmac
 import os
 import secrets
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from threading import RLock
 from uuid import uuid4
 
+import keyring
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import sessionmaker
 
@@ -32,6 +35,26 @@ class TokenRegistry:
         self._sessions = sessionmaker(engine, expire_on_commit=False)
         self.key_file = data_dir / "generated" / "api-keys.txt"
         self._hash_key_file = data_dir / "generated" / "token-hash.key"
+        self._lock = RLock()
+        self._materialized = False
+        self._keyring_service = "llamawebui.native-api-key"
+
+    def reconcile_legacy_materialized_tokens(self) -> None:
+        """Move an older plaintext key file into credential storage at startup."""
+        with self._lock:
+            legacy_tokens = self._read_tokens()
+            if not legacy_tokens:
+                return
+            with self._sessions() as session:
+                records = session.scalars(
+                    select(AccessTokenRecord).where(AccessTokenRecord.enabled.is_(True))
+                ).all()
+            for token in legacy_tokens:
+                for record in records:
+                    if hmac.compare_digest(self._hash(token), record.token_hash):
+                        keyring.set_password(self._keyring_service, record.id, token)
+                        break
+            self.key_file.unlink(missing_ok=True)
 
     def list(self) -> list[AccessTokenRecord]:
         with self._sessions() as session:
@@ -54,32 +77,33 @@ class TokenRegistry:
             enabled=True,
             revoked_at=None,
         )
-        self._write_tokens((*self._read_tokens(), token))
-        try:
-            with self._sessions() as session:
-                session.add(record)
-                session.commit()
-        except Exception:
-            self._write_tokens(self._read_tokens()[:-1])
-            raise
+        with self._lock:
+            keyring.set_password(self._keyring_service, record.id, token)
+            try:
+                with self._sessions() as session:
+                    session.add(record)
+                    session.commit()
+            except Exception:
+                keyring.delete_password(self._keyring_service, record.id)
+                raise
+            if self._materialized:
+                self._materialize_locked((token,))
         return CreatedAccessToken(record, token)
 
     def revoke(self, token_id: str) -> AccessTokenRecord:
-        with self._sessions() as session:
+        with self._lock, self._sessions() as session:
             record = session.get(AccessTokenRecord, token_id)
             if record is None:
                 raise AccessTokenNotFoundError(f"access token not found: {token_id}")
             if not record.enabled:
                 return record
-            tokens = tuple(
-                token
-                for token in self._read_tokens()
-                if not hmac.compare_digest(self._hash(token), record.token_hash)
-            )
-            self._write_tokens(tokens)
             record.enabled = False
             record.revoked_at = datetime.now()
             session.commit()
+            with suppress(keyring.errors.PasswordDeleteError):
+                keyring.delete_password(self._keyring_service, record.id)
+            if self._materialized:
+                self._materialize_locked()
             return record
 
     def has_enabled(self) -> bool:
@@ -94,8 +118,36 @@ class TokenRegistry:
             )
 
     def control_token(self) -> str | None:
-        tokens = self._read_tokens()
-        return tokens[0] if tokens else None
+        with self._lock:
+            tokens = self._read_tokens()
+            return tokens[0] if tokens else None
+
+    def materialize_enabled_tokens(self) -> None:
+        """Write active raw keys only while the native router needs them."""
+        with self._lock:
+            self._materialized = True
+            self._materialize_locked()
+
+    def remove_materialized_tokens(self) -> None:
+        """Remove the native key file after the router is no longer running."""
+        with self._lock:
+            self._materialized = False
+            self.key_file.unlink(missing_ok=True)
+
+    def _materialize_locked(self, additional_tokens: tuple[str, ...] = ()) -> None:
+        with self._sessions() as session:
+            enabled_ids = tuple(
+                session.scalars(
+                    select(AccessTokenRecord.id).where(AccessTokenRecord.enabled.is_(True))
+                )
+            )
+        tokens = tuple(
+            token
+            for token_id in enabled_ids
+            if (token := keyring.get_password(self._keyring_service, token_id)) is not None
+        )
+        tokens += additional_tokens
+        self._write_tokens(tokens)
 
     def _hash(self, token: str) -> str:
         return hmac.new(self._hash_key(), token.encode(), hashlib.sha256).hexdigest()

@@ -16,6 +16,7 @@ from llamawebui.services.llama_release_installer import (
     ReleaseInstallError,
     RuntimeInstaller,
     _digest_matches,
+    _download_asset,
     _extract_archive,
     _parse_assets,
     _safe_target,
@@ -135,6 +136,63 @@ async def test_installer_downloads_zip_verifies_and_promotes(tmp_path: Path) -> 
     finally:
         module.httpx.AsyncClient = original
     assert (destination / "bin" / "llama-server.exe").read_text() == "binary"
+
+
+@pytest.mark.asyncio
+async def test_download_asset_streams_chunks_and_validates_metadata(tmp_path: Path) -> None:
+    data = b"0123456789"
+    asset = ReleaseAsset(
+        "runtime.zip",
+        "https://x/runtime.zip",
+        len(data),
+        f"sha256:{hashlib.sha256(data).hexdigest()}",
+    )
+    destination = tmp_path / asset.name
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=data, headers={"Content-Length": str(len(data))})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await _download_asset(client, asset, destination)
+
+    assert destination.read_bytes() == data
+
+
+@pytest.mark.asyncio
+async def test_download_asset_rejects_size_mismatch(tmp_path: Path) -> None:
+    asset = ReleaseAsset("runtime.zip", "https://x/runtime.zip", 11, None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"short")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ReleaseInstallError, match="size mismatch"):
+            await _download_asset(client, asset, tmp_path / asset.name)
+
+
+@pytest.mark.asyncio
+async def test_installer_rejects_insufficient_disk_space(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    release = ReleaseInfo(
+        "b1", None, (ReleaseAsset("build.zip", "https://x/build.zip", 100, None),)
+    )
+
+    class Releases:
+        async def release(self, tag: str) -> ReleaseInfo:
+            return release
+
+    async def prober(path: Path) -> RuntimeProbeResult:
+        raise AssertionError(path)
+
+    monkeypatch.setattr(
+        "llamawebui.services.llama_release_installer.shutil.disk_usage",
+        lambda path: type("Usage", (), {"free": 99})(),
+    )
+    with pytest.raises(ReleaseInstallError, match="insufficient disk space"):
+        await RuntimeInstaller(tmp_path, prober=prober, releases=Releases()).install(
+            tag="b1", asset_name="build.zip"
+        )
 
 
 def test_archive_helpers_reject_unsafe_paths_and_validate_digests(tmp_path: Path) -> None:

@@ -229,6 +229,30 @@ async def test_worker_fails_when_disk_space_drops_during_transfer(
     assert "insufficient disk space" in (registry.get(job_id).error or "")
 
 
+async def test_worker_fails_when_transfer_stalls(
+    tmp_path: Path,
+) -> None:
+    registry, job_id = create_registry(tmp_path, (10,))
+    transfer_started = asyncio.Event()
+
+    class Transfer:
+        async def download(
+            self, *, repo_id: str, filename: str, revision: str, destination: Path
+        ) -> Path:
+            transfer_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("transfer should be cancelled after stalling")
+
+    worker = DownloadWorker(registry, Transfer(), stall_timeout_seconds=0.01)
+    task = asyncio.create_task(worker.run(job_id))
+    await transfer_started.wait()
+    await task
+
+    job = registry.get(job_id)
+    assert job.state == DownloadState.FAILED
+    assert "download stalled" in (job.error or "")
+
+
 async def test_worker_tracks_progress_inside_a_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

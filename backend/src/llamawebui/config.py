@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     router_restart_max_attempts: int = Field(default=3, ge=0)
     router_restart_window_seconds: float = Field(default=60.0, gt=0)
     router_restart_delay_seconds: float = Field(default=1.0, ge=0)
+    download_stall_timeout_seconds: float = Field(default=60.0, gt=0)
+    login_failure_threshold: int = Field(default=5, ge=1)
+    login_lockout_seconds: float = Field(default=60.0, gt=0)
+    login_backoff_base_seconds: float = Field(default=0.25, ge=0)
+    login_backoff_max_seconds: float = Field(default=5.0, ge=0)
     event_history_capacity: int = Field(default=256, ge=1)
     log_level: str = "INFO"
     hf_token: SecretStr | None = Field(

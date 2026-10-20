@@ -22,8 +22,16 @@ def main() -> int:
         raise SystemExit("could not find backend project version")
     pyproject.write_text(updated, encoding="utf-8", newline="\n")
 
-    version_module = args.root / "frontend" / "src" / "version.ts"
+    version_module = args.root / "backend" / "src" / "llamawebui" / "version.py"
     version_module.write_text(
+        '"""Application version generated from the repository ``VERSION`` file."""\n\n'
+        f'__version__ = "{version}"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    frontend_version_module = args.root / "frontend" / "src" / "version.ts"
+    frontend_version_module.write_text(
         f"export const APP_VERSION = {version!r}\n", encoding="utf-8", newline="\n"
     )
 

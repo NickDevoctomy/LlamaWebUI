@@ -8,6 +8,7 @@ import json
 import shutil
 import sys
 from pathlib import Path
+from time import monotonic
 from typing import Protocol
 
 from llamawebui.domain.download_job import DownloadState
@@ -18,6 +19,7 @@ _PROGRESS_INTERVAL_SECONDS = 0.25
 _TRANSFER_RETRY_LIMIT = 3
 _TRANSFER_RETRY_DELAYS = (0.1, 0.25)
 _DISK_CHECK_INTERVAL_SECONDS = 5.0
+_DEFAULT_TRANSFER_STALL_TIMEOUT_SECONDS = 60.0
 
 
 class FileTransfer(Protocol):
@@ -67,9 +69,18 @@ class HuggingFaceFileTransfer:
 
 
 class DownloadWorker:
-    def __init__(self, registry: DownloadRegistry, transfer: FileTransfer) -> None:
+    def __init__(
+        self,
+        registry: DownloadRegistry,
+        transfer: FileTransfer,
+        *,
+        stall_timeout_seconds: float = _DEFAULT_TRANSFER_STALL_TIMEOUT_SECONDS,
+    ) -> None:
+        if stall_timeout_seconds <= 0:
+            raise ValueError("download stall timeout must be positive")
         self._registry = registry
         self._transfer = transfer
+        self._stall_timeout_seconds = stall_timeout_seconds
 
     async def run(self, job_id: str) -> None:
         job = self._registry.transition(job_id, DownloadState.DOWNLOADING)
@@ -210,6 +221,8 @@ class DownloadWorker:
         target = destination / filename
         cache_directory = destination / ".cache" / "huggingface" / "download"
         reported_bytes = self._registry.get(job_id).completed_bytes
+        last_progress_bytes = reported_bytes
+        last_progress_at = monotonic()
         try:
             elapsed = 0.0
             while not transfer.done():
@@ -223,6 +236,14 @@ class DownloadWorker:
                     target.stat().st_size if target.is_file() else 0,
                     incomplete_bytes,
                 )
+                next_bytes = completed_bytes + min(current_file_bytes, expected_size)
+                if next_bytes > last_progress_bytes:
+                    last_progress_bytes = next_bytes
+                    last_progress_at = monotonic()
+                elif monotonic() - last_progress_at >= self._stall_timeout_seconds:
+                    raise TimeoutError(
+                        f"download stalled for {self._stall_timeout_seconds:g}s: {filename}"
+                    )
                 if elapsed >= _DISK_CHECK_INTERVAL_SECONDS:
                     free_bytes = shutil.disk_usage(destination).free
                     remaining = max(expected_size - current_file_bytes, 0)
@@ -231,7 +252,6 @@ class DownloadWorker:
                             f"insufficient disk space during download: requires {remaining} bytes"
                         )
                     elapsed = 0.0
-                next_bytes = completed_bytes + min(current_file_bytes, expected_size)
                 if next_bytes > reported_bytes:
                     updated = self._registry.update_progress(job_id, next_bytes)
                     reported_bytes = updated.completed_bytes
