@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shlex
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -407,5 +409,6 @@ def test_router_start_preflight_blocks_unconfirmed_security_and_logs_warnings(
     assert len(launched) == 1
     joined = "\n".join(logs)
     assert "hf_secret" not in joined
-    assert "--hf-token ******" in joined
+    redacted = "******" if os.name == "nt" else shlex.quote("******")
+    assert f"--hf-token {redacted}" in joined
     assert "profile launch-model warning: runtime does not advertise --fit" in joined
