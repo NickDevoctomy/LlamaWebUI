@@ -33,6 +33,8 @@ _SHARD_PATTERN = re.compile(
 )
 _RESERVED_ALIASES = frozenset({"health", "models", "props", "slots"})
 _NEGATIVE_NUMBER = re.compile(r"^-\d+(?:\.\d+)?$")
+# Line continuations from POSIX shells (" \"), cmd.exe ("^") and PowerShell ("`").
+_LINE_CONTINUATION = re.compile(r"(?:[ \t]+\\|[ \t]*[\^`])[ \t]*\r?\n")
 
 
 class ProfileValidationError(ValueError):
@@ -62,9 +64,11 @@ class ModelProfile:
 class ParsedCommand:
     """A tokenized llama-server command mapped onto catalog and custom arguments."""
 
-    model_path: str
+    model_path: str | None
     arguments: tuple[ProfileArgument, ...]
     ignored: tuple[str, ...] = ()
+    hf_repo: str | None = None
+    hf_file: str | None = None
 
 
 def validate_profile(
@@ -193,20 +197,28 @@ def parse_command(
     Catalogued options become typed arguments, options advertised only by the runtime become
     uncatalogued runtime options, and anything else is kept as a custom parameter marked
     ``catalog-mismatch``. Options that LlamaWebUI manages itself are skipped and reported.
+    Multi-line commands using shell line continuations are accepted. A command may name its
+    model with ``--hf-repo``/``--hf-file`` instead of ``--model``; those are reported so the
+    caller can find the model locally.
     """
     if not command.strip():
         raise ValueError("command must not be empty")
     selected_platform = platform or os.name
+    command = _LINE_CONTINUATION.sub(" ", command)
     tokens = (
         _split_windows_command_line(command)
         if selected_platform == "nt"
         else shlex.split(command, posix=True)
     )
+    if tokens[:1] == ["&"]:
+        # PowerShell call operator: & "C:\path\llama-server.exe" ...
+        tokens = tokens[1:]
     if not tokens:
         raise ValueError("command must not be empty")
     executable_present = not tokens[0].startswith("-")
     runtime_flags = _runtime_flag_index(capabilities)
     model_path: str | None = None
+    hf_sources: dict[str, str] = {}
     arguments: list[ProfileArgument] = []
     positions: dict[str, int] = {}
     ignored: list[str] = []
@@ -236,6 +248,8 @@ def parse_command(
                 raise ValueError("command must include --model only once")
             model_path = str(value)
             continue
+        if definition.id in {"hf-repo", "hf-file"}:
+            hf_sources[definition.id] = str(value)
         if not definition.editable:
             sensitive = definition.safety is not None and definition.safety.sensitive
             shown = REDACTED if sensitive else str(value)
@@ -256,9 +270,15 @@ def parse_command(
             definition, spelling, [value] if definition.value.repeat else value
         )
         arguments.append(ProfileArgument(definition.flag, coerced, catalog_id=definition.id))
-    if model_path is None:
-        raise ValueError("command must include --model")
-    return ParsedCommand(model_path=model_path, arguments=tuple(arguments), ignored=tuple(ignored))
+    if model_path is None and "hf-repo" not in hf_sources:
+        raise ValueError("command must include --model or --hf-repo")
+    return ParsedCommand(
+        model_path=model_path,
+        arguments=tuple(arguments),
+        ignored=tuple(ignored),
+        hf_repo=hf_sources.get("hf-repo"),
+        hf_file=hf_sources.get("hf-file"),
+    )
 
 
 def _import_value(definition: ArgumentDefinition, spelling: str, value: object) -> ArgumentValue:

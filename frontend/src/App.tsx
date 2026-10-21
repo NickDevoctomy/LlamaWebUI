@@ -123,6 +123,7 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: Awaited<ReturnType<typ
 function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awaited<ReturnType<typeof api.currentUser>>; authReady: boolean; onLogout: () => void; loggingOut: boolean }) {
   const [section, setSection] = useState(user.default_credentials ? 'Account' : 'Dashboard')
   const [discoveryRepository, setDiscoveryRepository] = useState<string>()
+  const [discoverySearch, setDiscoverySearch] = useState<string>()
   const [selectedRuntime, setSelectedRuntime] = useState('')
   const [profileSeed, setProfileSeed] = useState<LibraryModel>()
   const queryClient = useQueryClient()
@@ -226,7 +227,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
               key={label}
               onClick={() => {
                 setSection(label)
-                if (label === 'Discover') setDiscoveryRepository(undefined)
+                if (label === 'Discover') { setDiscoveryRepository(undefined); setDiscoverySearch(undefined) }
               }}
               type="button"
             >
@@ -322,8 +323,8 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
               logicalModels={logicalLibrary.data ?? []}
               profiles={profiles.data ?? []}
               onConfigure={(model) => { setProfileSeed(model); setSection('Profiles') }}
-              onDiscover={() => { setDiscoveryRepository(undefined); setSection('Discover') }}
-              onDiscoverRepository={(repoId) => { setDiscoveryRepository(repoId); setSection('Discover') }}
+              onDiscover={() => { setDiscoveryRepository(undefined); setDiscoverySearch(undefined); setSection('Discover') }}
+              onDiscoverRepository={(repoId) => { setDiscoveryRepository(repoId); setDiscoverySearch(undefined); setSection('Discover') }}
               onRefresh={() => { void refreshModels() }}
               running={running}
             />
@@ -332,11 +333,11 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
           ) : section === 'Runtimes' ? (
             <RuntimePanel runtimes={runtimes.data ?? []} />
           ) : section === 'Profiles' ? (
-            <ProfilePanel initialModel={profileSeed} library={library.data ?? []} onInitialModelConsumed={() => setProfileSeed(undefined)} profiles={profiles.data ?? []} running={running} runtimes={runtimes.data ?? []} />
+            <ProfilePanel initialModel={profileSeed} library={library.data ?? []} onDiscover={({ repoId, query }) => { setDiscoveryRepository(repoId ?? undefined); setDiscoverySearch(repoId ? undefined : query); setSection('Discover') }} onInitialModelConsumed={() => setProfileSeed(undefined)} profiles={profiles.data ?? []} running={running} runtimes={runtimes.data ?? []} />
           ) : section === 'Access' ? (
             <AccessPanel running={running} tokens={tokens.data ?? []} />
           ) : section === 'Discover' ? (
-            <DiscoverPanel jobs={downloads.data ?? []} library={library.data ?? []} initialRepoId={discoveryRepository} onQueued={() => setSection('Downloads')} />
+            <DiscoverPanel jobs={downloads.data ?? []} library={library.data ?? []} initialQuery={discoverySearch} initialRepoId={discoveryRepository} onQueued={() => setSection('Downloads')} />
           ) : section === 'Downloads' ? (
             <DownloadsPanel jobs={downloads.data ?? []} library={library.data ?? []} onCreateProfile={(model) => { setProfileSeed(model); setSection('Profiles') }} />
           ) : section === 'Account' ? (

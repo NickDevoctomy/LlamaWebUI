@@ -267,45 +267,125 @@ describe('App', () => {
     expect(await screen.findByText(/1 missing logical model\(s\), 1 linked logical model\(s\)/)).toBeInTheDocument()
   })
 
-  it('imports a command disabled and exports its readable command text', async () => {
+  it('fills the profile editor from a pasted command and relocates its model', async () => {
     const runtime = { id: 'runtime-1', name: 'Local CPU', executable_path: 'C:\\llama\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset', 'ctx-size'], usable: true }
-    const command = '"C:\\llama tools\\llama-server.exe" --model "C:\\models\\shard 00001-of-00003.gguf" --ctx-size 4096'
-    const profiles: unknown[] = []
+    const localPath = 'E:\\models\\unsloth\\Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf'
+    const foreignPath = 'C:\\Users\\someone\\.lmstudio\\models\\unsloth\\Qwen3.8-Flash-Next-GGUF\\Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf'
+    const library = [{ download_id: 'download-1', repo_id: 'unsloth/Qwen3.8-Flash-Next-GGUF', revision: 'a'.repeat(40), group_key: 'Qwen3.8-Flash-Next-UD-IQ4_XS', primary_path: localPath, file_count: 3, total_bytes: 3 }]
+    const command = `llama-server.exe ^\n  -m ${foreignPath} ^\n  --ctx-size 262144 --port 8080`
     const fetchMock = renderApp({
       runtimeList: [runtime],
-      profileList: profiles,
-      commandResponse: command,
-      onRequest: (path, init) => {
-        if (path === '/api/profiles/import-command' && init?.method === 'POST') {
-          const request = JSON.parse(String(init.body)) as { alias: string; runtime_id: string; enabled: boolean }
-          const profile = { id: 'profile-imported', alias: request.alias, runtime_id: request.runtime_id, model_path: 'C:\\models\\shard 00001-of-00003.gguf', configuration: { schema_version: 2, arguments: [{ id: 'ctx-size', value: 4096 }], acknowledged: [] }, enabled: request.enabled }
-          profiles.push(profile)
-          return { ...profile, ignored_arguments: ['--port 8080'], warnings: ['runtime does not advertise --fit'] }
+      libraryList: library,
+      onRequest: (path) => {
+        if (path === '/api/runtimes/runtime-1/argument-catalog') return catalogFixture()
+        if (path === '/api/profiles/parse-command') {
+          return {
+            model: { status: 'relocated', requested_path: foreignPath, path: localPath, download_id: 'download-1', repo_id: 'unsloth/Qwen3.8-Flash-Next-GGUF', search: 'Qwen3.8-Flash-Next' },
+            arguments: [{ id: 'ctx-size', value: 262144 }],
+            ignored_arguments: ['--port 8080'],
+          }
         }
-        if (path === '/api/profiles') return profiles
         return undefined
       },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
-    await screen.findByRole('heading', { name: 'Model profiles' })
-    const openImport = screen.getByRole('button', { name: 'Import command' })
+    const openImport = await screen.findByRole('button', { name: 'Import command' })
     await waitFor(() => expect(openImport).toBeEnabled())
     fireEvent.click(openImport)
-    await screen.findByLabelText('llama-server command')
-    fireEvent.change(screen.getByLabelText('Profile alias'), { target: { value: 'qwen-roundtrip' } })
-    fireEvent.change(screen.getByLabelText('llama-server command'), { target: { value: command } })
-    const importButton = screen.getAllByRole('button', { name: 'Import command' })[1]
-    await waitFor(() => expect(importButton).toBeEnabled())
-    fireEvent.click(importButton)
+    const dialog = await screen.findByRole('dialog', { name: 'Create model profile' })
+    fireEvent.change(within(dialog).getByLabelText(/llama-server command/), { target: { value: command } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Apply command' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/profiles/import-command', expect.objectContaining({
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/profiles/parse-command', expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({ command, alias: 'qwen-roundtrip', runtime_id: 'runtime-1', enabled: false }),
+      body: JSON.stringify({ command, runtime_id: 'runtime-1' }),
     })))
-    expect(await screen.findByText('Disabled')).toBeInTheDocument()
-    expect(screen.getByRole('status')).toHaveTextContent('Skipped options managed by LlamaWebUI: --port 8080. Warnings: runtime does not advertise --fit')
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss import notice' }))
+    expect(await within(dialog).findByRole('status')).toHaveTextContent(`Model found locally at ${localPath}; the command referenced ${foreignPath}. 1 argument applied`)
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Skipped options managed by LlamaWebUI: --port 8080.')
+    expect(within(dialog).getByLabelText(/Primary GGUF file/i)).toHaveValue(localPath)
+    expect(within(dialog).getByLabelText(/API model alias/i)).toHaveValue('qwen3.8-flash-next')
+    expect(within(dialog).queryByLabelText(/llama-server command/)).not.toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('tab', { name: /Arguments/ }))
+    expect(await within(dialog).findByLabelText('Context size')).toHaveValue('262144')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create profile' }))
+
+    await waitFor(() => {
+      const create = fetchMock.mock.calls.find(([path, init]) => path === '/api/profiles' && init?.method === 'POST')
+      expect(JSON.parse(String(create?.[1]?.body))).toEqual({ alias: 'qwen3.8-flash-next', runtime_id: 'runtime-1', model_path: localPath, enabled: true, arguments: [{ id: 'ctx-size', value: 262144 }], acknowledged: [] })
+    })
+  })
+
+  it('warns when a pasted command names a missing model and opens its repository on Discover', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CPU', executable_path: 'C:\\llama\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset', 'ctx-size'], usable: true }
+    const foreignPath = 'C:\\Users\\someone\\.lmstudio\\models\\owner\\model-GGUF\\model-Q4_K_M.gguf'
+    const fetchMock = renderApp({
+      runtimeList: [runtime],
+      onRequest: (path) => {
+        if (path === '/api/runtimes/runtime-1/argument-catalog') return catalogFixture()
+        if (path === '/api/profiles/parse-command') {
+          return { model: { status: 'missing', requested_path: foreignPath, path: foreignPath, download_id: null, repo_id: 'owner/model-GGUF', search: 'model' }, arguments: [], ignored_arguments: [] }
+        }
+        return undefined
+      },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
+    const createButton = (await screen.findAllByRole('button', { name: 'Create profile' }))[0]
+    await waitFor(() => expect(createButton).toBeEnabled())
+    fireEvent.click(createButton)
+    const dialog = await screen.findByRole('dialog', { name: 'Create model profile' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Paste llama-server command' }))
+    fireEvent.change(within(dialog).getByLabelText(/llama-server command/), { target: { value: `llama-server -m ${foreignPath}` } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Apply command' }))
+
+    const warning = await within(dialog).findByRole('alert')
+    expect(warning).toHaveTextContent(`The command's model was not found locally: ${foreignPath}.`)
+    expect(within(dialog).getByLabelText(/Primary GGUF file/i)).toHaveValue(foreignPath)
+    fireEvent.change(within(dialog).getByLabelText(/Primary GGUF file/i), { target: { value: 'E:\\models\\other.gguf' } })
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument()
+    fireEvent.change(within(dialog).getByLabelText(/Primary GGUF file/i), { target: { value: foreignPath } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Find owner/model-GGUF on Discover' }))
+
+    expect(await screen.findByPlaceholderText('Search models, authors, or architectures')).toHaveValue('owner/model-GGUF')
+    expect(screen.queryByRole('dialog', { name: 'Create model profile' })).not.toBeInTheDocument()
+    await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => String(path).startsWith('/api/huggingface/repositories/owner/model-GGUF'))).toBe(true))
+  })
+
+  it('searches Discover by model name when a missing model has no known repository', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CPU', executable_path: 'C:\\llama\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset', 'ctx-size'], usable: true }
+    const fetchMock = renderApp({
+      runtimeList: [runtime],
+      onRequest: (path) => {
+        if (path === '/api/runtimes/runtime-1/argument-catalog') return catalogFixture()
+        if (path === '/api/profiles/parse-command') {
+          return { model: { status: 'missing', requested_path: '/srv/Mistral-7B.BF16.gguf', path: '/srv/Mistral-7B.BF16.gguf', download_id: null, repo_id: null, search: 'Mistral-7B' }, arguments: [], ignored_arguments: [] }
+        }
+        return undefined
+      },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
+    const openImport = await screen.findByRole('button', { name: 'Import command' })
+    await waitFor(() => expect(openImport).toBeEnabled())
+    fireEvent.click(openImport)
+    const dialog = await screen.findByRole('dialog', { name: 'Create model profile' })
+    fireEvent.change(within(dialog).getByLabelText(/llama-server command/), { target: { value: 'llama-server -m /srv/Mistral-7B.BF16.gguf' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Apply command' }))
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('not found locally: /srv/Mistral-7B.BF16.gguf')
+    expect(within(dialog).getByLabelText(/API model alias/i)).toHaveValue('mistral-7b')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Search on Discover' }))
+
+    expect(await screen.findByPlaceholderText('Search models, authors, or architectures')).toHaveValue('Mistral-7B')
+    await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => String(path).startsWith('/api/huggingface/models?') && String(path).includes('Mistral-7B'))).toBe(true))
+  })
+
+  it('exports a saved profile as readable command text', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CPU', executable_path: 'C:\\llama\\llama-server.exe', build: 'b11053', backend: 'cpu', devices: [], options: ['model', 'models-preset', 'ctx-size'], usable: true }
+    const command = '"C:\\llama tools\\llama-server.exe" --model "C:\\models\\shard 00001-of-00003.gguf" --ctx-size 4096'
+    const profile = { id: 'profile-imported', alias: 'qwen-roundtrip', runtime_id: 'runtime-1', model_path: 'C:\\models\\shard 00001-of-00003.gguf', configuration: { schema_version: 2, arguments: [{ id: 'ctx-size', value: 4096 }], acknowledged: [] }, enabled: false }
+    renderApp({ runtimeList: [runtime], profileList: [profile], commandResponse: command })
+    fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Command' }))
+
     expect(await screen.findByRole('heading', { name: 'Command for qwen-roundtrip' })).toBeInTheDocument()
     expect(screen.getByRole('dialog').querySelector('pre')?.textContent).toBe(command)
   })

@@ -412,3 +412,111 @@ def test_router_start_preflight_blocks_unconfirmed_security_and_logs_warnings(
     redacted = "******" if os.name == "nt" else shlex.quote("******")
     assert f"--hf-token {redacted}" in joined
     assert "profile launch-model warning: runtime does not advertise --fit" in joined
+
+
+PLAN_COMMAND_LINES = (
+    "llama-server.exe -m {model}",
+    "--no-reasoning-preserve --n-gpu-layers 60 --ctx-size 262144 --flash-attn on",
+    "--load-mode none --lazy-mode on --cache-ram 0 --fit off",
+    "--override-tensor per_layer_token_embd=CPU --cache-type-k q4_0 --cache-type-v q4_0",
+    "--threads 8 --batch-size 1024 --ubatch-size 1024",
+)
+PLAN_MODEL_NAME = "Qwen3.8-Flash-Next-UD-IQ4_XS-{index:05d}-of-00003.gguf"
+FOREIGN_FOLDER = "/Users/someone/.lmstudio/models/unsloth/Qwen3.8-Flash-Next-GGUF"
+
+
+def _plan_command(model: str, *, continuation: str) -> str:
+    return continuation.join(PLAN_COMMAND_LINES).format(model=model)
+
+
+def test_parse_command_relocates_a_foreign_model_path_without_saving(
+    tmp_path: Path, login: Login
+) -> None:
+    settings = Settings(data_dir=tmp_path / "data")
+    shard_folder = settings.data_dir / "models" / "lmstudio-copy"
+    shard_folder.mkdir(parents=True)
+    for index in (1, 2, 3):
+        (shard_folder / PLAN_MODEL_NAME.format(index=index)).write_bytes(b"x")
+    foreign = f"{FOREIGN_FOLDER}/{PLAN_MODEL_NAME.format(index=1)}"
+    with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        runtime_id, _ = _setup(client, tmp_path, login)
+        parsed = client.post(
+            "/api/profiles/parse-command",
+            json={
+                "runtime_id": runtime_id,
+                "command": _plan_command(foreign, continuation=" \\\n  "),
+            },
+        )
+        profiles = client.get("/api/profiles").json()
+
+    assert parsed.status_code == 200, parsed.text
+    body = parsed.json()
+    assert body["model"] == {
+        "status": "relocated",
+        "requested_path": foreign,
+        "path": str((shard_folder / PLAN_MODEL_NAME.format(index=1)).resolve()),
+        "download_id": None,
+        "repo_id": None,
+        "search": "Qwen3.8-Flash-Next",
+    }
+    assert body["arguments"][:3] == [
+        {"id": "reasoning-preserve", "value": False},
+        {"id": "n-gpu-layers", "value": 60},
+        {"id": "ctx-size", "value": 262144},
+    ]
+    assert {"id": "override-tensor", "value": ["per_layer_token_embd=CPU"]} in body["arguments"]
+    assert len(body["arguments"]) == 14
+    assert body["ignored_arguments"] == []
+    assert profiles == []
+
+
+def test_parse_command_reports_missing_models_with_a_discover_hint(
+    tmp_path: Path, login: Login
+) -> None:
+    settings = Settings(data_dir=tmp_path / "data")
+    foreign = f"{FOREIGN_FOLDER}/{PLAN_MODEL_NAME.format(index=1)}"
+    with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        runtime_id, _ = _setup(client, tmp_path, login)
+        missing = client.post(
+            "/api/profiles/parse-command",
+            json={"runtime_id": runtime_id, "command": _plan_command(foreign, continuation=" ")},
+        )
+        hub = client.post(
+            "/api/profiles/parse-command",
+            json={"runtime_id": runtime_id, "command": "llama-server -hf org/Model-GGUF:Q4_K_M"},
+        )
+        hub_import = client.post(
+            "/api/profiles/import-command",
+            json={
+                "alias": "hub-model",
+                "runtime_id": runtime_id,
+                "command": "llama-server -hf org/Model-GGUF:Q4_K_M",
+            },
+        )
+        malformed = client.post(
+            "/api/profiles/parse-command",
+            json={"runtime_id": runtime_id, "command": "llama-server --ctx-size 1"},
+        )
+        unknown_runtime = client.post(
+            "/api/profiles/parse-command",
+            json={"runtime_id": "missing", "command": "llama-server -m m.gguf"},
+        )
+
+    assert missing.status_code == 200, missing.text
+    assert missing.json()["model"] == {
+        "status": "missing",
+        "requested_path": foreign,
+        "path": foreign,
+        "download_id": None,
+        "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+        "search": "Qwen3.8-Flash-Next",
+    }
+    assert hub.json()["model"]["status"] == "missing"
+    assert hub.json()["model"]["path"] is None
+    assert hub.json()["model"]["repo_id"] == "org/Model-GGUF"
+    assert hub.json()["ignored_arguments"] == ["-hf org/Model-GGUF:Q4_K_M"]
+    assert hub_import.status_code == 422
+    assert "download org/Model-GGUF from Discover first" in hub_import.json()["detail"]
+    assert malformed.status_code == 422
+    assert malformed.json()["detail"] == "command must include --model or --hf-repo"
+    assert unknown_runtime.status_code == 404

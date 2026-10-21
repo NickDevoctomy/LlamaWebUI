@@ -424,3 +424,93 @@ def test_combine_presets_rejects_invalid_input(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         combine_presets(presets)
+
+
+# The primary-test preset from section 7.3 of docs/plans/llama-web-ui-plan.md as a command.
+PLAN_MODEL = (
+    r"C:\Users\nickp\.lmstudio\models\unsloth\Qwen3.8-Flash-Next-GGUF"
+    r"\Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf"
+)
+PLAN_OPTIONS = (
+    "--no-reasoning-preserve",
+    "--n-gpu-layers 60",
+    "--ctx-size 262144",
+    "--flash-attn on",
+    "--load-mode none",
+    "--lazy-mode on",
+    "--cache-ram 0",
+    "--fit off",
+    "--override-tensor per_layer_token_embd=CPU",
+    "--cache-type-k q4_0",
+    "--cache-type-v q4_0",
+    "--threads 8",
+    "--batch-size 1024",
+    "--ubatch-size 1024",
+)
+PLAN_ARGUMENTS = (
+    typed("reasoning-preserve", False),
+    typed("n-gpu-layers", 60),
+    typed("ctx-size", 262144),
+    typed("flash-attn", "on"),
+    typed("load-mode", "none"),
+    typed("lazy-mode", "on"),
+    typed("cache-ram", 0),
+    typed("fit", "off"),
+    typed("override-tensor", ("per_layer_token_embd=CPU",)),
+    typed("cache-type-k", "q4_0"),
+    typed("cache-type-v", "q4_0"),
+    typed("threads", 8),
+    typed("batch-size", 1024),
+    typed("ubatch-size", 1024),
+)
+
+
+@pytest.mark.parametrize(
+    ("prefix", "separator"),
+    (
+        ("llama-server.exe", " "),
+        ("llama-server.exe", " ^\r\n  "),
+        (r'& "C:\llama.cpp\llama-server.exe"', " `\n  "),
+    ),
+    ids=("single-line", "cmd-continuations", "powershell-continuations"),
+)
+def test_parse_command_imports_the_plan_preset_command_on_windows(
+    prefix: str, separator: str
+) -> None:
+    command = separator.join((prefix, f"-m {PLAN_MODEL}", *PLAN_OPTIONS))
+
+    parsed = parse_command(command, CATALOG, platform="nt")
+
+    assert parsed.model_path == PLAN_MODEL
+    assert parsed.arguments == PLAN_ARGUMENTS
+    assert parsed.ignored == ()
+
+
+def test_parse_command_imports_the_plan_preset_command_with_posix_continuations() -> None:
+    command = " \\\n  ".join(
+        ("./llama-server", "-m '/models/Qwen3.8 Flash/model-00001-of-00003.gguf'", *PLAN_OPTIONS)
+    )
+
+    parsed = parse_command(command, CATALOG, platform="posix")
+
+    assert parsed.model_path == "/models/Qwen3.8 Flash/model-00001-of-00003.gguf"
+    assert parsed.arguments == PLAN_ARGUMENTS
+
+
+def test_parse_command_reports_hugging_face_model_sources_without_a_local_model() -> None:
+    parsed = parse_command(
+        "llama-server -hf unsloth/Qwen3-GGUF:Q4_K_M --hf-file Qwen3-Q4_K_M.gguf -c 4096",
+        CATALOG,
+        platform="posix",
+    )
+
+    assert parsed.model_path is None
+    assert parsed.hf_repo == "unsloth/Qwen3-GGUF:Q4_K_M"
+    assert parsed.hf_file == "Qwen3-Q4_K_M.gguf"
+    assert parsed.arguments == (typed("ctx-size", 4096),)
+    assert parsed.ignored == (
+        "-hf unsloth/Qwen3-GGUF:Q4_K_M",
+        "--hf-file Qwen3-Q4_K_M.gguf",
+    )
+    with pytest.raises(ValueError, match="--model or --hf-repo"):
+        parse_command("llama-server --hf-file x.gguf -c 1", CATALOG, platform="posix")

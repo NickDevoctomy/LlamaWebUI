@@ -21,6 +21,7 @@ from llamawebui.domain.argument_catalog import ArgumentCatalog, default_catalog
 from llamawebui.domain.effective_catalog import build_effective_catalog
 from llamawebui.domain.model_profile import (
     ModelProfile,
+    ParsedCommand,
     ProfileValidationError,
     launch_vector,
     parse_command,
@@ -100,6 +101,7 @@ from llamawebui.services.login_throttle import LoginRateLimitedError, LoginThrot
 from llamawebui.services.model_artifact_registry import ModelArtifactError, ModelArtifactRegistry
 from llamawebui.services.model_event_stream import stream_model_events
 from llamawebui.services.model_library import ModelLibrary
+from llamawebui.services.model_locator import ModelLocation, local_models, locate_model
 from llamawebui.services.profile_registry import (
     ProfileAliasExistsError,
     ProfileNotFoundError,
@@ -224,6 +226,11 @@ class ProfileCommandImportRequest(BaseModel):
     alias: str = Field(min_length=1, max_length=64)
     runtime_id: str
     enabled: bool = False
+
+
+class ProfileCommandParseRequest(BaseModel):
+    command: str = Field(min_length=1, max_length=10000)
+    runtime_id: str
 
 
 class ExternalModelImportRequest(BaseModel):
@@ -376,6 +383,17 @@ def _profile_issues(
         for message in _router_diagnostics(runtime)
     )
     return (*issues, *router)
+
+
+def _locate_command_model(request: Request, parsed: ParsedCommand) -> ModelLocation:
+    candidates = local_models(
+        cast(DownloadRegistry, request.app.state.download_registry),
+        cast(ModelArtifactRegistry, request.app.state.model_artifact_registry),
+        cast(ModelLibrary, request.app.state.model_library),
+    )
+    return locate_model(
+        parsed.model_path, candidates, hf_repo=parsed.hf_repo, hf_file=parsed.hf_file
+    )
 
 
 def _saved_profile_payload(
@@ -1930,6 +1948,28 @@ def create_app(
             ) from error
         return _saved_profile_payload(request, record, profile)
 
+    @app.post("/api/profiles/parse-command")
+    async def parse_profile_command(
+        parse_request: ProfileCommandParseRequest, request: Request
+    ) -> dict[str, object]:
+        """Parse a pasted command into editor arguments without saving anything."""
+        runtime = _registered_runtime(request, parse_request.runtime_id)
+        catalog = _argument_catalog(request)
+        try:
+            parsed = parse_command(
+                parse_request.command, catalog, capabilities=runtime_capabilities(runtime)
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
+        location = _locate_command_model(request, parsed)
+        return {
+            "model": location.to_payload(),
+            "arguments": [argument.to_payload() for argument in parsed.arguments],
+            "ignored_arguments": list(parsed.ignored),
+        }
+
     @app.post("/api/profiles/import-command", status_code=status.HTTP_201_CREATED)
     async def import_profile_command(
         import_request: ProfileCommandImportRequest, request: Request
@@ -1941,9 +1981,15 @@ def create_app(
             parsed = parse_command(
                 import_request.command, catalog, capabilities=runtime_capabilities(runtime)
             )
+            location = _locate_command_model(request, parsed)
+            if location.path is None:
+                raise ValueError(
+                    "the command names no local model file; download "
+                    f"{location.repo_id or 'the model'} from Discover first"
+                )
             profile = ModelProfile(
                 alias=import_request.alias,
-                model_path=Path(parsed.model_path),
+                model_path=Path(location.path),
                 arguments=parsed.arguments,
             )
             record = registry.create(profile=profile, runtime_id=runtime.id, enabled=False)
@@ -1957,6 +2003,7 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(error)) from error
         payload = _saved_profile_payload(request, record, profile)
         payload["ignored_arguments"] = list(parsed.ignored)
+        payload["model"] = location.to_payload()
         return payload
 
     @app.get("/api/huggingface/models")

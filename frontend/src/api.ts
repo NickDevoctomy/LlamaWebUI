@@ -290,6 +290,22 @@ export type StoredArgument =
   | { id: string; value: StoredArgumentValue }
   | { flag: string; value: string | true; origin: RawOrigin }
 
+export interface CommandModelLocation {
+  /** found: the pasted path exists; relocated: matched to a local copy; missing: not on disk. */
+  status: 'found' | 'relocated' | 'missing'
+  requested_path: string | null
+  path: string | null
+  download_id: string | null
+  repo_id: string | null
+  search: string
+}
+
+export interface ParsedProfileCommand {
+  model: CommandModelLocation
+  arguments: StoredArgument[]
+  ignored_arguments: string[]
+}
+
 export interface ProfileIssue {
   level: 'error' | 'warning'
   code: string
@@ -478,10 +494,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ document, alias: alias || null }),
     }),
-  importProfileCommand: (command: string, alias: string, runtimeId: string) =>
-    request<Profile & { ignored_arguments?: string[]; warnings?: string[] }>('/api/profiles/import-command', {
+  parseProfileCommand: (command: string, runtimeId: string) =>
+    request<ParsedProfileCommand>('/api/profiles/parse-command', {
       method: 'POST',
-      body: JSON.stringify({ command, alias, runtime_id: runtimeId, enabled: false }),
+      body: JSON.stringify({ command, runtime_id: runtimeId }),
     }),
   deleteProfile: (profileId: string) =>
     request<void>(`/api/profiles/${profileId}`, { method: 'DELETE' }),

@@ -216,6 +216,8 @@ A profile binds:
 
 Provide a Windows/POSIX command importer specifically to ease migration from scripts. It should tokenize without executing, recognize the selected runtime's aliases, populate typed fields, and retain unrecognized arguments in the advanced list. Export produces a readable command for debugging, but process launch always uses the structured argument vector.
 
+Implementation: the profile editor's "Paste llama-server command" box (also opened by Profiles → Import command) calls `POST /api/profiles/parse-command`, which saves nothing. It accepts multi-line commands with POSIX (`\`), cmd (`^`) or PowerShell (`` ` ``) continuations and a leading PowerShell `&`. The model reference (`--model`, or `--hf-repo`/`--hf-file`) is resolved against the local library: an existing path is used as-is, otherwise the primary-shard filename is matched against completed downloads and files under the model root, then the repository and quantization against downloads. When nothing matches, the editor warns and offers Discover, opened on a repository guessed from `--hf-repo` or from LM Studio / Hugging Face cache folder layouts, or searched by model name. `POST /api/profiles/import-command` uses the same resolution.
+
 ### 7.3 Generated llama.cpp preset
 
 Generate a versioned INI file from enabled profiles and start router mode with `--models-preset <generated-file>`. Write to a temporary file, parse/validate, then atomically replace the active preset.
