@@ -245,6 +245,10 @@ batch-size = 1024
 ubatch-size = 1024
 ```
 
+```
+llama-server.exe -m C:\Users\nickp\.lmstudio\models\unsloth\Qwen3.8-Flash-Next-GGUF\Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --no-reasoning-preserve --n-gpu-layers 60 --ctx-size 262144 --flash-attn on --load-mode none --lazy-mode on --cache-ram 0 --fit off --override-tensor per_layer_token_embd=CPU --cache-type-k q4_0 --cache-type-v q4_0 --threads 8 --batch-size 1024 --ubatch-size 1024
+```
+
 Host, port, API-key file, model limit, and other router-owned settings belong to the server configuration, not individual model sections. The UI must explain this distinction.
 
 ### 7.4 Validation before start/load

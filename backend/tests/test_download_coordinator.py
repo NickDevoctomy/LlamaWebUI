@@ -71,6 +71,20 @@ async def test_coordinator_cancels_queued_job(tmp_path: Path) -> None:
     assert not staging.exists()
 
 
+async def test_clear_finished_hides_failed_job_and_discards_partial(tmp_path: Path) -> None:
+    coordinator, registry, job_id = create_coordinator(tmp_path)
+    registry.transition(job_id, DownloadState.DOWNLOADING)
+    registry.fail(job_id, "network error")
+    job = registry.get(job_id)
+    staging = Path(job.destination).parent / f".{Path(job.destination).name}.{job.id}.partial"
+    staging.mkdir(parents=True)
+    (staging / "model.gguf.incomplete").write_bytes(b"partial")
+
+    assert coordinator.clear_finished() == 1
+    assert registry.list() == []
+    assert not staging.exists()
+
+
 async def test_startup_reconciles_interrupted_job(tmp_path: Path) -> None:
     coordinator, registry, job_id = create_coordinator(tmp_path)
     registry.transition(job_id, DownloadState.DOWNLOADING)

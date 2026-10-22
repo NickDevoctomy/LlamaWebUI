@@ -12,6 +12,7 @@ import uvicorn
 
 from llamawebui.app import create_app
 from llamawebui.config import Settings
+from llamawebui.services import huggingface_transfer_process
 from llamawebui.services.instance_lock import InstanceLock
 from llamawebui.services.logging_utils import configure_logging
 from llamawebui.services.runtime_probe import RuntimeProbeResult, probe_runtime
@@ -37,6 +38,8 @@ def _parser() -> argparse.ArgumentParser:
     probe_parser = subparsers.add_parser("probe-runtime", help="inspect a llama-server executable")
     probe_parser.add_argument("executable", type=Path)
     subparsers.add_parser("serve", help="start the LlamaWebUI control API")
+    # Used by the download worker in packaged builds, which cannot run ``python -m``.
+    subparsers.add_parser("hf-transfer", help="internal: run one Hugging Face file transfer")
     return parser
 
 
@@ -51,6 +54,9 @@ def main() -> int:
 
         print(json.dumps(_probe_payload(result), indent=2))
         return 0 if result.usable else 1
+
+    if args.command == "hf-transfer":
+        return huggingface_transfer_process.main()
 
     if args.command == "serve":
         settings = Settings()

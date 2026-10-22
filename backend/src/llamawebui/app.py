@@ -2083,8 +2083,8 @@ def create_app(
 
     @app.delete("/api/downloads/terminal")
     async def clear_terminal_downloads(request: Request) -> dict[str, int]:
-        registry = cast(DownloadRegistry, request.app.state.download_registry)
-        return {"cleared": registry.clear_terminal()}
+        coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
+        return {"cleared": coordinator.clear_finished()}
 
     @app.get("/api/library")
     async def list_library_models(request: Request) -> list[dict[str, object]]:

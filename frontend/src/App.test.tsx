@@ -792,8 +792,8 @@ describe('App', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/downloads/download-1/resume', expect.objectContaining({ method: 'POST' })))
   })
 
-  it('clears completed and cancelled download jobs', async () => {
-    const job = { id: 'download-1', repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), group_key: 'model-Q4_K_M', files: [], destination: 'E:\\models', total_bytes: 1000, completed_bytes: 400, state: 'cancelled', error: null }
+  it.each(['cancelled', 'failed'])('clears %s download jobs', async (state) => {
+    const job = { id: 'download-1', repo_id: 'owner/model-GGUF', revision: 'a'.repeat(40), group_key: 'model-Q4_K_M', files: [], destination: 'E:\\models', total_bytes: 1000, completed_bytes: 400, state, error: null }
     const fetchMock = renderApp({ downloadList: [job] })
     fireEvent.click(screen.getByRole('button', { name: 'Downloads' }))
     const clearButton = await screen.findByRole('button', { name: 'Clear finished' })

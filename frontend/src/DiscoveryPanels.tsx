@@ -157,7 +157,7 @@ export function DownloadsPanel({ jobs, library, onCreateProfile }: {
     mutationFn: api.clearTerminalDownloads,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['downloads'] }),
   })
-  const terminalCount = jobs.filter((job) => ['completed', 'cancelled'].includes(job.state)).length
+  const terminalCount = jobs.filter((job) => ['completed', 'cancelled', 'failed'].includes(job.state)).length
 
   return (
     <section className="data-panel">

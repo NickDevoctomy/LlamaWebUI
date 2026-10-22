@@ -53,6 +53,14 @@ class DownloadCoordinator:
         self._publish(job_id, "cancelled")
         return record
 
+    def clear_finished(self) -> int:
+        cleared = self._registry.clear_terminal()
+        for record in cleared:
+            # Failed jobs keep their staging directory for retry; clearing gives that up.
+            if DownloadState(record.state) is DownloadState.FAILED:
+                self._worker.discard_partial(record.id)
+        return len(cleared)
+
     def _publish(self, job_id: str, action: str) -> None:
         if self._event_broker is not None:
             job = self._registry.get(job_id)

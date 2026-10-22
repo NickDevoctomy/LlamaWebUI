@@ -10,7 +10,7 @@ from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.domain.download_job import DownloadState
 from llamawebui.domain.model_manifest import GgufGroup, HubFile
 from llamawebui.models import DownloadJobRecord
-from llamawebui.services import huggingface_transfer_process
+from llamawebui.services import download_worker, huggingface_transfer_process
 from llamawebui.services.download_registry import DownloadRegistry
 from llamawebui.services.download_worker import (
     DownloadWorker,
@@ -555,3 +555,60 @@ async def test_huggingface_transfer_kills_child_when_cancelled(
         await task
     assert process.killed
     assert process.waited
+
+@pytest.mark.parametrize(
+    ("frozen", "expected"),
+    (
+        (False, ("python", "-m", "llamawebui.services.huggingface_transfer_process")),
+        (True, ("python", "hf-transfer")),
+    ),
+    ids=("source", "packaged"),
+)
+async def test_huggingface_transfer_launches_a_command_the_executable_supports(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, frozen: bool, expected: tuple[str, ...]
+) -> None:
+    launched: list[tuple[object, ...]] = []
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self, input: bytes) -> tuple[bytes, bytes]:
+            return json.dumps({"path": str(tmp_path / "model.gguf")}).encode(), b""
+
+    async def fake_subprocess(*args: object, **kwargs: object) -> Process:
+        launched.append(args)
+        return Process()
+
+    monkeypatch.setattr(download_worker.sys, "executable", "python")
+    if frozen:
+        monkeypatch.setattr(download_worker.sys, "frozen", True, raising=False)
+    else:
+        monkeypatch.delattr(download_worker.sys, "frozen", raising=False)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+
+    path = await HuggingFaceFileTransfer().download(
+        repo_id="owner/model", filename="model.gguf", revision="a" * 40, destination=tmp_path
+    )
+
+    assert path == tmp_path / "model.gguf"
+    assert launched == [expected]
+
+
+async def test_huggingface_transfer_reports_the_exit_code_of_a_child_without_a_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class Process:
+        returncode = 2
+
+        async def communicate(self, input: bytes) -> tuple[bytes, bytes]:
+            return b"", b""
+
+    async def fake_subprocess(*args: object, **kwargs: object) -> Process:
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+
+    with pytest.raises(OSError, match="exited with code 2 without a valid result"):
+        await HuggingFaceFileTransfer().download(
+            repo_id="owner/model", filename="model.gguf", revision="a" * 40, destination=tmp_path
+        )

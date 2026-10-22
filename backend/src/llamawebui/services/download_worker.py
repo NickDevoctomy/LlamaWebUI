@@ -22,6 +22,17 @@ _DISK_CHECK_INTERVAL_SECONDS = 5.0
 _DEFAULT_TRANSFER_STALL_TIMEOUT_SECONDS = 60.0
 
 
+def transfer_command() -> tuple[str, ...]:
+    """The child-process command that runs one transfer.
+
+    A PyInstaller build has no Python interpreter to run ``-m`` against: ``sys.executable`` is
+    the packaged ``llamawebui`` executable, so it is relaunched with its ``hf-transfer`` command.
+    """
+    if getattr(sys, "frozen", False):
+        return (sys.executable, "hf-transfer")
+    return (sys.executable, "-m", "llamawebui.services.huggingface_transfer_process")
+
+
 class FileTransfer(Protocol):
     async def download(
         self, *, repo_id: str, filename: str, revision: str, destination: Path
@@ -45,9 +56,7 @@ class HuggingFaceFileTransfer:
             }
         )
         process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "llamawebui.services.huggingface_transfer_process",
+            *transfer_command(),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
@@ -61,7 +70,10 @@ class HuggingFaceFileTransfer:
         try:
             response = json.loads(stdout)
         except (json.JSONDecodeError, UnicodeDecodeError) as error:
-            raise OSError("Hugging Face transfer returned an invalid response") from error
+            raise OSError(
+                "Hugging Face transfer process exited with code "
+                f"{process.returncode} without a valid result"
+            ) from error
         if process.returncode != 0 or not isinstance(response.get("path"), str):
             message = response.get("error")
             raise OSError(message if isinstance(message, str) else "Hugging Face transfer failed")
