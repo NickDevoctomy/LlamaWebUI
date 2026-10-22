@@ -260,6 +260,16 @@ Host, port, API-key file, model limit, and other router-owned settings belong to
 - Run a short-lived preset validation/startup probe where the runtime supports no-load validation; otherwise capture an immediate startup failure and retain full logs.
 - Display the exact sanitized argument vector and generated preset before applying advanced changes.
 
+### 7.5 Recommended profiles
+
+The application bundles profiles tuned on known hardware, one JSON file per recommendation in `backend/src/llamawebui/recommendations/` (format `llamawebui.recommendation.v1`). Each file names the model by repository and quantization (optionally a pinned revision; otherwise `main` is resolved and pinned when applied), describes the machine it was tested on (`tested_on`, with optional `cpu_pattern` and `gpu_pattern` regular expressions; a host matches only when every declared pattern matches and any `vram_gb` requirement is met, so a recommendation can target a GPU family and size rather than one model), states its `requirements` (`memory_gb` is system memory plus discrete VRAM, `vram_gb` optionally the GPU share and the runtime backends it was tested with; these are preferred, not enforced, so any usable runtime can be chosen with a note that it is untested), and carries the profile alias and catalog arguments. A malformed file, or two recommendations sharing an id or profile alias, stops startup, because it is a packaging bug. The UI lists recommendations that match the host first.
+
+- `GET /api/profiles/recommendations` returns the detected host (processor, memory, graphics adapters, discrete NVIDIA VRAM) and, per recommendation, a fit grade (`fits` at 92% of the required memory or more, `tight` from 75%, otherwise `insufficient`), whether the processor matches the tested machine, the usable runtimes on a tested backend (offered first in the UI), and the id of an existing profile with the same alias.
+- `POST /api/profiles/recommendations/{id}/apply` needs profile write and download write access. It validates the profile's arguments before queuing anything, selects the single complete group for the quantization (projector files excluded), reuses a queued, paused, downloading or completed download of that exact revision and group, and otherwise starts one. When the files are already valid the profile is created enabled; otherwise it is created disabled with `enable_on_download` set to the job id.
+- A profile whose matching download is queued, downloading or paused reports `validation_state: "pending"` with download progress, not `broken`. The router's availability check is unchanged, so a pending profile can never be launched.
+- When that download completes, the coordinator's completion hook re-validates the profile against its files, enables it and clears `enable_on_download`; failures leave it disabled and are logged. Startup repeats this for downloads that completed while the app was not running. Editing the profile clears the flag, so a manual choice is never overridden.
+- Unified-memory machines (Strix Halo, Apple Silicon) report graphics memory as system memory, so the fit check compares system memory plus discrete VRAM against the requirement. Recommendations may later be fetched from a remote location (for example an S3 bucket) using the same format.
+
 ## 8. Server Lifecycle and Monitoring
 
 ### 8.1 Supervision

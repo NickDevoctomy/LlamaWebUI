@@ -127,6 +127,23 @@ describe('ProfileArgumentEditor', () => {
     expect(screen.getByText(/No arguments match/)).toBeInTheDocument()
   })
 
+  it('removes a common setting back to the runtime default', () => {
+    let state: EditorEntry[] = []
+    render(<Harness initial={[
+      { key: 'ctx', kind: 'catalog', id: 'ctx-size', draft: '4096' },
+      { key: 'fa', kind: 'catalog', id: 'flash-attn', draft: 'on' },
+    ]} onState={(entries) => { state = entries }} />)
+
+    expect(screen.queryByRole('button', { name: 'Remove CPU threads' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Context size' }))
+
+    expect(state).toEqual([expect.objectContaining({ id: 'flash-attn', draft: 'on' })])
+    expect(screen.getByLabelText('Context size')).toHaveValue('')
+    expect(screen.queryByRole('button', { name: 'Remove Context size' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Flash attention' }))
+    expect(state).toEqual([])
+  })
+
   it('edits repeated lists, JSON, alias notes, and deprecation hints', () => {
     let state: EditorEntry[] = []
     render(<Harness initial={[

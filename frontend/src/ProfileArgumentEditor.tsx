@@ -47,7 +47,7 @@ function DirectionIcon({ direction }: { direction: EffectDirection }) {
   return <span className={`effect-direction ${direction}`} title={DIRECTION_LABEL[direction]}><Icon aria-hidden="true" size={13} /><span className="sr-only">{DIRECTION_LABEL[direction]}</span></span>
 }
 
-export function EffectPills({ catalog, tags }: { catalog: EffectiveArgumentCatalog; tags: string[] }) {
+export function EffectPills({ catalog, tags }: { catalog: Pick<EffectiveArgumentCatalog, 'effectTags'>; tags: string[] }) {
   if (!tags.length) return null
   return (
     <ul aria-label="Effects" className="effect-pills">
@@ -416,7 +416,11 @@ export function ProfileArgumentEditor({ catalog, entries, onEntriesChange, ackno
           <fieldset className="argument-group" key={group.id}>
             <legend>{group.label}</legend>
             <div className="argument-grid">
-              {group.items.map((definition) => <ArgumentField acknowledged={acknowledged.includes(definition.id)} catalog={catalog} definition={definition} draft={draftFor(definition.id)} issues={issuesFor(definition.id)} key={definition.id} onAcknowledge={(value) => acknowledge(definition.id, value)} onChange={(draft) => setDraft(definition.id, draft)} />)}
+              {group.items.map((definition) => {
+                const draft = draftFor(definition.id)
+                // Removing a common setting returns it to the runtime default; the field itself stays.
+                return <ArgumentField acknowledged={acknowledged.includes(definition.id)} catalog={catalog} definition={definition} draft={draft} issues={issuesFor(definition.id)} key={definition.id} onAcknowledge={(value) => acknowledge(definition.id, value)} onChange={(next) => setDraft(definition.id, next)} onRemove={isSet(draft) ? () => setDraft(definition.id, undefined) : undefined} />
+              })}
             </div>
           </fieldset>
         ))}

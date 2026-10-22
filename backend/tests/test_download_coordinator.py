@@ -132,6 +132,37 @@ async def test_coordinator_ignores_duplicate_start_and_rejects_active_restart(
     assert registry.get(job_id).state == DownloadState.PAUSED
 
 
+async def test_coordinator_runs_completion_hook_and_survives_its_failure(tmp_path: Path) -> None:
+    _, registry, job_id = create_coordinator(tmp_path)
+    completed: list[str] = []
+
+    class ImmediateTransfer:
+        async def download(
+            self, *, repo_id: str, filename: str, revision: str, destination: Path
+        ) -> Path:
+            target = destination / filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"x")
+            return target
+
+    def hook(finished: str) -> None:
+        completed.append(finished)
+        raise RuntimeError("hook failed")
+
+    coordinator = DownloadCoordinator(
+        registry, DownloadWorker(registry, ImmediateTransfer()), on_completed=hook
+    )
+    coordinator.start(job_id)
+    for _ in range(100):
+        if completed:
+            break
+        await asyncio.sleep(0.02)
+
+    assert completed == [job_id]
+    assert registry.get(job_id).state == DownloadState.COMPLETED
+    await coordinator.shutdown()
+
+
 async def test_coordinator_publishes_completed_and_failed_task_events(tmp_path: Path) -> None:
     coordinator, registry, job_id = create_coordinator(tmp_path)
     broker = EventBroker()

@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
+  BadgeCheck,
+  Box,
   ChevronDown,
   CircleGauge,
   Command,
@@ -32,9 +34,11 @@ import {
 } from 'lucide-react'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { AccessPanel } from './AccessPanel'
-import { api, type LibraryModel, type LogicalModel, type Profile, type Runtime } from './api'
+import { api, type LibraryModel, type LogicalModel, type Profile, type RouterModel, type Runtime } from './api'
 import { DashboardPanel, formatBytes, useStatusHistory } from './Dashboard'
 import { DiscoverPanel, DownloadsPanel } from './DiscoveryPanels'
+import { ErrorBoundary } from './ErrorBoundary'
+import { RecommendationsPanel } from './Recommendations'
 import { Dialog, ProfilePanel, RuntimePanel } from './SetupPanels'
 import { ThemeSwitch } from './theme'
 import { APP_VERSION } from './version'
@@ -43,6 +47,7 @@ const navigation = [
   ['Dashboard', CircleGauge, 'server.read', 'Operate'],
   ['Server', Server, 'server.read', 'Operate'],
   ['Models', Library, 'library.read', 'Models'],
+  ['Recommended', BadgeCheck, 'profiles.read', 'Models'],
   ['Discover', Search, 'huggingface.read', 'Models'],
   ['Downloads', Download, 'downloads.read', 'Models'],
   ['Profiles', FolderCog, 'profiles.read', 'Models'],
@@ -57,6 +62,7 @@ const sectionSummaries: Record<string, string> = {
   Dashboard: 'Router health, throughput and host resources at a glance.',
   Server: 'Process state, runtime selection and live router output.',
   Models: 'GGUF files in the managed library and the records reconciled from them.',
+  Recommended: 'Profiles tuned on known hardware. Add one and its model downloads for you.',
   Discover: 'Search Hugging Face and pick a quantization to download.',
   Downloads: 'Transfers in progress, paused, failed and finished.',
   Profiles: 'Model aliases and the llama-server settings each one launches with.',
@@ -179,6 +185,8 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
     queryKey: ['models'],
     queryFn: api.models,
     enabled: authReady && running && canRead('server.read'),
+    // Poll quickly while a model loads so its state change shows promptly.
+    refetchInterval: (query) => query.state.data?.some((model) => model.status.value === 'loading') ? 1000 : 5000,
   })
   const users = useQuery({ queryKey: ['users'], queryFn: api.users, enabled: authReady && canRead('auth.read') })
   const roles = useQuery({ queryKey: ['roles'], queryFn: api.roles, enabled: authReady && canRead('auth.read') })
@@ -215,7 +223,10 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
   const modelAction = useMutation({
     mutationFn: ({ id, loaded }: { id: string; loaded: boolean }) =>
       loaded ? api.unloadModel(id) : api.loadModel(id),
-    onSuccess: refresh,
+    onSettled: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['models'] }),
+      queryClient.invalidateQueries({ queryKey: ['server'] }),
+    ]),
   })
   const rollback = useMutation({
     mutationFn: api.rollback,
@@ -225,7 +236,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
   const runtime = runtimes.data?.find((item) => item.id === selectedRuntime)
     ?? runtimes.data?.find((item) => item.usable)
   const loadedCount = models.data?.filter((model) => model.status.value === 'loaded').length ?? 0
-  const error = lifecycle.error ?? rollback.error ?? modelAction.error ?? status.error
+  const error = lifecycle.error ?? rollback.error ?? status.error
 
   const activeDownloadCount = downloads.data?.filter((job) => ['queued', 'downloading'].includes(job.state)).length ?? 0
 
@@ -316,6 +327,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
 
           {error && <div className="error-banner">{error.message}</div>}
 
+          <ErrorBoundary resetKey={section}>
           {section === 'Dashboard' ? (
             <DashboardPanel
               downloads={downloads.data ?? []}
@@ -342,13 +354,38 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
               running={running}
             />
           ) : section === 'Server' ? (
-            <ServerPanel status={status.data} runtimes={runtimes.data ?? []} profiles={profiles.data ?? []} selectedRuntime={runtime?.id ?? ''} onRuntime={setSelectedRuntime} onRestart={() => lifecycle.mutate('restart')} onRollback={() => rollback.mutate()} restarting={lifecycle.isPending || rollback.isPending} />
+            <ServerPanel
+              canManageModels={canRead('server.write')}
+              modelAction={{
+                error: modelAction.error,
+                pendingId: modelAction.isPending ? modelAction.variables?.id : undefined,
+                run: (id, loaded) => modelAction.mutate({ id, loaded }),
+              }}
+              models={models.data ?? []}
+              onRestart={() => lifecycle.mutate('restart')}
+              onRollback={() => rollback.mutate()}
+              onRuntime={setSelectedRuntime}
+              profiles={profiles.data ?? []}
+              restarting={lifecycle.isPending || rollback.isPending}
+              running={running}
+              runtimes={runtimes.data ?? []}
+              selectedRuntime={runtime?.id ?? ''}
+              status={status.data}
+            />
           ) : section === 'Runtimes' ? (
             <RuntimePanel runtimes={runtimes.data ?? []} />
           ) : section === 'Profiles' ? (
             <ProfilePanel initialModel={profileSeed} library={library.data ?? []} onDiscover={({ repoId, query }) => { setDiscoveryRepository(repoId ?? undefined); setDiscoverySearch(repoId ? undefined : query); setSection('Discover') }} onInitialModelConsumed={() => setProfileSeed(undefined)} profiles={profiles.data ?? []} running={running} runtimes={runtimes.data ?? []} />
           ) : section === 'Access' ? (
             <AccessPanel running={running} tokens={tokens.data ?? []} />
+          ) : section === 'Recommended' ? (
+            <RecommendationsPanel
+              canApply={canRead('profiles.write') && canRead('downloads.write')}
+              onOpenProfiles={() => navigate('Profiles')}
+              onOpenRuntimes={() => navigate('Runtimes')}
+              profiles={profiles.data ?? []}
+              runtimes={runtimes.data ?? []}
+            />
           ) : section === 'Discover' ? (
             <DiscoverPanel jobs={downloads.data ?? []} library={library.data ?? []} initialQuery={discoverySearch} initialRepoId={discoveryRepository} onQueued={() => setSection('Downloads')} />
           ) : section === 'Downloads' ? (
@@ -364,6 +401,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
           ) : (
             <CollectionPanel section={section} runtimes={runtimes.data ?? []} profiles={profiles.data ?? []} tokens={tokens.data ?? []} />
           )}
+          </ErrorBoundary>
         </div>
       </main>
     </div>
@@ -469,10 +507,68 @@ function ModelsPanel({ models, logicalModels, profiles, onConfigure, onDiscover,
   )
 }
 
-function ServerPanel({ status, runtimes, profiles, selectedRuntime, onRuntime, onRestart, onRollback, restarting }: {
+interface ModelActionControl {
+  error: Error | null
+  pendingId?: string
+  run: (id: string, loaded: boolean) => void
+}
+
+function routerModelState(model: RouterModel) {
+  const value = model.status.value ?? 'unknown'
+  const failed = model.status.failed === true || (value === 'unloaded' && typeof model.status.exit_code === 'number' && model.status.exit_code !== 0)
+  return { value: failed ? 'failed' : value, exitCode: typeof model.status.exit_code === 'number' ? model.status.exit_code : undefined }
+}
+
+function RouterModelsPanel({ models, profiles, running, canManage, action }: {
+  models: RouterModel[]
+  profiles: Profile[]
+  running: boolean
+  canManage: boolean
+  action: ModelActionControl
+}) {
+  const unpublished = profiles.filter((profile) => !profile.enabled).length
+  return <section className="data-panel router-models">
+    <div className="panel-heading"><div><h2>Router models</h2><p>Load a profile to check it starts, or unload it to free memory, without sending a request.</p></div><Box size={20} /></div>
+    {action.error && <div className="form-error" role="alert"><AlertCircle size={15} /> {action.error.message}</div>}
+    {!running ? <div className="empty compact-empty"><Box size={24} /><strong>The router is not running</strong><span>Start the router to load or unload its {profiles.filter((profile) => profile.enabled).length} enabled profiles.</span></div>
+      : models.length ? <ul className="router-model-list">
+        {models.map((model) => {
+          const { value, exitCode } = routerModelState(model)
+          const profile = profiles.find((item) => item.alias === model.id)
+          const path = model.path ?? profile?.model_path
+          const pending = action.pendingId === model.id
+          const loaded = value === 'loaded'
+          const busy = pending || value === 'loading'
+          return <li key={model.id}>
+            <span className={`roster-dot ${value === 'failed' ? 'error' : value}`} />
+            <span className="roster-copy"><strong>{model.id}</strong><span title={path}>{path?.split(/[\\/]/).at(-1) ?? 'Model path not reported'}</span></span>
+            <span className={`state-pill ${value === 'failed' ? 'error' : value}`}>{value === 'failed' && exitCode !== undefined ? `Failed · exit ${exitCode}` : value}</span>
+            <button
+              aria-label={`${loaded ? 'Unload' : 'Load'} ${model.id}`}
+              className={loaded ? 'button secondary compact' : 'button primary compact'}
+              disabled={!canManage || busy}
+              onClick={() => action.run(model.id, loaded)}
+              title={canManage ? undefined : 'Requires server write access'}
+              type="button"
+            >
+              {busy ? <LoaderCircle className="spin" size={14} /> : loaded ? <Square size={12} fill="currentColor" /> : <Play size={13} fill="currentColor" />}
+              {value === 'loading' ? 'Loading…' : pending ? (loaded ? 'Unloading…' : 'Loading…') : loaded ? 'Unload' : 'Load'}
+            </button>
+          </li>
+        })}
+      </ul> : <div className="empty compact-empty"><Box size={24} /><strong>No models published</strong><span>Enable a profile, then restart the router to publish it.</span></div>}
+    {running && <div className="panel-footer"><span>{models.filter((model) => model.status.value === 'loaded').length} of {models.length} loaded</span><span>{unpublished ? `${unpublished} disabled ${unpublished === 1 ? 'profile is' : 'profiles are'} not published` : 'Load failures appear in the output below'}</span></div>}
+  </section>
+}
+
+function ServerPanel({ status, runtimes, profiles, models, running, canManageModels, modelAction, selectedRuntime, onRuntime, onRestart, onRollback, restarting }: {
   status?: Awaited<ReturnType<typeof api.serverStatus>>
   runtimes: Runtime[]
   profiles: Profile[]
+  models: RouterModel[]
+  running: boolean
+  canManageModels: boolean
+  modelAction: ModelActionControl
   selectedRuntime: string
   onRuntime: (id: string) => void
   onRestart: () => void
@@ -481,6 +577,7 @@ function ServerPanel({ status, runtimes, profiles, selectedRuntime, onRuntime, o
 }) {
   return (
     <div className="server-grid">
+      <RouterModelsPanel action={modelAction} canManage={canManageModels} models={models} profiles={profiles} running={running} />
       <section className="data-panel server-detail"><div className="panel-heading"><div><h2>Process</h2><p>Managed native llama.cpp server.</p></div><TerminalSquare size={20} /></div><dl><div><dt>State</dt><dd><span className={`state-pill ${status?.state}`}>{status?.state ?? 'unknown'}</span></dd></div><div><dt>Process ID</dt><dd>{status?.pid ?? '—'}</dd></div><div><dt>Endpoint</dt><dd className="mono">{status?.endpoint ?? '—'}</dd></div><div><dt>Last exit</dt><dd>{status?.last_exit_code ?? '—'}</dd></div><div><dt>Prompt throughput</dt><dd>{status?.timing?.prompt_tokens_per_second ? `${status.timing.prompt_tokens_per_second} t/s` : '—'}</dd></div><div><dt>Decode throughput</dt><dd>{status?.timing?.decode_tokens_per_second ? `${status.timing.decode_tokens_per_second} t/s` : '—'}</dd></div><div><dt>Active task</dt><dd>{status?.timing?.task_id ?? '—'}</dd></div><div><dt>Task elapsed</dt><dd>{status?.timing?.task_elapsed_seconds ? `${status.timing.task_elapsed_seconds}s` : '—'}</dd></div></dl></section>
       <section className="data-panel server-detail"><div className="panel-heading"><div><h2>Runtime</h2><p>Binary used for the next start or restart.</p></div><Cpu size={20} /></div><label className="select-label">Selected runtime<select value={selectedRuntime} onChange={(event) => onRuntime(event.target.value)}><option value="">Select runtime</option>{runtimes.map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.name} · {runtime.build ?? 'unknown build'}</option>)}</select><ChevronDown size={16} /></label><div className="profile-summary"><small>Enabled profiles</small>{profiles.filter((profile) => profile.enabled && profile.runtime_id === selectedRuntime).map((profile) => <div key={profile.id}><strong>{profile.alias}</strong><span>{profile.model_path}</span></div>)}{!profiles.some((profile) => profile.enabled && profile.runtime_id === selectedRuntime) && <span>None configured for this runtime</span>}</div><div className="panel-footer"><span>Runtime changes are explicit</span><div className="row-actions"><button className="button secondary compact" disabled={!selectedRuntime || status?.state !== 'ready' || restarting} onClick={onRestart} type="button">{restarting ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />} Apply & restart</button><button className="button secondary compact" disabled={status?.state !== 'ready' || restarting} onClick={onRollback} type="button">Rollback</button></div></div><details className="launch-details"><summary>Effective launch arguments</summary><pre>{status?.arguments?.join(' ') || 'Unavailable'}</pre></details></section>
       <section className="data-panel log-panel"><div className="panel-heading"><div><h2>Recent output</h2><p>Chronological output · bounded in-memory tail</p></div></div><pre>{status?.logs.length ? status.logs.join('\n') : 'Waiting for router output…'}</pre></section>

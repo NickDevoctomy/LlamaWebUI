@@ -194,6 +194,9 @@ async def test_launch_router_uses_windows_process_group(monkeypatch: pytest.Monk
 
     process = SimpleNamespace(pid=1234, returncode=None, stdout=None)
     create_subprocess = AsyncMock(return_value=process)
+    jobs: list[int] = []
+    # Never attach a real process that happens to have the fake pid to a kill-on-close job.
+    monkeypatch.setattr(router_supervisor, "ProcessJob", lambda pid: jobs.append(pid))
     monkeypatch.setattr(router_supervisor, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(
         router_supervisor,
@@ -219,6 +222,7 @@ async def test_launch_router_uses_windows_process_group(monkeypatch: pytest.Monk
         stderr=-2,
         creationflags=512,
     )
+    assert jobs == [1234]
 
 
 @pytest.mark.parametrize(

@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, field_validator
 from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.domain.argument_catalog import ArgumentCatalog, default_catalog
+from llamawebui.domain.download_job import DownloadState
 from llamawebui.domain.effective_catalog import build_effective_catalog
 from llamawebui.domain.model_profile import (
     ModelProfile,
@@ -40,6 +41,12 @@ from llamawebui.domain.profile_arguments import (
     migrate_legacy_configuration,
     normalize_configuration,
     warnings_of,
+)
+from llamawebui.domain.recommendation import (
+    Recommendation,
+    RecommendationError,
+    assess,
+    load_recommendations,
 )
 from llamawebui.domain.router_lifecycle import RouterLaunch, RouterState
 from llamawebui.models import (
@@ -85,6 +92,7 @@ from llamawebui.services.event_broker import (
     EventBroker,
     EventCursorError,
 )
+from llamawebui.services.hardware_profile import HardwareProfile, detect_hardware
 from llamawebui.services.huggingface_catalog import (
     Catalog,
     CatalogUnavailableError,
@@ -109,6 +117,7 @@ from llamawebui.services.profile_registry import (
     configuration_payload,
     profile_from_record,
 )
+from llamawebui.services.recommendations import apply_recommendation
 from llamawebui.services.router_client import (
     HttpRouterClient,
     RouterAPIError,
@@ -133,6 +142,9 @@ from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRe
 from llamawebui.version import __version__
 
 MODEL_EVENT_KEEPALIVE_SECONDS = 15.0
+_ACTIVE_DOWNLOAD_STATES = frozenset(
+    {DownloadState.QUEUED, DownloadState.DOWNLOADING, DownloadState.PAUSED}
+)
 PROFILE_EXPORT_FORMAT = "llamawebui-profile-v2"
 PROFILE_IMPORT_FORMATS = frozenset({"llamawebui-profile-v1", PROFILE_EXPORT_FORMAT})
 LOGGER = logging.getLogger("llamawebui.app")
@@ -297,6 +309,10 @@ class RoleCreateRequest(BaseModel):
     privileges: tuple[str, ...] = ()
 
 
+class RecommendationApplyRequest(BaseModel):
+    runtime_id: str = Field(min_length=1, max_length=36)
+
+
 class UserUpdateRequest(BaseModel):
     description: str | None = Field(default=None, max_length=500)
     role_id: str
@@ -418,6 +434,7 @@ def _profile_payload(
 ) -> dict[str, object]:
     source = artifacts.source_for_profile(profile) if artifacts is not None else None
     validation_state = "available"
+    download: dict[str, object] | None = None
     if artifacts is not None:
         matches = artifacts.matching_jobs(profile)
         validation_state = (
@@ -430,6 +447,18 @@ def _profile_payload(
                 key=("broken", "unverified", "available").index,
             )
         )
+        active = next(
+            (job for job in matches if DownloadState(job.state) in _ACTIVE_DOWNLOAD_STATES), None
+        )
+        if validation_state == "broken" and active is not None:
+            # Not broken: the model is on its way. The router still treats it as unavailable.
+            validation_state = "pending"
+            download = {
+                "id": active.id,
+                "state": active.state,
+                "completed_bytes": active.completed_bytes,
+                "total_bytes": active.total_bytes,
+            }
     return {
         "id": profile.id,
         "alias": profile.alias,
@@ -439,6 +468,8 @@ def _profile_payload(
         "preset": redact_preset(profile.preset, catalog),
         "enabled": profile.enabled,
         "validation_state": validation_state,
+        "auto_enable": profile.enable_on_download is not None,
+        "download": download,
         "source_download": (
             {
                 "id": source.download_id,
@@ -673,6 +704,8 @@ def create_app(
     router_client: RouterClient | None = None,
     static_dir: Path | None = None,
     argument_catalog: ArgumentCatalog | None = None,
+    hardware_detector: Callable[[], HardwareProfile] = detect_hardware,
+    recommendations: tuple[Recommendation, ...] | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
     packaged_static_dir = static_dir or Path(__file__).parent / "static"
@@ -746,8 +779,19 @@ def create_app(
                 stall_timeout_seconds=app_settings.download_stall_timeout_seconds,
             ),
             event_broker=app.state.event_broker,
+            on_completed=app.state.profile_registry.enable_ready,
         )
         app.state.download_coordinator.start_pending()
+        # Catch up on profiles whose download finished while the app was not watching.
+        for download_id in app.state.profile_registry.awaiting_downloads():
+            with suppress(DownloadJobNotFoundError):
+                job = app.state.download_registry.get(download_id)
+                if DownloadState(job.state) is DownloadState.COMPLETED:
+                    app.state.profile_registry.enable_ready(download_id)
+        app.state.hardware_detector = hardware_detector
+        app.state.recommendations = (
+            recommendations if recommendations is not None else load_recommendations()
+        )
         app.state.router_supervisor = router_supervisor or RouterSupervisor(
             restart_policy=RouterRestartPolicy(
                 max_attempts=app_settings.router_restart_max_attempts,
@@ -1684,6 +1728,107 @@ def create_app(
                 "flagsSha256": runtime.flags_sha256,
             },
         )
+
+    @app.get("/api/profiles/recommendations")
+    async def list_recommendations(request: Request) -> dict[str, object]:
+        detector = cast(Callable[[], HardwareProfile], request.app.state.hardware_detector)
+        hardware = await asyncio.to_thread(detector)
+        runtimes = [
+            runtime
+            for runtime in cast(RuntimeRegistry, request.app.state.runtime_registry).list()
+            if _runtime_payload(runtime)["usable"]
+        ]
+        aliases = {
+            profile.alias: profile.id
+            for profile in cast(ProfileRegistry, request.app.state.profile_registry).list()
+        }
+        items: list[dict[str, object]] = []
+        for recommendation in cast(
+            tuple[Recommendation, ...], request.app.state.recommendations
+        ):
+            assessment = assess(
+                recommendation,
+                cpu=hardware.cpu,
+                memory_bytes=hardware.memory_bytes,
+                discrete_vram_bytes=hardware.discrete_vram_bytes,
+                gpus=hardware.gpus,
+            )
+            items.append(
+                {
+                    **recommendation.to_payload(),
+                    "assessment": {
+                        "fit": assessment.fit,
+                        "hardware_match": assessment.hardware_match,
+                        "available_memory_gb": round(assessment.available_memory_gb, 1),
+                    },
+                    "compatible_runtime_ids": [
+                        runtime.id
+                        for runtime in runtimes
+                        if (runtime.backend or "").lower() in recommendation.backends
+                    ],
+                    "profile_id": aliases.get(recommendation.alias),
+                }
+            )
+        return {"host": hardware.to_payload(), "recommendations": items}
+
+    @app.post(
+        "/api/profiles/recommendations/{recommendation_id}/apply",
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def apply_recommended_profile(
+        recommendation_id: str, apply_request: RecommendationApplyRequest, request: Request
+    ) -> dict[str, object]:
+        # Applying also queues a model download, so it needs that privilege too.
+        if "downloads.write" not in _require_session(request).privileges:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="insufficient privileges"
+            )
+        recommendation = next(
+            (
+                item
+                for item in cast(tuple[Recommendation, ...], request.app.state.recommendations)
+                if item.id == recommendation_id
+            ),
+            None,
+        )
+        if recommendation is None:
+            raise HTTPException(status_code=404, detail="recommended profile not found")
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        catalog = _argument_catalog(request)
+        try:
+            applied = await apply_recommendation(
+                recommendation,
+                runtime_id=apply_request.runtime_id,
+                hub=cast(Catalog, request.app.state.huggingface_catalog),
+                catalog=catalog,
+                profiles=cast(ProfileRegistry, request.app.state.profile_registry),
+                downloads=cast(DownloadRegistry, request.app.state.download_registry),
+                artifacts=artifacts,
+                coordinator=cast(DownloadCoordinator, request.app.state.download_coordinator),
+            )
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProfileAliasExistsError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ProfileValidationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
+            ) from error
+        except (RecommendationError, DownloadPlanError, ArgumentValueError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
+        except HfHubHTTPError as error:
+            raise _hub_error(error) from error
+        except CatalogUnavailableError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+            ) from error
+        return {
+            "profile": _profile_payload(applied.profile, artifacts, catalog=catalog),
+            "download": _download_payload(applied.download),
+            "ready": applied.ready,
+        }
 
     @app.get("/api/profiles")
     async def list_profiles(request: Request) -> list[dict[str, object]]:

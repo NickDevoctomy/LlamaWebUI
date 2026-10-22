@@ -8,6 +8,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
@@ -19,8 +20,10 @@ import httpx
 
 from llamawebui.domain.router_lifecycle import RouterLaunch, RouterState, require_transition
 from llamawebui.services.logging_utils import redact_text
+from llamawebui.services.process_job import ProcessJob
 
 LOGGER = logging.getLogger("llamawebui.router")
+_EXIT_POLL_SECONDS = 0.2
 
 
 class RouterOutput(Protocol):
@@ -79,8 +82,11 @@ async def probe_router_health(host: str, port: int) -> bool:
 
 
 class ManagedRouterProcess:
-    def __init__(self, process: asyncio.subprocess.Process) -> None:
+    def __init__(
+        self, process: asyncio.subprocess.Process, job: ProcessJob | None = None
+    ) -> None:
         self._process = process
+        self._job = job
 
     @property
     def pid(self) -> int:
@@ -126,7 +132,26 @@ class ManagedRouterProcess:
                     self._process.terminate()
 
     async def wait(self) -> int:
-        return await self._process.wait()
+        # asyncio only finishes wait() once the output pipe closes, and a model process
+        # that inherited the pipe keeps it open after the router itself has exited.
+        # Watch the exit code instead, end the leftovers, and the pipe then closes.
+        exited = asyncio.ensure_future(self._process.wait())
+        while not exited.done() and self._process.returncode is None:
+            await asyncio.wait({exited}, timeout=_EXIT_POLL_SECONDS)
+        self._end_model_processes()
+        return await exited
+
+    def _end_model_processes(self) -> None:
+        """Stop per-model llama-server children that outlived the router.
+
+        Runs whenever the router exits, whether stopped, killed or crashed.
+        """
+        if self._job is not None:
+            self._job.close()
+        elif sys.platform != "win32":
+            # The router leads its own session, so its group id is its pid.
+            with suppress(OSError):
+                os.killpg(self.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
 async def launch_router(arguments: Sequence[str]) -> RouterProcess:
@@ -137,6 +162,8 @@ async def launch_router(arguments: Sequence[str]) -> RouterProcess:
             stderr=asyncio.subprocess.STDOUT,
             creationflags=cast(Any, subprocess).CREATE_NEW_PROCESS_GROUP,
         )
+        # Model processes started by the router join this job and end with it.
+        return ManagedRouterProcess(process, ProcessJob(process.pid))
     else:
         process = await asyncio.create_subprocess_exec(
             *arguments,

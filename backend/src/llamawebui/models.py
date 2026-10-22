@@ -53,6 +53,8 @@ class ModelProfileRecord(Base):
     configuration: Mapped[dict[str, object]] = mapped_column(JSON)
     preset: Mapped[str] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Download job whose completion enables this profile; cleared once acted on.
+    enable_on_download: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()

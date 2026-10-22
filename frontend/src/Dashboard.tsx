@@ -224,7 +224,7 @@ export function DashboardPanel({ status, history, runtime, runtimes, profiles, m
         {profiles.length ? <ul className="roster">
           {profiles.slice(0, 8).map((profile) => {
             const live = models.find((model) => model.id === profile.alias)?.status.value
-            const value = profile.validation_state === 'broken' ? 'broken' : live ?? (profile.enabled ? 'available' : 'disabled')
+            const value = profile.validation_state === 'broken' ? 'broken' : profile.validation_state === 'pending' ? 'downloading' : live ?? (profile.enabled ? 'available' : 'disabled')
             const size = profile.configuration.model_size
             return <li key={profile.id}>
               <span className={`roster-dot ${value}`} />

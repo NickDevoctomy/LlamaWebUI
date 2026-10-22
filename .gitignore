@@ -16,5 +16,6 @@ build/
 *.egg-info/
 runtime/
 temp/
+.playwright-mcp/
 backend/data/
 /data/

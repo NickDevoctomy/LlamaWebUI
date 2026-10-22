@@ -55,7 +55,10 @@ export interface Profile {
   model_path: string
   configuration: Record<string, unknown>
   enabled: boolean
-  validation_state: 'available' | 'unverified' | 'broken'
+  validation_state: 'available' | 'unverified' | 'pending' | 'broken'
+  /** Switches on by itself when its model download completes. */
+  auto_enable?: boolean
+  download?: { id: string; state: string; completed_bytes: number; total_bytes: number } | null
   source_download: {
     id: string
     repo_id: string
@@ -66,10 +69,36 @@ export interface Profile {
   } | null
 }
 
+export interface HostHardware {
+  cpu: string | null
+  memory_bytes: number
+  gpus: string[]
+  discrete_vram_bytes: number
+}
+
+export interface Recommendation {
+  id: string
+  title: string
+  summary: string
+  model: { repo_id: string; quantization: string; revision: string | null }
+  tested_on: { label: string; memory_gb: number; unified_memory: boolean; backend: string; notes: string | null }
+  /** memory_gb is system memory plus any discrete VRAM; vram_gb, when set, is the GPU share. */
+  requirements: { memory_gb: number; vram_gb?: number | null; backends: string[] }
+  profile: { alias: string; arguments: StoredArgument[] }
+  assessment: { fit: 'fits' | 'tight' | 'insufficient'; hardware_match: boolean; available_memory_gb: number }
+  compatible_runtime_ids: string[]
+  profile_id: string | null
+}
+
+export interface RecommendationList {
+  host: HostHardware
+  recommendations: Recommendation[]
+}
+
 export interface RouterModel {
   id: string
   path: string | null
-  status: { value?: string }
+  status: { value?: string; failed?: boolean; exit_code?: number }
   metadata: Record<string, unknown>
 }
 
@@ -411,6 +440,12 @@ export const api = {
   runtimes: () => request<Runtime[]>('/api/runtimes'),
   reprobeRuntime: (runtimeId: string) => request<Runtime>(`/api/runtimes/${runtimeId}/probe`, { method: 'POST' }),
   profiles: () => request<Profile[]>('/api/profiles'),
+  recommendations: () => request<RecommendationList>('/api/profiles/recommendations'),
+  applyRecommendation: (id: string, runtimeId: string) =>
+    request<{ profile: Profile; download: DownloadJob; ready: boolean }>(`/api/profiles/recommendations/${id}/apply`, {
+      method: 'POST',
+      body: JSON.stringify({ runtime_id: runtimeId }),
+    }),
   tokens: () => request<AccessToken[]>('/api/tokens'),
   downloads: () => request<DownloadJob[]>('/api/downloads'),
   library: () => request<LibraryModel[]>('/api/library'),

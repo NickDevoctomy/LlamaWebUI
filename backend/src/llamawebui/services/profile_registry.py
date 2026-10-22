@@ -7,10 +7,16 @@ from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import Engine, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from llamawebui.domain.argument_catalog import ArgumentCatalog
-from llamawebui.domain.model_profile import ModelProfile, render_preset, render_preset_unchecked
+from llamawebui.domain.model_profile import (
+    ModelProfile,
+    ProfileValidationError,
+    render_preset,
+    render_preset_unchecked,
+    validate_profile,
+)
 from llamawebui.domain.profile_arguments import (
     LEGACY_FIELDS,
     ProfileConfiguration,
@@ -22,6 +28,7 @@ from llamawebui.models import ModelProfileRecord, RuntimeRecord
 from llamawebui.services.runtime_registry import RuntimeNotFoundError, runtime_capabilities
 
 LOGGER = logging.getLogger("llamawebui.profiles")
+_MODEL_FILE_CODES = frozenset({"model-missing", "model-shards"})
 
 
 class ProfileAliasExistsError(ValueError):
@@ -168,6 +175,96 @@ class ProfileRegistry:
             session.commit()
             return record
 
+    def create_pending(
+        self, *, profile: ModelProfile, runtime_id: str, download_id: str
+    ) -> ModelProfileRecord:
+        """Persist a disabled profile whose model is still downloading.
+
+        Arguments are validated now; the model files are checked again when the
+        download completes and :meth:`enable_ready` switches the profile on.
+        """
+        with self._sessions() as session:
+            self._check_pending(session, profile, runtime_id)
+            record = ModelProfileRecord(
+                id=str(uuid4()),
+                alias=profile.alias,
+                runtime_id=runtime_id,
+                model_path=str(profile.model_path.resolve()),
+                configuration=stored_configuration(profile, self._catalog),
+                preset=render_preset_unchecked(profile, self._catalog),
+                enabled=False,
+                enable_on_download=download_id,
+            )
+            session.add(record)
+            session.commit()
+            return record
+
+    def check_pending(self, *, profile: ModelProfile, runtime_id: str) -> None:
+        """Raise exactly as :meth:`create_pending` would, without saving anything."""
+        with self._sessions() as session:
+            self._check_pending(session, profile, runtime_id)
+
+    def _check_pending(self, session: Session, profile: ModelProfile, runtime_id: str) -> None:
+        runtime = session.get(RuntimeRecord, runtime_id)
+        if runtime is None:
+            raise RuntimeNotFoundError(f"runtime not found: {runtime_id}")
+        if session.scalar(
+            select(ModelProfileRecord.id).where(ModelProfileRecord.alias == profile.alias)
+        ) is not None:
+            raise ProfileAliasExistsError(f"model alias is already registered: {profile.alias}")
+        issues = validate_profile(profile, self._catalog, runtime_capabilities(runtime))
+        errors = tuple(
+            issue.message
+            for issue in issues
+            if issue.level == "error" and issue.code not in _MODEL_FILE_CODES
+        )
+        if errors:
+            raise ProfileValidationError(errors)
+
+    def awaiting_downloads(self) -> tuple[str, ...]:
+        """Download ids that still have a profile waiting to be enabled."""
+        with self._sessions() as session:
+            statement = select(ModelProfileRecord.enable_on_download).where(
+                ModelProfileRecord.enable_on_download.is_not(None)
+            )
+            return tuple(sorted({value for value in session.scalars(statement) if value}))
+
+    def enable_ready(self, download_id: str) -> tuple[ModelProfileRecord, ...]:
+        """Enable profiles waiting on a completed download once their files validate."""
+        enabled: list[ModelProfileRecord] = []
+        with self._sessions() as session:
+            records = session.scalars(
+                select(ModelProfileRecord).where(
+                    ModelProfileRecord.enable_on_download == download_id
+                )
+            )
+            for record in records:
+                record.enable_on_download = None
+                runtime = session.get(RuntimeRecord, record.runtime_id)
+                if runtime is None:
+                    continue
+                try:
+                    record.preset = render_preset(
+                        profile_from_record(record, self._catalog),
+                        self._catalog,
+                        runtime_capabilities(runtime),
+                    )
+                except ProfileValidationError as error:
+                    LOGGER.warning(
+                        "profile_auto_enable_failed",
+                        extra={
+                            "component": "profiles",
+                            "event": "auto_enable_failed",
+                            "alias": record.alias,
+                            "error": str(error),
+                        },
+                    )
+                    continue
+                record.enabled = True
+                enabled.append(record)
+            session.commit()
+        return tuple(enabled)
+
     def remove(self, profile_id: str) -> None:
         with self._sessions() as session:
             record = session.get(ModelProfileRecord, profile_id)
@@ -200,6 +297,7 @@ class ProfileRegistry:
             record.model_path = str(profile.model_path.resolve())
             record.configuration = stored_configuration(profile, self._catalog)
             record.enabled = enabled
+            record.enable_on_download = None
             session.commit()
             return record
 
