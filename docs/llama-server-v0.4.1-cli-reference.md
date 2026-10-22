@@ -275,8 +275,8 @@ This document is a categorized reference for the `llama-server` command-line arg
 | `--spec-draft-ngl N` | `-ngld` | Draft-model GPU layers. | Controls draft VRAM and speed. | `vram`, `decodespeed` | |
 | `--spec-draft-threads N` | `-td` | Draft generation CPU threads. | Changes draft CPU work and latency. | `cpu`, `decodespeed` | |
 | `--spec-draft-threads-batch N` | `-tbd` | Draft batch CPU threads. | Changes draft prefill work. | `cpu`, `prefillspeed` | |
-| `--spec-draft-cache-type-k TYPE` | `-ctkd` | Draft KV K-cache type. | Trades draft memory, speed, and quality. | `vram`, `ram`, `quality`, `decodespeed` | |
-| `--spec-draft-cache-type-v TYPE` | `-ctvd` | Draft KV V-cache type. | Trades draft memory, speed, and quality. | `vram`, `ram`, `quality`, `decodespeed` | |
+| `--spec-draft-type-k TYPE` | `-ctkd`, `--cache-type-k-draft` | Draft KV K-cache type. | Trades draft memory, speed, and quality. | `vram`, `ram`, `quality`, `decodespeed` | |
+| `--spec-draft-type-v TYPE` | `-ctvd`, `--cache-type-v-draft` | Draft KV V-cache type. | Trades draft memory, speed, and quality. | `vram`, `ram`, `quality`, `decodespeed` | |
 | `--spec-draft-cpu-moe` | `-cmoed` | Keep draft MoE weights on CPU. | Reduces draft VRAM at speed cost. | `vram`, `ram`, `cpu`, `decodespeed` | |
 | `--spec-draft-n-cpu-moe N` | `-ncmoed` | Keep first N draft MoE layers on CPU. | Partial draft VRAM reduction at speed cost. | `vram`, `ram`, `cpu`, `decodespeed` | |
 | `--spec-draft-backend-sampling` | `--no-spec-draft-backend-sampling` | Offload draft sampling to backend. | May improve speculative speed; backend-dependent. | `backend`, `decodespeed` | |

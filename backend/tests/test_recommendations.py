@@ -23,7 +23,7 @@ from llamawebui.domain.recommendation import (
     select_group,
 )
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
-from llamawebui.models import RuntimeRecord
+from llamawebui.models import ModelProfileRecord, RuntimeRecord
 from llamawebui.services.hardware_profile import HardwareProfile
 from llamawebui.services.huggingface_catalog import ModelSearchResult, RepositoryManifest
 from llamawebui.services.profile_registry import ProfileRegistry
@@ -495,6 +495,40 @@ def test_pending_profile_stays_disabled_when_its_files_are_still_missing(tmp_pat
             runtime_id=runtime_id,
             download_id="job-2",
         )
+
+
+def test_refresh_presets_rebuilds_stale_presets_only_when_valid(tmp_path: Path) -> None:
+    registry, runtime_id = _registry(tmp_path)
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"gguf")
+    current = registry.create(
+        profile=ModelProfile(
+            alias="current",
+            model_path=model,
+            arguments=(ProfileArgument("--ctx-size", 4096, "ctx-size"),),
+        ),
+        runtime_id=runtime_id,
+    )
+    missing = registry.create_pending(
+        profile=ModelProfile(alias="missing", model_path=tmp_path / "gone.gguf"),
+        runtime_id=runtime_id,
+        download_id="job-1",
+    )
+    engine = create_database_engine(tmp_path / "app.db")
+    from sqlalchemy.orm import Session
+
+    with Session(engine) as session:
+        for record_id in (current.id, missing.id):
+            record = session.get(ModelProfileRecord, record_id)
+            assert record is not None
+            record.preset = "version = 1\n\n[stale]\nspec-draft-cache-type-k = q4_0\n"
+        session.commit()
+
+    assert registry.refresh_presets() == ("current",)
+    assert "ctx-size = 4096" in registry.get(current.id).preset
+    # Model files are missing, so it cannot be validated and is left as it was.
+    assert "spec-draft-cache-type-k" in registry.get(missing.id).preset
+    assert registry.refresh_presets() == ()
 
 
 def test_editing_a_pending_profile_cancels_auto_enable(tmp_path: Path) -> None:

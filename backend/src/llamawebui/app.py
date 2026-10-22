@@ -748,6 +748,8 @@ def create_app(
                     "preset_mismatches": len(migration.preset_mismatches),
                 },
             )
+        # Saved presets are what the router launches; bring them in line with this catalog.
+        app.state.profile_registry.refresh_presets()
         app.state.token_registry = TokenRegistry(engine, app_settings.data_dir)
         app.state.token_registry.reconcile_legacy_materialized_tokens()
         app.state.token_registry.remove_materialized_tokens()

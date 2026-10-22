@@ -221,6 +221,42 @@ class ProfileRegistry:
         if errors:
             raise ProfileValidationError(errors)
 
+    def refresh_presets(self) -> tuple[str, ...]:
+        """Rebuild saved presets that no longer match the current catalog.
+
+        The router launches the stored preset text, so without this a catalog correction
+        (such as a flag llama-server spells differently) only applied after a manual save.
+        Presets that cannot be rebuilt, for example while model files are missing, are
+        left untouched. Returns the aliases whose presets changed.
+        """
+        refreshed: list[str] = []
+        with self._sessions() as session:
+            for record in session.scalars(select(ModelProfileRecord)):
+                # Legacy rows keep their launched preset until edited (see the migration).
+                if not record.model_path or "legacy_configuration" in record.configuration:
+                    continue
+                runtime = session.get(RuntimeRecord, record.runtime_id)
+                if runtime is None:
+                    continue
+                try:
+                    preset = render_preset(
+                        profile_from_record(record, self._catalog),
+                        self._catalog,
+                        runtime_capabilities(runtime),
+                    )
+                except (ProfileValidationError, ValueError):
+                    continue
+                if preset != record.preset:
+                    record.preset = preset
+                    refreshed.append(record.alias)
+            session.commit()
+        for alias in refreshed:
+            LOGGER.info(
+                "profile_preset_refreshed",
+                extra={"component": "profiles", "event": "preset_refreshed", "alias": alias},
+            )
+        return tuple(refreshed)
+
     def awaiting_downloads(self) -> tuple[str, ...]:
         """Download ids that still have a profile waiting to be enabled."""
         with self._sessions() as session:

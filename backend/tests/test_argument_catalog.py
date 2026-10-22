@@ -170,6 +170,17 @@ def test_model_file_arguments_are_marked_as_gguf() -> None:
     assert marked == {"model", "mmproj", "spec-draft-model", "lora", "control-vector"}
 
 
+def test_draft_cache_types_use_the_flags_llama_server_accepts() -> None:
+    # llama-server b11070-b11669 only accept --spec-draft-type-k/-v; the old catalog
+    # spelling made the router reject the generated preset.
+    catalog = default_catalog()
+    for suffix in ("k", "v"):
+        definition = catalog.get(f"spec-draft-cache-type-{suffix}")
+        assert definition is not None
+        assert definition.flag == f"--spec-draft-type-{suffix}"
+        assert set(definition.aliases) == {f"-ct{suffix}d", f"--cache-type-{suffix}-draft"}
+
+
 def test_loader_reports_unreadable_and_malformed_files(tmp_path: Path) -> None:
     with pytest.raises(CatalogError, match="could not be read"):
         load_catalog(tmp_path / "missing.json")
