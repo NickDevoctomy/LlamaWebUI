@@ -56,14 +56,14 @@ export function isSet(draft: DraftValue) {
 export function draftFromStored(definition: ArgumentDefinition, value: StoredArgumentValue): DraftValue {
   if (definition.value.type === 'boolean') return value === true || value === 'true'
   if (definition.value.type === 'list') {
-    const items = Array.isArray(value) ? value.map(String) : [String(value)]
-    return definition.value.repeat ? items : items.join(definition.value.separator ?? ',')
+    // Both list styles edit as one row per value; separator lists are joined when sent.
+    return Array.isArray(value) ? value.map(String) : [String(value)]
   }
   return Array.isArray(value) ? value.join(' ') : String(value)
 }
 
 export function emptyDraft(definition: ArgumentDefinition): DraftValue {
-  if (definition.value.type === 'list' && definition.value.repeat) return ['']
+  if (definition.value.type === 'list') return ['']
   return undefined
 }
 
@@ -105,7 +105,10 @@ export function valueFromDraft(definition: ArgumentDefinition, draft: DraftValue
     return draft
   }
   if (schema.type === 'list') {
-    const items = (Array.isArray(draft) ? draft : String(draft ?? '').split(schema.separator ?? ','))
+    const rows = Array.isArray(draft) ? draft : [String(draft ?? '')]
+    const items = rows
+      // A separator list also accepts several values typed into one row.
+      .flatMap((row) => (schema.repeat ? [row] : row.split(schema.separator ?? ',')))
       .map((item) => (schema.repeat ? item : item.trim()))
       .filter((item) => item.trim() !== '')
     if (!items.length) throw new Error(`${definition.flag} requires at least one value`)

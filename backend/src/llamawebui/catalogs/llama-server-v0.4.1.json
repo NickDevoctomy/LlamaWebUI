@@ -2834,7 +2834,8 @@
       "control": "managed",
       "value": {
         "type": "path",
-        "pathKind": "file"
+        "pathKind": "file",
+        "fileType": "gguf"
       },
       "help": {
         "summary": "Local model path to load.",
@@ -3235,7 +3236,8 @@
         "type": "list",
         "repeat": true,
         "itemType": "path",
-        "pathKind": "file"
+        "pathKind": "file",
+        "fileType": "gguf"
       },
       "help": {
         "summary": "Load one or more LoRA adapters.",
@@ -3360,7 +3362,8 @@
         "type": "list",
         "repeat": true,
         "itemType": "path",
-        "pathKind": "file"
+        "pathKind": "file",
+        "fileType": "gguf"
       },
       "help": {
         "summary": "Load control vectors.",
@@ -3481,7 +3484,8 @@
       "control": "editable",
       "value": {
         "type": "path",
-        "pathKind": "file"
+        "pathKind": "file",
+        "fileType": "gguf"
       },
       "help": {
         "summary": "Path to a multimodal projector.",
@@ -7990,7 +7994,8 @@
       "control": "editable",
       "value": {
         "type": "path",
-        "pathKind": "file"
+        "pathKind": "file",
+        "fileType": "gguf"
       },
       "help": {
         "summary": "Draft model for speculative decoding.",

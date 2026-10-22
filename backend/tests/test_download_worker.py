@@ -164,6 +164,72 @@ async def test_worker_rejects_existing_destination(tmp_path: Path) -> None:
     assert "already exists" in (registry.get(job_id).error or "")
 
 
+class _WriteTransfer:
+    """Writes each requested file as that many 'x' bytes as its trailing digit + 1."""
+
+    async def download(
+        self, *, repo_id: str, filename: str, revision: str, destination: Path
+    ) -> Path:
+        target = destination / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"x" * (int(filename.split("-")[-1].split(".")[0]) + 1))
+        return target
+
+
+async def test_worker_merges_into_a_revision_folder_shared_with_another_download(
+    tmp_path: Path,
+) -> None:
+    # The main model of the same repository revision is already published here.
+    registry, job_id = create_registry(tmp_path, (1, 2))
+    job = registry.get(job_id)
+    destination = Path(job.destination)
+    (destination / "UD-IQ4_XS").mkdir(parents=True)
+    (destination / "UD-IQ4_XS" / "main-00001-of-00001.gguf").write_bytes(b"main")
+
+    await DownloadWorker(registry, _WriteTransfer()).run(job_id)
+
+    assert registry.get(job_id).state == DownloadState.COMPLETED
+    assert (destination / "UD-IQ4_XS" / "main-00001-of-00001.gguf").read_bytes() == b"main"
+    assert (destination / "model-0.gguf").read_bytes() == b"x"
+    assert (destination / "model-1.gguf").read_bytes() == b"xx"
+    assert not list(destination.parent.glob("*.partial"))
+
+
+async def test_worker_refuses_to_overwrite_a_different_file_and_keeps_its_download(
+    tmp_path: Path,
+) -> None:
+    registry, job_id = create_registry(tmp_path, (1, 2))
+    job = registry.get(job_id)
+    destination = Path(job.destination)
+    destination.mkdir(parents=True)
+    (destination / "model-1.gguf").write_bytes(b"other content")
+
+    worker = DownloadWorker(registry, _WriteTransfer())
+    await worker.run(job_id)
+
+    assert registry.get(job_id).state == DownloadState.FAILED
+    assert "a different file already exists" in (registry.get(job_id).error or "")
+    assert (destination / "model-1.gguf").read_bytes() == b"other content"
+    assert not (destination / "model-0.gguf").exists()
+    # Nothing moved, so the finished download is still there to retry once resolved.
+    assert (worker.staging_path(job_id) / "model-0.gguf").is_file()
+
+
+async def test_worker_finishes_a_merge_that_was_interrupted(tmp_path: Path) -> None:
+    registry, job_id = create_registry(tmp_path, (1, 2))
+    job = registry.get(job_id)
+    destination = Path(job.destination)
+    destination.mkdir(parents=True)
+    (destination / "other.gguf").write_bytes(b"other")
+    (destination / "model-0.gguf").write_bytes(b"x")
+
+    await DownloadWorker(registry, _WriteTransfer()).run(job_id)
+
+    assert registry.get(job_id).state == DownloadState.COMPLETED
+    assert (destination / "model-1.gguf").read_bytes() == b"xx"
+    assert (destination / "other.gguf").read_bytes() == b"other"
+
+
 async def test_worker_replaces_stale_cache_only_destination(tmp_path: Path) -> None:
     registry, job_id = create_registry(tmp_path, (1,))
     job = registry.get(job_id)

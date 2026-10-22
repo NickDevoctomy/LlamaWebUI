@@ -245,6 +245,8 @@ export interface ArgumentValueSchema {
   repeat: boolean
   itemType?: 'string' | 'integer' | 'number' | 'path'
   pathKind?: 'file' | 'directory' | 'any'
+  /** The file must be a GGUF model, so the editor can offer downloaded models. */
+  fileType?: 'gguf'
   pattern?: string
   specialValues: string[]
   negation?: string

@@ -675,7 +675,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
                 <label className="toggle-row"><span><strong>Preserve reasoning</strong><small>Keep reasoning content when the model supports it.</small></span><input checked={preserveReasoning} onChange={(event) => setPreserveReasoning(event.target.checked)} type="checkbox" /></label>
               </>
               : !catalog || pendingStored !== undefined ? <div className="capability-note" role="status"><LoaderCircle className="spin" size={16} /><span>Loading the argument catalog for {runtime?.name ?? 'the runtime'}…</span></div>
-              : <ProfileArgumentEditor acknowledged={acknowledged} catalog={catalog} entries={entries} issues={issues} onAcknowledgedChange={setAcknowledged} onEntriesChange={setEntries} runtimeName={runtime?.name ?? 'This runtime'} runtimeSwitchFlags={runtimeSwitchFlags} />)}
+              : <ProfileArgumentEditor acknowledged={acknowledged} catalog={catalog} downloadedModels={library} entries={entries} issues={issues} onAcknowledgedChange={setAcknowledged} onEntriesChange={setEntries} runtimeName={runtime?.name ?? 'This runtime'} runtimeSwitchFlags={runtimeSwitchFlags} />)}
             {tab === 'preview' && (runtimeId
               ? <LaunchPreview clientIssues={issues} error={preview.error?.message} onRefresh={() => preview.mutate(payload)} pending={preview.isPending} preview={preview.data} />
               : <div className="capability-note"><Gauge size={16} /><span>Select a runtime to preview the launch arguments.</span></div>)}

@@ -14,8 +14,8 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from 'react'
-import type { ArgumentDefinition, EffectDirection, EffectiveArgumentCatalog, ProfilePreview, RawOrigin, RuntimeOptionInfo } from './api'
+import { createContext, type KeyboardEvent, useContext, useEffect, useId, useMemo, useRef, useState } from 'react'
+import type { ArgumentDefinition, EffectDirection, EffectiveArgumentCatalog, LibraryModel, ProfilePreview, RawOrigin, RuntimeOptionInfo } from './api'
 import {
   type ClientIssue,
   type DraftValue,
@@ -145,14 +145,44 @@ export function HelpButton({ catalog, definition }: { catalog: EffectiveArgument
 function hintFor(definition: ArgumentDefinition) {
   const schema = definition.value
   const parts: string[] = []
-  if (schema.type === 'list' && schema.separator) parts.push(schema.separator === ',' ? 'Comma-separated' : `Separated by "${schema.separator}"`)
-  if (schema.type === 'list' && schema.repeat) parts.push('One value per row')
+  if (schema.type === 'list') parts.push('One value per row')
+  if (schema.type === 'list' && schema.repeat) parts.push(`Each sent as its own ${definition.flag}`)
+  if (schema.type === 'list' && !schema.repeat) parts.push(`Sent as one ${definition.flag}, joined with "${schema.separator ?? ','}"`)
   if (schema.specialValues.length) parts.push(`Number or ${schema.specialValues.join(', ')}`)
   if (schema.unit) parts.push(schema.unit)
-  if (schema.type === 'path' || schema.itemType === 'path') parts.push(schema.pathKind === 'directory' ? 'Absolute directory path' : 'Absolute file path')
+  if (schema.fileType === 'gguf') parts.push('Choose a downloaded model, or type an absolute .gguf path')
+  else if (schema.type === 'path' || schema.itemType === 'path') parts.push(schema.pathKind === 'directory' ? 'Absolute directory path' : 'Absolute file path')
   if (schema.type === 'json') parts.push('JSON')
   if (schema.arity > 1) parts.push(`${schema.arity} values separated by a space`)
   return parts.join(' · ')
+}
+
+/** Downloaded models offered for arguments whose file must be a GGUF model. */
+const DownloadedModels = createContext<LibraryModel[]>([])
+
+function samePath(left: string, right: string) {
+  return left.replace(/\//g, '\\').toLowerCase() === right.replace(/\//g, '\\').toLowerCase()
+}
+
+function ModelPathInput({ label, inputId, value, placeholder, inputProps, onChange }: {
+  label: string
+  inputId: string
+  value: string
+  placeholder: string
+  inputProps: Record<string, unknown>
+  onChange: (value: string) => void
+}) {
+  const models = useContext(DownloadedModels)
+  const chosen = models.find((model) => samePath(model.primary_path, value))
+  return (
+    <div className="model-path-input">
+      <select aria-label={`${label}: downloaded model`} onChange={(event) => { if (event.target.value) onChange(event.target.value) }} value={chosen?.primary_path ?? ''}>
+        <option value="">{models.length ? 'Choose a downloaded model…' : 'No downloaded models yet'}</option>
+        {models.map((model) => <option key={model.download_id} value={model.primary_path}>{model.repo_id} · {model.group_key}</option>)}
+      </select>
+      <input {...inputProps} id={inputId} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} spellCheck={false} value={value} />
+    </div>
+  )
 }
 
 function ArgumentInput({ definition, draft, inputId, describedBy, invalid, onChange }: {
@@ -188,13 +218,19 @@ function ArgumentInput({ definition, draft, inputId, describedBy, invalid, onCha
   if (schema.type === 'json') {
     return <textarea {...common} className="mono" onChange={(event) => onChange(event.target.value)} placeholder={placeholder} rows={3} spellCheck={false} value={typeof draft === 'string' ? draft : ''} />
   }
-  if (schema.type === 'list' && schema.repeat) {
-    const rows = Array.isArray(draft) && draft.length ? draft : ['']
+  const modelFile = schema.fileType === 'gguf'
+  if (schema.type === 'path' && modelFile) {
+    return <ModelPathInput inputId={inputId} inputProps={common} label={definition.label} onChange={onChange} placeholder="Or type an absolute path" value={typeof draft === 'string' ? draft : ''} />
+  }
+  if (schema.type === 'list') {
+    const rows = Array.isArray(draft) && draft.length ? draft : typeof draft === 'string' && draft ? [draft] : ['']
     return (
       <div className="list-input">
         {rows.map((row, index) => (
           <div className="list-input-row" key={index}>
-            <input {...common} aria-label={index === 0 ? undefined : `${definition.label} value ${index + 1}`} id={index === 0 ? inputId : `${inputId}-${index}`} onChange={(event) => onChange(rows.map((item, position) => (position === index ? event.target.value : item)))} placeholder={index === 0 ? placeholder : 'Another value'} spellCheck={false} value={row} />
+            {modelFile
+              ? <ModelPathInput inputId={index === 0 ? inputId : `${inputId}-${index}`} inputProps={{ ...common, 'aria-label': index === 0 ? undefined : `${definition.label} value ${index + 1}` }} label={index === 0 ? definition.label : `${definition.label} value ${index + 1}`} onChange={(next) => onChange(rows.map((item, position) => (position === index ? next : item)))} placeholder="Or type an absolute path" value={row} />
+              : <input {...common} aria-label={index === 0 ? undefined : `${definition.label} value ${index + 1}`} id={index === 0 ? inputId : `${inputId}-${index}`} onChange={(event) => onChange(rows.map((item, position) => (position === index ? event.target.value : item)))} placeholder={index === 0 ? placeholder : 'Another value'} spellCheck={false} value={row} />}
             {rows.length > 1 && <button aria-label={`Remove ${definition.label} value ${index + 1}`} className="icon-button small" onClick={() => onChange(rows.filter((_, position) => position !== index))} type="button"><X size={14} /></button>}
           </div>
         ))}
@@ -331,8 +367,9 @@ function ArgumentSearch({ catalog, entries, onAddCatalog, onAddRuntime }: {
   )
 }
 
-export function ProfileArgumentEditor({ catalog, entries, onEntriesChange, acknowledged, onAcknowledgedChange, issues, runtimeName, runtimeSwitchFlags }: {
+export function ProfileArgumentEditor({ catalog, entries, onEntriesChange, acknowledged, onAcknowledgedChange, issues, runtimeName, runtimeSwitchFlags, downloadedModels = [] }: {
   catalog: EffectiveArgumentCatalog
+  downloadedModels?: LibraryModel[]
   entries: EditorEntry[]
   onEntriesChange: (entries: EditorEntry[]) => void
   acknowledged: string[]
@@ -407,6 +444,7 @@ export function ProfileArgumentEditor({ catalog, entries, onEntriesChange, ackno
   const callouts = catalog.issues.filter((issue) => issue.code !== 'not-advertised')
 
   return (
+    <DownloadedModels.Provider value={downloadedModels}>
     <div className="argument-editor">
       {callouts.map((issue) => <div className={`capability-note ${issue.level}`} key={issue.code}><Info aria-hidden="true" size={16} /><span>{issue.message}</span></div>)}
       {runtimeSwitchFlags.length > 0 && <div className="capability-note warning" role="status"><AlertCircle aria-hidden="true" size={16} /><span><strong>{runtimeName}</strong> does not advertise {runtimeSwitchFlags.join(', ')}. These settings are kept and still passed to llama-server.</span></div>}
@@ -452,6 +490,7 @@ export function ProfileArgumentEditor({ catalog, entries, onEntriesChange, ackno
         <button className="button secondary compact" onClick={addCustom} type="button"><Plus size={14} /> Add custom parameter</button>
       </section>
     </div>
+    </DownloadedModels.Provider>
   )
 }
 

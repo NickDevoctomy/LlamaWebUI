@@ -1,23 +1,25 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { LibraryModel } from './api'
 import { type EditorEntry, clientIssues } from './argumentCatalog'
 import { LaunchPreview, ProfileArgumentEditor } from './ProfileArgumentEditor'
 import { Dialog } from './SetupPanels'
-import { catalogFixture } from './test/catalogFixture'
+import { catalogFixture, definition } from './test/catalogFixture'
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
 })
 
-function Harness({ initial = [], initialAcknowledged = [], runtimeSwitchFlags = [], onState }: {
+function Harness({ initial = [], initialAcknowledged = [], runtimeSwitchFlags = [], onState, catalog = catalogFixture(), downloadedModels }: {
   initial?: EditorEntry[]
   initialAcknowledged?: string[]
   runtimeSwitchFlags?: string[]
   onState?: (entries: EditorEntry[], acknowledged: string[]) => void
+  catalog?: ReturnType<typeof catalogFixture>
+  downloadedModels?: LibraryModel[]
 }) {
-  const catalog = catalogFixture()
   const [entries, setEntries] = useState<EditorEntry[]>(initial)
   const [acknowledged, setAcknowledged] = useState<string[]>(initialAcknowledged)
   onState?.(entries, acknowledged)
@@ -25,6 +27,7 @@ function Harness({ initial = [], initialAcknowledged = [], runtimeSwitchFlags = 
     <ProfileArgumentEditor
       acknowledged={acknowledged}
       catalog={catalog}
+      downloadedModels={downloadedModels}
       entries={entries}
       issues={clientIssues(catalog, entries, acknowledged)}
       onAcknowledgedChange={setAcknowledged}
@@ -125,6 +128,35 @@ describe('ProfileArgumentEditor', () => {
     expect(screen.getByText('Removed')).toBeInTheDocument()
     fireEvent.change(search, { target: { value: 'nothing-matches' } })
     expect(screen.getByText(/No arguments match/)).toBeInTheDocument()
+  })
+
+  it('offers downloaded models for arguments that take a GGUF file', () => {
+    const base = catalogFixture()
+    const catalog = catalogFixture({
+      arguments: [
+        ...base.arguments,
+        definition({ id: 'spec-draft-model', label: 'Draft model', aliases: ['-md'], value: { type: 'path', pathKind: 'file', fileType: 'gguf' } }),
+      ],
+    })
+    const mtp = 'E:\\models\\unsloth\\Qwen3.8-Flash-Next-GGUF\\rev\\MTP\\mtp-Qwen3.8-Flash-Next-BF16.gguf'
+    const downloadedModels: LibraryModel[] = [
+      { download_id: 'mtp', repo_id: 'unsloth/Qwen3.8-Flash-Next-GGUF', revision: 'rev', group_key: 'MTP/mtp-Qwen3.8-Flash-Next-BF16', primary_path: mtp, file_count: 1, total_bytes: 1 },
+    ]
+    let state: EditorEntry[] = []
+    render(<Harness catalog={catalog} downloadedModels={downloadedModels} initial={[{ key: 'md', kind: 'catalog', id: 'spec-draft-model', draft: '' }]} onState={(entries) => { state = entries }} />)
+
+    const picker = screen.getByRole('combobox', { name: 'Draft model: downloaded model' })
+    expect(within(picker).getByRole('option', { name: 'unsloth/Qwen3.8-Flash-Next-GGUF · MTP/mtp-Qwen3.8-Flash-Next-BF16' })).toBeInTheDocument()
+    fireEvent.change(picker, { target: { value: mtp } })
+
+    expect(state).toMatchObject([{ id: 'spec-draft-model', draft: mtp }])
+    expect(screen.getByLabelText('Draft model')).toHaveValue(mtp)
+    expect(screen.getByText('Choose a downloaded model, or type an absolute .gguf path')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Draft model'), { target: { value: 'E:\\other\\draft.gguf' } })
+    expect(picker).toHaveValue('')
+    // Paths that are not model files keep a plain text field.
+    expect(screen.queryByRole('combobox', { name: /TLS private key/ })).not.toBeInTheDocument()
   })
 
   it('removes a common setting back to the runtime default', () => {

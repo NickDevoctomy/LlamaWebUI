@@ -177,7 +177,12 @@ class DownloadWorker:
         if destination.is_symlink() or not destination.is_dir():
             raise FileExistsError(f"download destination already exists: {destination}")
         existing = tuple(destination.iterdir())
-        if not existing or any(path.name != ".cache" for path in existing):
+        if any(path.name != ".cache" for path in existing):
+            # Another download of the same repository revision (a different quantization,
+            # or an MTP/projector file) already lives here: add this one's files to it.
+            DownloadWorker._merge(staging, destination)
+            return
+        if not existing:
             raise FileExistsError(f"download destination already exists: {destination}")
         tombstone = destination.parent / f".{destination.name}.stale"
         if tombstone.exists():
@@ -191,6 +196,36 @@ class DownloadWorker:
             tombstone.replace(destination)
             raise
         shutil.rmtree(tombstone, ignore_errors=True)
+
+    @staticmethod
+    def _merge(staging: Path, destination: Path) -> None:
+        """Move staged files into a shared revision folder without replacing other files.
+
+        Every conflict is checked before anything moves. A file already present with the
+        same size counts as published, so a merge interrupted part-way can be retried.
+        """
+        staged = [
+            path
+            for path in staging.rglob("*")
+            if path.is_file() and ".cache" not in path.relative_to(staging).parts
+        ]
+        moves: list[tuple[Path, Path]] = []
+        for source in staged:
+            relative = source.relative_to(staging)
+            target = destination / relative
+            if not target.resolve().is_relative_to(destination.resolve()):
+                raise OSError(f"downloaded file is outside the destination: {relative}")
+            if target.exists():
+                if target.is_file() and target.stat().st_size == source.stat().st_size:
+                    continue
+                raise FileExistsError(
+                    f"a different file already exists at {target}; remove it and retry"
+                )
+            moves.append((source, target))
+        for source, target in moves:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(target)
+        shutil.rmtree(staging, ignore_errors=True)
 
     @staticmethod
     def _destination_is_complete(job: DownloadJobRecord, destination: Path) -> bool:

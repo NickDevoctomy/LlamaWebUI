@@ -591,6 +591,19 @@
           "default": null,
           "title": "Pathkind"
         },
+        "fileType": {
+          "anyOf": [
+            {
+              "const": "gguf",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Filetype"
+        },
         "pattern": {
           "anyOf": [
             {

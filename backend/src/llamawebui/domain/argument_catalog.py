@@ -68,6 +68,8 @@ class ValueSchema(_CatalogModel):
     repeat: bool = False
     item_type: ItemType | None = None
     path_kind: Literal["file", "directory", "any"] | None = None
+    # What a file path must contain; "gguf" lets the editor offer downloaded models.
+    file_type: Literal["gguf"] | None = None
     pattern: str | None = None
     special_values: tuple[str, ...] = ()
     negation: LongFlag | None = None
@@ -98,6 +100,10 @@ class ValueSchema(_CatalogModel):
             raise ValueError("only boolean values may define negations")
         if self.special_values and self.type not in {"integer", "number"}:
             raise ValueError("specialValues apply only to numeric values")
+        if self.file_type is not None and (
+            "path" not in {self.type, self.item_type} or self.path_kind != "file"
+        ):
+            raise ValueError("fileType applies only to file path values")
         if (
             self.minimum is not None
             and self.maximum is not None

@@ -144,6 +144,8 @@ def _argument(document: dict[str, Any], argument_id: str) -> dict[str, Any]:
         ),
         (lambda d: _argument(d, "threads")["value"].update(minimum=5, maximum=1), "minimum"),
         (lambda d: _argument(d, "cpu-range")["value"].update(pattern="("), "invalid pattern"),
+        (lambda d: _argument(d, "threads")["value"].update(fileType="gguf"), "fileType"),
+        (lambda d: _argument(d, "path")["value"].update(fileType="gguf"), "fileType"),
         (lambda d: _argument(d, "port").pop("controlReason"), "controlReason"),
         (lambda d: _argument(d, "threads").update(control="managed", controlReason="x",
                                                   isAdvanced=False), "Simple mode"),
@@ -156,6 +158,16 @@ def test_loader_rejects_inconsistent_catalogs(
 ) -> None:
     with pytest.raises(CatalogError, match=message):
         load_catalog(_write(tmp_path, _mutated(mutate)))
+
+
+def test_model_file_arguments_are_marked_as_gguf() -> None:
+    marked = {
+        definition.id
+        for definition in default_catalog().arguments
+        if definition.value.file_type == "gguf"
+    }
+
+    assert marked == {"model", "mmproj", "spec-draft-model", "lora", "control-vector"}
 
 
 def test_loader_reports_unreadable_and_malformed_files(tmp_path: Path) -> None:

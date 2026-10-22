@@ -80,6 +80,15 @@ describe('argument value conversion', () => {
     expect(emptyDraft(def('ctx-size'))).toBeUndefined()
   })
 
+  it('edits separator lists one value per row and joins them into a single value list', () => {
+    expect(draftFromStored(def('tensor-split'), [3, 1])).toEqual(['3', '1'])
+    expect(emptyDraft(def('tensor-split'))).toEqual([''])
+    expect(valueFromDraft(def('tensor-split'), ['3', '', ' 1.5 '])).toEqual([3, 1.5])
+    // Several values typed into one row still split on the separator.
+    expect(valueFromDraft(def('tensor-split'), ['3,1', '2'])).toEqual([3, 1, 2])
+    expect(draftError(def('tensor-split'), ['3', 'x'])).toBe('--tensor-split must contain only numbers')
+  })
+
   it('omits unset catalog arguments and sends invalid drafts for server reporting', () => {
     expect(storedArguments(catalog, [entry('ctx-size', ''), entry('threads', 'x'), entry('missing', '1')])).toEqual([
       { id: 'threads', value: 'x' },
