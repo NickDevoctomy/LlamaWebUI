@@ -3,12 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#171816" />
+    <meta name="theme-color" content="#161714" />
+    <meta name="color-scheme" content="light dark" />
     <title>Llama Web UI</title>
-    <script type="module" crossorigin src="/assets/index-DcjLSLrz.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-k3I4mgoW.css">
+    <script>
+      // Apply the saved theme before first paint to avoid a light/dark flash.
+      try {
+        var theme = localStorage.getItem('llamawebui.theme')
+        if (theme === 'light' || theme === 'dark') document.documentElement.setAttribute('data-theme', theme)
+      } catch (error) {}
+    </script>
+    <script type="module" crossorigin src="/assets/index-D90qW7hB.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DjW3JKNA.css">
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"></div>
   </body>
 </html>

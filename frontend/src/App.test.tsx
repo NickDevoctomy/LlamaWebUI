@@ -208,7 +208,7 @@ describe('App', () => {
   it('renders live operational state and navigates to server details', async () => {
     renderApp()
 
-    expect(await screen.findByText('http://127.0.0.1:1234')).toBeInTheDocument()
+    expect((await screen.findAllByText('http://127.0.0.1:1234')).length).toBeGreaterThan(0)
 
     fireEvent.click(screen.getByRole('button', { name: 'Server' }))
 
@@ -222,7 +222,61 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Dashboard', level: 1 })).toBeInTheDocument()
     expect(screen.getByText(`v${APP_VERSION}`)).toBeInTheDocument()
     expect(screen.getByText('Operational overview')).toBeInTheDocument()
-    expect(screen.getByText('Local control-plane health and active work.')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Router stopped', level: 2 })).toBeInTheDocument()
+    expect(screen.getByText('Register a runtime to start serving models.')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Host resources' })).toBeInTheDocument()
+  })
+
+  it('summarises live throughput, resources and profiles on the dashboard', async () => {
+    const runtime = { id: 'runtime-1', name: 'Local CUDA', executable_path: 'E:\\llama-server.exe', build: 'b11053', backend: 'cuda', devices: ['CUDA0'], options: [], usable: true }
+    const profile = { id: 'profile-1', alias: 'qwen-local', runtime_id: 'runtime-1', model_path: 'E:\\models\\qwen.gguf', configuration: {}, enabled: true, validation_state: 'available', source_download: null }
+    renderApp({
+      runtimeList: [runtime],
+      profileList: [profile],
+      serverStatus: {
+        state: 'stopped', pid: null, last_exit_code: null, endpoint: 'http://127.0.0.1:1234', logs: [], arguments: [],
+        timing: { decode_tokens_per_second: 42.5, prompt_tokens_per_second: 812 },
+        system: { cpu_percent: 93, ram_used_bytes: 8 * 1024 ** 3, ram_total_bytes: 32 * 1024 ** 3, network_received_bytes: 0, network_sent_bytes: 0, disk_free_bytes: 100, disk_total_bytes: 400, disk_read_bytes: null, disk_write_bytes: null, gpu: null, gpu_supported: false },
+      },
+    })
+
+    expect(await screen.findByText('Ready to start on Local CUDA with 1 enabled profile.')).toBeInTheDocument()
+    expect(screen.getByText('42.5')).toBeInTheDocument()
+    expect(screen.getByText('812')).toBeInTheDocument()
+    expect(screen.getByRole('meter', { name: 'CPU' })).toHaveAttribute('aria-valuenow', '93')
+    expect(screen.getByRole('meter', { name: 'CPU' }).closest('.meter')).toHaveAttribute('data-level', 'critical')
+    expect(screen.getByText('8.0 GB of 32.0 GB')).toBeInTheDocument()
+    expect(screen.getAllByText('No supported GPU')).toHaveLength(2)
+    expect(within(screen.getByRole('heading', { name: 'Models', level: 2 }).closest('section')!).getByText('qwen-local')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Profiles' }))
+    expect(screen.getByRole('heading', { name: 'Profiles', level: 1 })).toBeInTheDocument()
+  })
+
+  it('switches and remembers the colour theme', async () => {
+    renderApp()
+    const dark = await screen.findByRole('radio', { name: 'Dark theme' })
+    expect(screen.getByRole('radio', { name: 'System theme' })).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(dark)
+    expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
+    expect(window.localStorage.getItem('llamawebui.theme')).toBe('dark')
+
+    fireEvent.click(screen.getByRole('radio', { name: 'System theme' }))
+    expect(document.documentElement).not.toHaveAttribute('data-theme')
+    expect(window.localStorage.getItem('llamawebui.theme')).toBeNull()
+  })
+
+  it('opens and closes the navigation drawer', async () => {
+    renderApp()
+    const toggle = await screen.findByRole('button', { name: 'Open navigation' })
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    fireEvent.click(screen.getByRole('button', { name: 'Downloads' }))
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('refreshes the downloaded model library from the Models page', async () => {
