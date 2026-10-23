@@ -79,6 +79,12 @@ export interface Profile {
   model_path: string
   configuration: Record<string, unknown>
   enabled: boolean
+  /** Nothing else may be loaded in the router beside this profile's model. */
+  exclusive?: boolean
+  description?: string | null
+  version?: number
+  /** Set when the profile was added from a bundled recommendation. */
+  recommendation?: ProfileRecommendation | null
   validation_state: 'available' | 'unverified' | 'pending' | 'broken'
   /** Switches on by itself when its model download completes. */
   auto_enable?: boolean
@@ -100,15 +106,26 @@ export interface HostHardware {
   discrete_vram_bytes: number
 }
 
+/** How a profile added from a recommendation compares with the bundled version. */
+export interface ProfileRecommendation {
+  id: string
+  title: string | null
+  latest_version: number | null
+  /** Its settings changed since it was added, so it cannot be upgraded. */
+  modified: boolean
+  upgradable: boolean
+}
+
 export interface Recommendation {
   id: string
+  version: number
   title: string
   summary: string
   model: { repo_id: string; quantization: string; revision: string | null }
   tested_on: { label: string; memory_gb: number; unified_memory: boolean; backend: string; notes: string | null }
   /** memory_gb is system memory plus any discrete VRAM; vram_gb, when set, is the GPU share. */
   requirements: { memory_gb: number; vram_gb?: number | null; backends: string[] }
-  profile: { alias: string; arguments: StoredArgument[] }
+  profile: { alias: string; description?: string | null; exclusive?: boolean; arguments: StoredArgument[] }
   assessment: { fit: 'fits' | 'tight' | 'insufficient'; hardware_match: boolean; available_memory_gb: number }
   compatible_runtime_ids: string[]
   profile_id: string | null
@@ -387,6 +404,10 @@ export interface ProfileCreate {
   runtime_id: string
   model_path: string
   enabled: boolean
+  exclusive?: boolean
+  description?: string | null
+  /** Typed by hand; left out, the server numbers the profile itself. */
+  version?: number
   arguments?: StoredArgument[]
   acknowledged?: string[]
   /** Legacy flat fields, used only by the fallback editor when the catalog cannot load. */
@@ -536,6 +557,10 @@ export const api = {
     request<EffectiveArgumentCatalog>(`/api/runtimes/${encodeURIComponent(runtimeId)}/argument-catalog`),
   resetProfile: (profileId: string) =>
     request<Profile>(`/api/profiles/${profileId}/reset`, { method: 'POST' }),
+  upgradeProfile: (profileId: string) =>
+    request<Profile>(`/api/profiles/${profileId}/upgrade`, { method: 'POST' }),
+  setProfileEnabled: (profileId: string, enabled: boolean) =>
+    request<Profile>(`/api/profiles/${profileId}/enabled`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
   cloneProfile: (profileId: string, alias: string) =>
     request<Profile>(`/api/profiles/${profileId}/clone`, { method: 'POST', body: JSON.stringify({ alias }) }),
   exportProfile: (profileId: string) => fetch(`/api/profiles/${profileId}/export`).then((response) => {

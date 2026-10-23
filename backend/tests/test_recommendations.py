@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import Login
@@ -27,7 +28,7 @@ from llamawebui.models import ModelProfileRecord, RuntimeRecord
 from llamawebui.services.hardware_profile import HardwareProfile
 from llamawebui.services.huggingface_catalog import ModelSearchResult, RepositoryManifest
 from llamawebui.services.profile_registry import ProfileRegistry
-from llamawebui.services.recommendations import recommended_profile
+from llamawebui.services.recommendations import is_modified, recommended_profile
 from llamawebui.services.runtime_probe import RuntimeProbeResult
 
 GIB = 1024**3
@@ -53,6 +54,8 @@ def _document(**overrides: object) -> dict[str, object]:
         "requirements": {"memory_gb": 96, "backends": ["Vulkan", "rocm"]},
         "profile": {
             "alias": "qwen-recommended",
+            "description": "Long context for a unified-memory APU.",
+            "exclusive": True,
             "arguments": [{"id": "ctx-size", "value": 262144}],
         },
     }
@@ -119,7 +122,12 @@ def _fake_probe_factory() -> object:
     return fake_probe
 
 
-def _app(tmp_path: Path, transfer: object, catalog: FakeCatalog | None = None) -> object:
+def _app(
+    tmp_path: Path,
+    transfer: object,
+    catalog: FakeCatalog | None = None,
+    documents: tuple[dict[str, object], ...] | None = None,
+) -> object:
     return create_app(
         Settings(data_dir=tmp_path / "data"),
         runtime_prober=_fake_probe_factory(),  # type: ignore[arg-type]
@@ -128,7 +136,9 @@ def _app(tmp_path: Path, transfer: object, catalog: FakeCatalog | None = None) -
         hardware_detector=lambda: HardwareProfile(
             cpu=STRIX_CPU, memory_bytes=95 * GIB, gpus=("AMD Radeon 8060S",), discrete_vram_bytes=0
         ),
-        recommendations=(parse_recommendation(_document()),),
+        recommendations=tuple(
+            parse_recommendation(document) for document in (documents or (_document(),))
+        ),
     )
 
 
@@ -163,6 +173,9 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
         profile = recommended_profile(recommendation, catalog, Path("model.gguf"))
         assert len(profile.arguments) == len(recommendation.arguments)
         assert all(not argument.is_raw for argument in profile.arguments)
+        # Bundled profiles are tuned to fill the machine, so each one runs alone.
+        assert recommendation.exclusive is True
+        assert recommendation.description
     by_backend = {
         item.tested_on.backend: item for item in recommendations if item.model.repo_id == REPO
     }
@@ -197,6 +210,8 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
         ({"requirements": {"memory_gb": 96, "backends": []}}, "requirements.backends"),
         ({"requirements": {"memory_gb": 0, "backends": ["cpu"]}}, "'memory_gb' must be a positive"),
         ({"profile": {"alias": "x", "arguments": ["ctx-size"]}}, "profile.arguments"),
+        ({"profile": {"alias": "x", "arguments": [], "exclusive": "yes"}}, "profile.exclusive"),
+        ({"profile": {"alias": "x", "arguments": [], "description": ""}}, "'description'"),
     ],
 )
 def test_parse_recommendation_rejects_malformed_documents(
@@ -339,6 +354,8 @@ def test_recommendations_list_reports_fit_runtimes_and_existing_profiles(
     assert item["compatible_runtime_ids"] == [vulkan]
     assert item["profile_id"] is None
     assert item["profile"]["arguments"] == [{"id": "ctx-size", "value": 262144}]
+    assert item["profile"]["exclusive"] is True
+    assert item["profile"]["description"] == "Long context for a unified-memory APU."
 
 
 def test_apply_queues_download_and_enables_profile_when_it_completes(
@@ -389,6 +406,8 @@ def test_apply_reports_pending_profile_while_downloading(tmp_path: Path, login: 
     assert applied.status_code == 201, applied.text
     assert profiles[0]["validation_state"] == "pending"
     assert profiles[0]["enabled"] is False
+    assert profiles[0]["exclusive"] is True
+    assert profiles[0]["description"] == "Long context for a unified-memory APU."
     assert profiles[0]["download"]["total_bytes"] == 7
     assert profiles[0]["download"]["state"] in {"queued", "downloading"}
 
@@ -416,6 +435,8 @@ def test_apply_reuses_a_finished_download_and_enables_immediately(
     assert applied.status_code == 201, applied.text
     assert applied.json()["ready"] is True
     assert applied.json()["profile"]["enabled"] is True
+    assert applied.json()["profile"]["exclusive"] is True
+    assert applied.json()["profile"]["description"] == "Long context for a unified-memory APU."
     assert len(downloads) == 1
 
 
@@ -549,3 +570,155 @@ def test_editing_a_pending_profile_cancels_auto_enable(tmp_path: Path) -> None:
 
     assert registry.awaiting_downloads() == ()
     assert registry.enable_ready("job-1") == ()
+
+
+def _profile_body(runtime_id: str, model: str, context: int) -> dict[str, object]:
+    return {
+        "alias": "qwen-recommended",
+        "runtime_id": runtime_id,
+        "model_path": model,
+        "enabled": True,
+        "exclusive": True,
+        "arguments": [{"id": "ctx-size", "value": context}],
+    }
+
+
+def _upgraded_document() -> dict[str, object]:
+    return _document(
+        version=2,
+        profile={
+            "alias": "qwen-recommended",
+            "description": "Shorter context, faster prompts.",
+            "exclusive": True,
+            "arguments": [{"id": "ctx-size", "value": 131072}],
+        },
+    )
+
+
+def _apply_and_wait(client: TestClient, tmp_path: Path) -> tuple[str, dict[str, object]]:
+    runtime_id = _register_runtime(client, tmp_path)
+    applied = client.post(
+        "/api/profiles/recommendations/test-model-gpu/apply", json={"runtime_id": runtime_id}
+    )
+    assert applied.status_code == 201, applied.text
+    profiles = _wait_for(client, lambda items: items and items[0]["enabled"])
+    return runtime_id, profiles[0]
+
+
+def test_an_unchanged_recommended_profile_upgrades_and_keeps_its_place(
+    tmp_path: Path, login: Login
+) -> None:
+    with TestClient(_app(tmp_path, ImmediateTransfer())) as client:  # type: ignore[arg-type]
+        login(client)
+        _, added = _apply_and_wait(client, tmp_path)
+        too_early = client.post(f"/api/profiles/{added['id']}/upgrade")
+
+    assert added["version"] == 1
+    assert added["recommendation"] == {
+        "id": "test-model-gpu",
+        "title": "Test model",
+        "latest_version": 1,
+        "modified": False,
+        "upgradable": False,
+    }
+    assert too_early.status_code == 409
+    assert too_early.json()["detail"] == "qwen-recommended is already at version 1"
+
+    newer = _app(tmp_path, ImmediateTransfer(), documents=(_upgraded_document(),))
+    with TestClient(newer) as client:  # type: ignore[arg-type]
+        login(client)
+        listed = client.get("/api/profiles").json()[0]
+        upgraded = client.post(f"/api/profiles/{added['id']}/upgrade")
+        missing = client.post("/api/profiles/missing/upgrade")
+
+    assert listed["recommendation"]["upgradable"] is True
+    assert listed["recommendation"]["latest_version"] == 2
+    assert upgraded.status_code == 200, upgraded.text
+    body = upgraded.json()
+    assert body["version"] == 2
+    assert body["recommendation"]["upgradable"] is False
+    assert body["recommendation"]["modified"] is False
+    assert body["description"] == "Shorter context, faster prompts."
+    assert body["enabled"] is True
+    assert body["alias"] == "qwen-recommended"
+    assert body["model_path"] == added["model_path"]
+    assert "ctx-size = 131072" in body["preset"]
+    assert missing.status_code == 404
+
+
+def test_a_changed_recommended_profile_keeps_its_version_and_cannot_upgrade(
+    tmp_path: Path, login: Login
+) -> None:
+    with TestClient(_app(tmp_path, ImmediateTransfer())) as client:  # type: ignore[arg-type]
+        login(client)
+        runtime_id, added = _apply_and_wait(client, tmp_path)
+        edited = client.put(
+            f"/api/profiles/{added['id']}",
+            json={**_profile_body(runtime_id, str(added["model_path"]), 4096), "version": 9},
+        )
+
+    assert edited.status_code == 200, edited.text
+    # The version belongs to the recommendation, so neither an edit nor a typed one moves it.
+    assert edited.json()["version"] == 1
+    assert edited.json()["recommendation"]["modified"] is True
+
+    newer = _app(tmp_path, ImmediateTransfer(), documents=(_upgraded_document(),))
+    with TestClient(newer) as client:  # type: ignore[arg-type]
+        login(client)
+        listed = client.get("/api/profiles").json()[0]
+        refused = client.post(f"/api/profiles/{added['id']}/upgrade")
+
+    assert listed["recommendation"]["upgradable"] is False
+    assert refused.status_code == 409
+    assert "was changed after it was added" in refused.json()["detail"]
+
+
+def test_startup_links_only_profiles_that_match_a_recommendation_exactly(
+    tmp_path: Path, login: Login
+) -> None:
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"gguf")
+    other = _document(
+        id="other-model",
+        profile={"alias": "other-model", "arguments": [{"id": "ctx-size", "value": 1000}]},
+    )
+    with TestClient(_app(tmp_path, ImmediateTransfer())) as client:  # type: ignore[arg-type]
+        login(client)
+        runtime_id = _register_runtime(client, tmp_path)
+        same = client.post("/api/profiles", json=_profile_body(runtime_id, str(model), 262144))
+        changed = client.post(
+            "/api/profiles",
+            json={**_profile_body(runtime_id, str(model), 2000), "alias": "other-model"},
+        )
+    assert same.json()["recommendation"] is None
+
+    restarted = _app(tmp_path, ImmediateTransfer(), documents=(_document(), other))
+    with TestClient(restarted) as client:  # type: ignore[arg-type]
+        login(client)
+        listed = {item["alias"]: item for item in client.get("/api/profiles").json()}
+
+    assert changed.status_code == 201
+    assert listed["qwen-recommended"]["recommendation"]["id"] == "test-model-gpu"
+    assert listed["qwen-recommended"]["recommendation"]["modified"] is False
+    assert listed["other-model"]["recommendation"] is None
+
+
+def test_file_locations_never_count_as_a_change() -> None:
+    catalog = default_catalog()
+    baseline = [{"id": "ctx-size", "value": 4096}]
+    record = SimpleNamespace(
+        recommendation_baseline=baseline,
+        configuration={
+            "schema_version": 2,
+            "arguments": [
+                {"id": "spec-draft-model", "value": "E:\models\draft.gguf"},
+                {"id": "ctx-size", "value": 4096},
+            ],
+        },
+    )
+
+    assert is_modified(record, catalog) is False  # type: ignore[arg-type]
+    record.configuration["arguments"][1]["value"] = 8192  # type: ignore[index]
+    assert is_modified(record, catalog) is True  # type: ignore[arg-type]
+    unlinked = SimpleNamespace(recommendation_baseline=None)
+    assert is_modified(unlinked, catalog) is True  # type: ignore[arg-type]

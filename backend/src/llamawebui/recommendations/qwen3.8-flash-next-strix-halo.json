@@ -1,5 +1,6 @@
 {
   "format": "llamawebui.recommendation.v1",
+  "version": 1,
   "id": "qwen3.8-flash-next-ud-iq4-xs-strix-halo",
   "title": "Qwen3.8 Flash Next, 262K context",
   "summary": "Full 262,144-token context on a 96 GB unified-memory APU. The KV cache is quantized to q4_0 with flash attention so the long context fits beside the weights, and per-layer token embeddings stay in system memory.",
@@ -22,6 +23,8 @@
   },
   "profile": {
     "alias": "qwen3.8-flash-next",
+    "description": "Qwen3.8 Flash Next for a 96 GB Strix Halo APU. Full 262K context with a q4_0 KV cache and flash attention, with per-layer token embeddings kept in system memory. Uses almost all unified memory, so it runs on its own.",
+    "exclusive": true,
     "arguments": [
       { "id": "reasoning-preserve", "value": false },
       { "id": "n-gpu-layers", "value": 60 },

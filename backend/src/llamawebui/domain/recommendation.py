@@ -57,10 +57,16 @@ class Recommendation:
     vram_gb: int | None
     alias: str
     arguments: tuple[Mapping[str, object], ...]
+    description: str | None = None
+    # These settings need the machine to themselves; nothing loads beside the profile.
+    exclusive: bool = False
+    # Bumped whenever the bundled settings change, so added profiles can be upgraded.
+    version: int = 1
 
     def to_payload(self) -> dict[str, object]:
         return {
             "id": self.id,
+            "version": self.version,
             "title": self.title,
             "summary": self.summary,
             "model": {
@@ -80,7 +86,12 @@ class Recommendation:
                 "vram_gb": self.vram_gb,
                 "backends": list(self.backends),
             },
-            "profile": {"alias": self.alias, "arguments": [dict(item) for item in self.arguments]},
+            "profile": {
+                "alias": self.alias,
+                "description": self.description,
+                "exclusive": self.exclusive,
+                "arguments": [dict(item) for item in self.arguments],
+            },
         }
 
 
@@ -134,6 +145,9 @@ def parse_recommendation(document: Mapping[str, object]) -> Recommendation:
     arguments = profile.get("arguments")
     if not isinstance(arguments, list) or not all(isinstance(item, dict) for item in arguments):
         raise RecommendationError("profile.arguments must be a list of argument objects")
+    exclusive = profile.get("exclusive", False)
+    if not isinstance(exclusive, bool):
+        raise RecommendationError("profile.exclusive must be true or false")
     patterns = {key: _optional_text(tested, key) for key in ("cpu_pattern", "gpu_pattern")}
     for key, pattern in patterns.items():
         if pattern is None:
@@ -169,6 +183,9 @@ def parse_recommendation(document: Mapping[str, object]) -> Recommendation:
         ),
         alias=_text(profile, "alias"),
         arguments=tuple(arguments),
+        description=_optional_text(profile, "description"),
+        exclusive=exclusive,
+        version=1 if document.get("version") is None else _positive_int(document, "version"),
     )
 
 

@@ -115,13 +115,14 @@ function RecommendationCard({ recommendation, catalog, runtimes, profile, canApp
       <div className="recommendation-badges">
         {assessment.hardware_match ? <span className="state-pill ready">Tuned on hardware like yours</span> : <span className="state-pill">Tuned for different hardware</span>}
         <span className={`state-pill ${assessment.fit === 'fits' ? 'ready' : assessment.fit === 'tight' ? 'warning' : 'error'}`}>{fitLabels[assessment.fit]}</span>
+        {recommendation.profile.exclusive && <span className="state-pill" title="Uses the machine fully, so no other model can be loaded beside it">Exclusive</span>}
       </div>
     </header>
     <p className="recommendation-summary">{recommendation.summary}</p>
     <dl className="recommendation-facts">
       <div><dt>Tested on</dt><dd>{recommendation.tested_on.label}{recommendation.tested_on.notes && <small>{recommendation.tested_on.notes}</small>}</dd></div>
       <div><dt>Needs</dt><dd>{recommendation.requirements.vram_gb ? `${recommendation.requirements.memory_gb - recommendation.requirements.vram_gb} GB memory + ${recommendation.requirements.vram_gb} GB VRAM` : `${recommendation.requirements.memory_gb} GB memory`}<small>This machine has {assessment.available_memory_gb} GB. Tested with a {backendList(recommendation.requirements.backends)} runtime.</small></dd></div>
-      <div><dt>Profile alias</dt><dd className="mono">{recommendation.profile.alias}</dd></div>
+      <div><dt>Profile alias</dt><dd className="mono">{recommendation.profile.alias}<small>Version {recommendation.version}</small></dd></div>
     </dl>
     <LaunchSettings catalog={catalog} settings={recommendation.profile.arguments} />
     <footer className="recommendation-actions">

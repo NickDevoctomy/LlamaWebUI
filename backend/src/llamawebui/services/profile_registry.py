@@ -45,6 +45,15 @@ class LegacyMigrationReport:
     preset_mismatches: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class RecommendationLink:
+    """The recommendation a profile was added from, at the version it was added."""
+
+    recommendation_id: str
+    version: int
+    baseline: list[dict[str, object]]
+
+
 def stored_configuration(
     profile: ModelProfile, catalog: ArgumentCatalog, *, model_path: str | None = None
 ) -> dict[str, object]:
@@ -82,6 +91,16 @@ def configuration_payload(
     return payload
 
 
+def _version_fields(version: int, link: RecommendationLink | None) -> dict[str, object]:
+    if link is None:
+        return {"version": version}
+    return {
+        "version": link.version,
+        "recommendation_id": link.recommendation_id,
+        "recommendation_baseline": link.baseline,
+    }
+
+
 class ProfileRegistry:
     def __init__(self, engine: Engine, catalog: ArgumentCatalog) -> None:
         self._sessions = sessionmaker(engine, expire_on_commit=False)
@@ -114,7 +133,15 @@ class ProfileRegistry:
             return tuple(session.scalars(statement))
 
     def create(
-        self, *, profile: ModelProfile, runtime_id: str, enabled: bool = True
+        self,
+        *,
+        profile: ModelProfile,
+        runtime_id: str,
+        enabled: bool = True,
+        exclusive: bool = False,
+        description: str | None = None,
+        version: int = 1,
+        link: RecommendationLink | None = None,
     ) -> ModelProfileRecord:
         with self._sessions() as session:
             runtime = session.get(RuntimeRecord, runtime_id)
@@ -134,6 +161,9 @@ class ProfileRegistry:
                 configuration=stored_configuration(profile, self._catalog),
                 preset=preset,
                 enabled=enabled,
+                exclusive=exclusive,
+                description=description,
+                **_version_fields(version, link),
             )
             session.add(record)
             session.commit()
@@ -145,6 +175,9 @@ class ProfileRegistry:
         alias: str,
         runtime_id: str,
         configuration: ProfileConfiguration,
+        exclusive: bool = False,
+        description: str | None = None,
+        version: int = 1,
     ) -> ModelProfileRecord:
         """Persist an imported profile whose model path needs local repair."""
         with self._sessions() as session:
@@ -170,13 +203,23 @@ class ProfileRegistry:
                 configuration=stored,
                 preset=f"version = 1\n\n[{alias}]\n",
                 enabled=False,
+                exclusive=exclusive,
+                description=description,
+                version=version,
             )
             session.add(record)
             session.commit()
             return record
 
     def create_pending(
-        self, *, profile: ModelProfile, runtime_id: str, download_id: str
+        self,
+        *,
+        profile: ModelProfile,
+        runtime_id: str,
+        download_id: str,
+        exclusive: bool = False,
+        description: str | None = None,
+        link: RecommendationLink | None = None,
     ) -> ModelProfileRecord:
         """Persist a disabled profile whose model is still downloading.
 
@@ -194,6 +237,9 @@ class ProfileRegistry:
                 preset=render_preset_unchecked(profile, self._catalog),
                 enabled=False,
                 enable_on_download=download_id,
+                exclusive=exclusive,
+                description=description,
+                **_version_fields(1, link),
             )
             session.add(record)
             session.commit()
@@ -310,8 +356,18 @@ class ProfileRegistry:
             session.commit()
 
     def update(
-        self, profile_id: str, *, profile: ModelProfile, runtime_id: str, enabled: bool
+        self,
+        profile_id: str,
+        *,
+        profile: ModelProfile,
+        runtime_id: str,
+        enabled: bool,
+        exclusive: bool = False,
+        description: str | None = None,
+        version: int | None = None,
+        link: RecommendationLink | None = None,
     ) -> ModelProfileRecord:
+        """Save new settings. ``link`` re-bases a recommended profile after an upgrade."""
         with self._sessions() as session:
             record = session.get(ModelProfileRecord, profile_id)
             if record is None:
@@ -333,6 +389,27 @@ class ProfileRegistry:
             record.model_path = str(profile.model_path.resolve())
             record.configuration = stored_configuration(profile, self._catalog)
             record.enabled = enabled
+            record.exclusive = exclusive
+            record.description = description
+            if version is not None:
+                record.version = version
+            if link is not None:
+                for field, value in _version_fields(link.version, link).items():
+                    setattr(record, field, value)
+            record.enable_on_download = None
+            session.commit()
+            return record
+
+    def set_enabled(self, profile_id: str, enabled: bool) -> ModelProfileRecord:
+        """Switch a profile on or off; it is published the next time the router starts."""
+        with self._sessions() as session:
+            record = session.get(ModelProfileRecord, profile_id)
+            if record is None:
+                raise ProfileNotFoundError(f"model profile not found: {profile_id}")
+            if enabled and not (record.model_path and Path(record.model_path).is_file()):
+                raise ValueError("the profile's model file is missing")
+            record.enabled = enabled
+            # An explicit choice replaces switching on when a download completes.
             record.enable_on_download = None
             session.commit()
             return record
@@ -374,10 +451,23 @@ class ProfileRegistry:
                 configuration=dict(source.configuration),
                 preset=source.preset,
                 enabled=False,
+                exclusive=source.exclusive,
+                description=source.description,
+                version=source.version,
             )
             session.add(clone)
             session.commit()
             return clone
+
+    def link_recommendation(self, profile_id: str, link: RecommendationLink) -> None:
+        """Record that a profile matches a recommendation exactly, so it can be upgraded."""
+        with self._sessions() as session:
+            record = session.get(ModelProfileRecord, profile_id)
+            if record is None:
+                raise ProfileNotFoundError(f"model profile not found: {profile_id}")
+            for field, value in _version_fields(link.version, link).items():
+                setattr(record, field, value)
+            session.commit()
 
     def migrate_legacy_configurations(self) -> LegacyMigrationReport:
         """Rewrite legacy flat configurations in the structured format, keeping every key.

@@ -236,6 +236,8 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
   const runtime = runtimes.data?.find((item) => item.id === selectedRuntime)
     ?? runtimes.data?.find((item) => item.usable)
   const loadedCount = models.data?.filter((model) => model.status.value === 'loaded').length ?? 0
+  // The router reports ready while it is still loading a model, so surface that separately.
+  const loadingModel = running ? models.data?.find((model) => model.status.value === 'loading') : undefined
   const error = lifecycle.error ?? rollback.error ?? status.error
 
   const activeDownloadCount = downloads.data?.filter((job) => ['queued', 'downloading'].includes(job.state)).length ?? 0
@@ -283,14 +285,14 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
         <header className="topbar">
           <button aria-controls="primary-sidebar" aria-expanded={navOpen} aria-label="Open navigation" className="icon-button nav-toggle" onClick={() => setNavOpen(true)} type="button"><Menu size={18} /></button>
           <div className="status-cluster">
-            <div className="status-primary" data-state={status.data?.state ?? 'offline'}>
-              <span className={`state-dot ${status.data?.state ?? 'offline'}`} />
+            <div className="status-primary" data-state={loadingModel ? 'loading' : status.data?.state ?? 'offline'} title={loadingModel ? `Router ${status.data?.state}, loading ${loadingModel.id}` : undefined}>
+              <span className={`state-dot ${loadingModel ? 'loading' : status.data?.state ?? 'offline'}`} />
               <small>Router</small>
-              <strong>{stateLabel(status.data?.state)}</strong>
+              <strong>{loadingModel ? 'Loading model' : stateLabel(status.data?.state)}</strong>
             </div>
             <div className="status-stat"><small>Endpoint</small><span className="mono">{status.data?.endpoint ?? 'Unavailable'}</span></div>
             <div className="status-stat"><small>Runtime</small><span>{runtime?.name ?? 'Not selected'}</span></div>
-            <div className="status-stat"><small>Models</small><span>{loadedCount} loaded</span></div>
+            <div className="status-stat"><small>Models</small><span>{loadingModel ? `Loading ${loadingModel.id}` : `${loadedCount} loaded`}</span></div>
           </div>
           <div className="topbar-actions">
             <ThemeSwitch />
@@ -527,6 +529,16 @@ function RouterModelsPanel({ models, profiles, running, canManage, action }: {
   action: ModelActionControl
 }) {
   const unpublished = profiles.filter((profile) => !profile.enabled).length
+  const exclusive = new Set(profiles.filter((profile) => profile.exclusive).map((profile) => profile.alias))
+  const occupied = models.filter((model) => ['loaded', 'loading'].includes(model.status.value ?? '')).map((model) => model.id)
+  /** Mirrors the server's rule: an exclusive model never shares the router. */
+  const blockedReason = (id: string) => {
+    const others = occupied.filter((other) => other !== id)
+    if (!others.length) return undefined
+    if (exclusive.has(id)) return `Exclusive: unload ${others.join(', ')} first`
+    const blocker = others.find((other) => exclusive.has(other))
+    return blocker ? `${blocker} is exclusive: unload it first` : undefined
+  }
   return <section className="data-panel router-models">
     <div className="panel-heading"><div><h2>Router models</h2><p>Load a profile to check it starts, or unload it to free memory, without sending a request.</p></div><Box size={20} /></div>
     {action.error && <div className="form-error" role="alert"><AlertCircle size={15} /> {action.error.message}</div>}
@@ -539,16 +551,17 @@ function RouterModelsPanel({ models, profiles, running, canManage, action }: {
           const pending = action.pendingId === model.id
           const loaded = value === 'loaded'
           const busy = pending || value === 'loading'
+          const blocked = loaded ? undefined : blockedReason(model.id)
           return <li key={model.id}>
             <span className={`roster-dot ${value === 'failed' ? 'error' : value}`} />
-            <span className="roster-copy"><strong>{model.id}</strong><span title={path}>{path?.split(/[\\/]/).at(-1) ?? 'Model path not reported'}</span></span>
+            <span className="roster-copy"><strong>{model.id}{exclusive.has(model.id) && <span className="profile-tag" title="Nothing else can be loaded beside this model">Exclusive</span>}</strong>{blocked && !busy ? <span className="roster-note">{blocked}</span> : <span title={path}>{path?.split(/[\\/]/).at(-1) ?? 'Model path not reported'}</span>}</span>
             <span className={`state-pill ${value === 'failed' ? 'error' : value}`}>{value === 'failed' && exitCode !== undefined ? `Failed · exit ${exitCode}` : value}</span>
             <button
               aria-label={`${loaded ? 'Unload' : 'Load'} ${model.id}`}
               className={loaded ? 'button secondary compact' : 'button primary compact'}
-              disabled={!canManage || busy}
+              disabled={!canManage || busy || blocked !== undefined}
               onClick={() => action.run(model.id, loaded)}
-              title={canManage ? undefined : 'Requires server write access'}
+              title={canManage ? blocked : 'Requires server write access'}
               type="button"
             >
               {busy ? <LoaderCircle className="spin" size={14} /> : loaded ? <Square size={12} fill="currentColor" /> : <Play size={13} fill="currentColor" />}

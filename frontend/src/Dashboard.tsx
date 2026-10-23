@@ -166,7 +166,7 @@ function ContextUsage({ entries }: { entries: ModelContext[] }) {
   const total = entries.reduce((sum, entry) => sum + (entry.shared_capacity ?? entry.slots.reduce((slots, slot) => slots + (slot.total ?? 0), 0)), 0) || null
   const fill = (value: number, capacity: number | null) => capacity ? Math.min(100, value / capacity * 100) : 0
   const amount = (value: number, capacity: number | null) => <>{value.toLocaleString()}<small>/ {capacity ? capacity.toLocaleString() : '—'} tokens</small></>
-  if (!rows.length) return <div className="context-usage"><dt>Context</dt><dd>—<small>tokens</small></dd></div>
+  if (!rows.length) return <div className="context-usage"><dt>Context</dt><dd><span className="context-amount">—<small>tokens</small></span></dd></div>
   if (expanded) return (
     <div className="context-usage expanded">
       <dt>Context<button className="button secondary compact" onClick={() => setExpanded(false)} type="button"><ChevronLeft size={13} /> Total</button></dt>
@@ -254,6 +254,7 @@ export function DashboardPanel({ status, history, runtime, runtimes, profiles, m
   const rollingPeak = numeric(timing.decode_tokens_per_second_rolling_peak)
   const sessionPeak = numeric(timing.decode_tokens_per_second_session_peak)
   const liveStatus = (alias: string) => models.find((model) => model.id === alias)?.status.value
+  const activeModels = models.filter((model) => ['loaded', 'loading'].includes(model.status.value ?? ''))
   const loadedDrafts = profiles.filter((profile) => draftModel(profile) && liveStatus(profile.alias) === 'loaded').length
   const loaded = models.filter((model) => model.status.value === 'loaded').length + loadedDrafts
   // Only models the router still holds; a stopped router reports nothing live.
@@ -290,6 +291,16 @@ export function DashboardPanel({ status, history, runtime, runtimes, profiles, m
             <h2>Router {stateLabel(status?.state).toLowerCase()}</h2>
           </div>
           <p className="hero-summary">{heroSummary}</p>
+          {running && <ul aria-label="Active models" className="hero-models">
+            {activeModels.length ? activeModels.map((model) => {
+              const loading = model.status.value === 'loading'
+              return <li data-state={loading ? 'loading' : 'loaded'} key={model.id}>
+                <span className={`state-dot ${loading ? 'loading' : 'ready'}`} />
+                <strong>{model.id}</strong>
+                <span>{loading ? 'Loading…' : 'Loaded'}</span>
+              </li>
+            }) : <li className="hero-models-empty">No model loaded. The first request for a model loads it.</li>}
+          </ul>}
           <dl className="hero-facts">
             <div><dt>Endpoint</dt><dd><span className="mono">{status?.endpoint ?? 'Unavailable'}</span>{status?.endpoint && <CopyValue value={status.endpoint} />}</dd></div>
             <div><dt>Runtime</dt><dd>{runtime ? <>{runtime.name}<span className="hero-fact-note">{[runtime.build, runtime.backend?.toUpperCase()].filter(Boolean).join(' · ')}</span></> : 'None selected'}</dd></div>

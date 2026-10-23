@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import sys
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -118,7 +118,13 @@ from llamawebui.services.profile_registry import (
     configuration_payload,
     profile_from_record,
 )
-from llamawebui.services.recommendations import apply_recommendation
+from llamawebui.services.recommendations import (
+    ProfileUpgradeError,
+    apply_recommendation,
+    link_unchanged_profiles,
+    recommendation_status,
+    upgrade_recommended_profile,
+)
 from llamawebui.services.router_client import (
     HttpRouterClient,
     RouterAPIError,
@@ -143,6 +149,7 @@ from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRe
 from llamawebui.version import __version__
 
 MODEL_EVENT_KEEPALIVE_SECONDS = 15.0
+PROFILE_DESCRIPTION_LIMIT = 500
 _ACTIVE_DOWNLOAD_STATES = frozenset(
     {DownloadState.QUEUED, DownloadState.DOWNLOADING, DownloadState.PAUSED}
 )
@@ -187,6 +194,10 @@ class ProfileCreateRequest(BaseModel):
     runtime_id: str
     model_path: str
     enabled: bool = True
+    exclusive: bool = False
+    description: str | None = Field(default=None, max_length=PROFILE_DESCRIPTION_LIMIT)
+    # Set by hand; left out, a new profile starts at 1 and an edited one moves up on change.
+    version: int | None = Field(default=None, ge=1, le=1_000_000)
     arguments: list[ProfileArgumentRequest] | None = None
     acknowledged: list[str] = Field(default_factory=list, max_length=300)
     # Legacy flat fields remain accepted and are migrated onto catalog arguments.
@@ -205,6 +216,11 @@ class ProfileCreateRequest(BaseModel):
     batch_size: int | None = None
     ubatch_size: int | None = None
     advanced: tuple[AdvancedOptionRequest, ...] = ()
+
+    @field_validator("description")
+    @classmethod
+    def blank_description_is_none(cls, value: str | None) -> str | None:
+        return _profile_description(value)
 
     def to_domain(self, catalog: ArgumentCatalog) -> ModelProfile:
         """Build the domain profile, migrating any legacy fields before structured ones."""
@@ -285,6 +301,10 @@ class AccessTokenCreateRequest(BaseModel):
 
 class ProfileCloneRequest(BaseModel):
     alias: str = Field(min_length=1, max_length=64)
+
+
+class ProfileEnabledRequest(BaseModel):
+    enabled: bool
 
 
 class LoginRequest(BaseModel):
@@ -419,7 +439,9 @@ def _saved_profile_payload(
     """Profile payload plus the non-blocking warnings that applied when it was saved."""
     catalog = _argument_catalog(request)
     artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-    payload = _profile_payload(record, artifacts, catalog=catalog)
+    payload = _profile_payload(
+        record, artifacts, catalog=catalog, recommendations=request.app.state.recommendations
+    )
     registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
     runtime = registry.get(record.runtime_id)
     issues = validate_profile(profile, catalog, runtime_capabilities(runtime))
@@ -432,6 +454,7 @@ def _profile_payload(
     artifacts: ModelArtifactRegistry | None = None,
     *,
     catalog: ArgumentCatalog,
+    recommendations: Sequence[Recommendation] = (),
 ) -> dict[str, object]:
     source = artifacts.source_for_profile(profile) if artifacts is not None else None
     validation_state = "available"
@@ -468,6 +491,10 @@ def _profile_payload(
         "configuration": configuration_payload(profile, catalog),
         "preset": redact_preset(profile.preset, catalog),
         "enabled": profile.enabled,
+        "exclusive": profile.exclusive,
+        "description": profile.description,
+        "version": profile.version,
+        "recommendation": recommendation_status(profile, recommendations, catalog),
         "validation_state": validation_state,
         "auto_enable": profile.enable_on_download is not None,
         "download": download,
@@ -518,6 +545,57 @@ def _server_payload(
         "arguments": supervisor.launch_arguments,
         "system": _system_metrics(settings.data_dir),
     }
+
+
+def _next_version(
+    current: ModelProfileRecord,
+    profile: ModelProfile,
+    profile_request: ProfileCreateRequest,
+    catalog: ArgumentCatalog,
+) -> int | None:
+    """The version to save, or ``None`` to keep the current one.
+
+    A recommended profile keeps the version of its recommendation. Any other profile
+    takes a version typed in by hand, or moves up one when its settings change.
+    """
+    if current.recommendation_id is not None:
+        return None
+    if profile_request.version is not None and profile_request.version != current.version:
+        return profile_request.version
+    settings_changed = (
+        profile.configuration.to_payload(catalog)["arguments"]
+        != configuration_payload(current, catalog).get("arguments")
+        or str(profile.model_path.resolve()) != current.model_path
+        or profile_request.runtime_id != current.runtime_id
+        or profile_request.exclusive != current.exclusive
+    )
+    return current.version + 1 if settings_changed else None
+
+
+def _profile_description(value: str | None) -> str | None:
+    """Trimmed description text; an empty one means no description."""
+    if value is None:
+        return None
+    return value.strip() or None
+
+
+def _exclusive_conflict(
+    model: str, models: Sequence[RouterModel], exclusive: set[str]
+) -> str | None:
+    """Why loading ``model`` would put an exclusive profile beside another model."""
+    occupied = [
+        item.id
+        for item in models
+        if item.id != model and item.status.get("value") in {"loaded", "loading"}
+    ]
+    if not occupied:
+        return None
+    if model in exclusive:
+        return f"{model} is exclusive: unload {', '.join(occupied)} first"
+    blocker = next((item for item in occupied if item in exclusive), None)
+    if blocker is not None:
+        return f"{blocker} is exclusive: unload it before loading another model"
+    return None
 
 
 def _system_metrics(data_dir: Path) -> dict[str, object]:
@@ -802,6 +880,14 @@ def create_app(
         app.state.recommendations = (
             recommendations if recommendations is not None else load_recommendations()
         )
+        linked = link_unchanged_profiles(
+            app.state.recommendations, app.state.argument_catalog, app.state.profile_registry
+        )
+        if linked:
+            LOGGER.info(
+                "recommended_profiles_linked",
+                extra={"component": "profiles", "event": "linked", "aliases": list(linked)},
+            )
         app.state.router_supervisor = router_supervisor or RouterSupervisor(
             restart_policy=RouterRestartPolicy(
                 max_attempts=app_settings.router_restart_max_attempts,
@@ -1521,8 +1607,16 @@ def create_app(
     ) -> dict[str, bool]:
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
         client = cast(RouterClient, request.app.state.router_client)
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
         _require_running_router(supervisor)
         try:
+            conflict = _exclusive_conflict(
+                model_request.model,
+                await client.list_models(),
+                {profile.alias for profile in registry.list() if profile.exclusive},
+            )
+            if conflict is not None:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=conflict)
             await client.load_model(model_request.model)
         except RouterAPIError as error:
             raise _router_api_error(error) from error
@@ -1751,9 +1845,13 @@ def create_app(
             for runtime in cast(RuntimeRegistry, request.app.state.runtime_registry).list()
             if _runtime_payload(runtime)["usable"]
         ]
-        aliases = {
-            profile.alias: profile.id
-            for profile in cast(ProfileRegistry, request.app.state.profile_registry).list()
+        profiles = cast(ProfileRegistry, request.app.state.profile_registry).list()
+        aliases = {profile.alias: profile.id for profile in profiles}
+        # A profile linked to a recommendation stays its profile even after a rename.
+        linked = {
+            profile.recommendation_id: profile.id
+            for profile in profiles
+            if profile.recommendation_id is not None
         }
         items: list[dict[str, object]] = []
         for recommendation in cast(
@@ -1779,7 +1877,8 @@ def create_app(
                         for runtime in runtimes
                         if (runtime.backend or "").lower() in recommendation.backends
                     ],
-                    "profile_id": aliases.get(recommendation.alias),
+                    "profile_id": linked.get(recommendation.id)
+                    or aliases.get(recommendation.alias),
                 }
             )
         return {"host": hardware.to_payload(), "recommendations": items}
@@ -1838,7 +1937,12 @@ def create_app(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
             ) from error
         return {
-            "profile": _profile_payload(applied.profile, artifacts, catalog=catalog),
+            "profile": _profile_payload(
+                applied.profile,
+                artifacts,
+                catalog=catalog,
+                recommendations=request.app.state.recommendations,
+            ),
             "download": _download_payload(applied.download),
             "ready": applied.ready,
         }
@@ -1849,7 +1953,13 @@ def create_app(
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
         catalog = _argument_catalog(request)
         return [
-            _profile_payload(profile, artifacts, catalog=catalog) for profile in registry.list()
+            _profile_payload(
+                profile,
+                artifacts,
+                catalog=catalog,
+                recommendations=request.app.state.recommendations,
+            )
+            for profile in registry.list()
         ]
 
     @app.post("/api/profiles/preview")
@@ -1894,6 +2004,9 @@ def create_app(
                 profile=profile,
                 runtime_id=profile_request.runtime_id,
                 enabled=profile_request.enabled,
+                exclusive=profile_request.exclusive,
+                description=profile_request.description,
+                version=profile_request.version or 1,
             )
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
@@ -1919,11 +2032,15 @@ def create_app(
         catalog = _argument_catalog(request)
         try:
             profile = profile_request.to_domain(catalog)
+            current = registry.get(profile_id)
             record = registry.update(
                 profile_id,
                 profile=profile,
                 runtime_id=profile_request.runtime_id,
                 enabled=profile_request.enabled,
+                exclusive=profile_request.exclusive,
+                description=profile_request.description,
+                version=_next_version(current, profile, profile_request, catalog),
             )
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
@@ -1936,6 +2053,56 @@ def create_app(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
             ) from error
         return _saved_profile_payload(request, record, profile)
+
+    @app.put("/api/profiles/{profile_id}/enabled")
+    async def set_profile_enabled(
+        profile_id: str, enabled_request: ProfileEnabledRequest, request: Request
+    ) -> dict[str, object]:
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="stop the router before enabling or disabling a profile",
+            )
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        try:
+            record = registry.set_enabled(profile_id, enabled_request.enabled)
+        except ProfileNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        return _profile_payload(
+            record,
+            artifacts,
+            catalog=_argument_catalog(request),
+            recommendations=request.app.state.recommendations,
+        )
+
+    @app.post("/api/profiles/{profile_id}/upgrade")
+    async def upgrade_profile(profile_id: str, request: Request) -> dict[str, object]:
+        """Move an unchanged recommended profile to the latest bundled version."""
+        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
+        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="stop the router before upgrading a profile",
+            )
+        registry = cast(ProfileRegistry, request.app.state.profile_registry)
+        catalog = _argument_catalog(request)
+        try:
+            record = upgrade_recommended_profile(
+                registry.get(profile_id), request.app.state.recommendations, catalog, registry
+            )
+        except ProfileNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ProfileUpgradeError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except ProfileValidationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
+            ) from error
+        return _saved_profile_payload(request, record, profile_from_record(record, catalog))
 
     @app.post("/api/profiles/{profile_id}/clone", status_code=status.HTTP_201_CREATED)
     async def clone_profile(
@@ -2023,6 +2190,9 @@ def create_app(
                 "alias": profile.alias,
                 "runtime_id": profile.runtime_id,
                 "enabled": profile.enabled,
+                "exclusive": profile.exclusive,
+                "description": profile.description,
+                "version": profile.version,
                 "configuration": configuration_payload(profile, _argument_catalog(request)),
                 "preset": profile.preset,
             },
@@ -2068,15 +2238,31 @@ def create_app(
         runtime_id = document.get("runtime_id")
         alias = import_request.alias or document.get("alias")
         enabled = document.get("enabled", False)
+        exclusive = document.get("exclusive", False)
+        description = document.get("description")
+        version = document.get("version", 1)
         if not isinstance(runtime_id, str) or not isinstance(alias, str):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="profile export is missing runtime_id or alias",
             )
-        if not isinstance(enabled, bool):
+        if not isinstance(enabled, bool) or not isinstance(exclusive, bool):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="profile export enabled value is invalid",
+                detail="profile export enabled or exclusive value is invalid",
+            )
+        if description is not None and (
+            not isinstance(description, str) or len(description) > PROFILE_DESCRIPTION_LIMIT
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="profile export description is invalid",
+            )
+        description = _profile_description(description)
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="profile export version is invalid",
             )
         catalog = _argument_catalog(request)
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
@@ -2085,7 +2271,12 @@ def create_app(
         try:
             if not isinstance(imported_model_path, str) or not Path(imported_model_path).is_file():
                 record = registry.create_unresolved_import(
-                    alias=alias, runtime_id=runtime_id, configuration=normalized
+                    alias=alias,
+                    runtime_id=runtime_id,
+                    configuration=normalized,
+                    exclusive=exclusive,
+                    description=description,
+                    version=version,
                 )
                 artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
                 return _profile_payload(record, artifacts, catalog=catalog)
@@ -2095,7 +2286,14 @@ def create_app(
                 arguments=normalized.arguments,
                 acknowledged=normalized.acknowledged,
             )
-            record = registry.create(profile=profile, runtime_id=runtime_id, enabled=enabled)
+            record = registry.create(
+                profile=profile,
+                runtime_id=runtime_id,
+                enabled=enabled,
+                exclusive=exclusive,
+                description=description,
+                version=version,
+            )
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ProfileAliasExistsError as error:

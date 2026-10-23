@@ -159,6 +159,8 @@ def test_profile_clone_copies_configuration_but_stays_disabled(
                 **_profile_payload(runtime_id, model),
                 "alias": "source-model",
                 "ctx_size": 4096,
+                "exclusive": True,
+                "description": "Source profile",
             },
         )
         cloned = client.post(
@@ -178,8 +180,54 @@ def test_profile_clone_copies_configuration_but_stays_disabled(
     assert cloned.json()["model_path"] == str(model.resolve())
     assert cloned.json()["configuration"] == source.json()["configuration"]
     assert cloned.json()["enabled"] is False
+    assert cloned.json()["exclusive"] is True
+    assert cloned.json()["description"] == "Source profile"
     assert duplicate.status_code == 409
     assert padded.status_code == 422
+
+
+def test_profile_can_be_switched_on_and_off(tmp_path: Path, login: Login) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model = tmp_path / "model.gguf"
+    model.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(options=frozenset({"model"}), raw_help="help"),
+            devices_output=None,
+            errors=(),
+        )
+
+    settings = Settings(data_dir=tmp_path / "data")
+    with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        login(client)
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        source = client.post("/api/profiles", json=_profile_payload(runtime_id, model)).json()
+        clone = client.post(
+            f"/api/profiles/{source['id']}/clone", json={"alias": "copy-model"}
+        ).json()
+        enabled = client.put(f"/api/profiles/{clone['id']}/enabled", json={"enabled": True})
+        disabled = client.put(f"/api/profiles/{clone['id']}/enabled", json={"enabled": False})
+        missing = client.put("/api/profiles/missing/enabled", json={"enabled": True})
+        model.unlink()
+        without_model = client.put(
+            f"/api/profiles/{clone['id']}/enabled", json={"enabled": True}
+        )
+        listed = {profile["alias"]: profile for profile in client.get("/api/profiles").json()}
+
+    assert enabled.status_code == 200
+    assert enabled.json()["enabled"] is True
+    assert disabled.status_code == 200
+    assert disabled.json()["enabled"] is False
+    assert missing.status_code == 404
+    assert without_model.status_code == 409
+    assert without_model.json()["detail"] == "the profile's model file is missing"
+    assert listed["copy-model"]["enabled"] is False
 
 
 def test_profile_export_returns_portable_profile_json(tmp_path: Path, login: Login) -> None:
@@ -208,15 +256,34 @@ def test_profile_export_returns_portable_profile_json(tmp_path: Path, login: Log
         ).json()["id"]
         created = client.post(
             "/api/profiles",
-            json={**_profile_payload(runtime_id, model), "alias": "export-model"},
+            json={
+                **_profile_payload(runtime_id, model),
+                "alias": "export-model",
+                "description": "  Long context for coding.  ",
+                "exclusive": True,
+            },
         )
         exported = client.get(f"/api/profiles/{created.json()['id']}/export")
+        blank = client.post(
+            "/api/profiles",
+            json={**_profile_payload(runtime_id, model), "alias": "blank", "description": "  "},
+        )
+        too_long = client.post(
+            "/api/profiles",
+            json={**_profile_payload(runtime_id, model), "alias": "long", "description": "x" * 501},
+        )
 
     payload = exported.json()
     assert exported.status_code == 200
     assert exported.headers["content-disposition"] == 'attachment; filename="export-model.json"'
     assert payload["format"] == "llamawebui-profile-v2"
     assert payload["alias"] == "export-model"
+    assert payload["description"] == "Long context for coding."
+    assert payload["exclusive"] is True
+    assert payload["version"] == 1
+    assert created.json()["description"] == "Long context for coding."
+    assert blank.json()["description"] is None
+    assert too_long.status_code == 422
     assert {"id": "ctx-size", "value": 4096} in payload["configuration"]["arguments"]
     assert "export-model" in payload["preset"]
 
@@ -468,13 +535,16 @@ def test_profile_import_clears_missing_model_path(tmp_path: Path, login: Login) 
         ).json()["id"]
         imported = client.post("/api/profiles/import", json={"document": {
             "format": "llamawebui-profile-v1", "alias": "portable-model",
-            "runtime_id": runtime_id, "enabled": True,
+            "runtime_id": runtime_id, "enabled": True, "exclusive": True,
+            "description": "From another machine",
             "configuration": {"model_path": str(tmp_path / "other-machine.gguf")},
         }})
 
     assert imported.status_code == 201
     assert imported.json()["model_path"] == ""
     assert imported.json()["enabled"] is False
+    assert imported.json()["exclusive"] is True
+    assert imported.json()["description"] == "From another machine"
 
 
 def test_profile_command_import_rejects_malformed_command(tmp_path: Path, login: Login) -> None:
@@ -560,18 +630,33 @@ def test_profile_import_recreates_export_with_exported_enabled_state(
         ).json()["id"]
         created = client.post(
             "/api/profiles",
-            json={**_profile_payload(runtime_id, model), "alias": "source-model"},
+            json={
+                **_profile_payload(runtime_id, model),
+                "alias": "source-model",
+                "description": "Round trip",
+            },
         )
         exported = client.get(f"/api/profiles/{created.json()['id']}/export").json()
         imported = client.post("/api/profiles/import", json={"document": exported})
         invalid = client.post(
             "/api/profiles/import", json={"document": {"format": "unknown"}}
         )
+        bad_description = client.post(
+            "/api/profiles/import",
+            json={"document": {**exported, "alias": "bad-description", "description": 7}},
+        )
+        bad_version = client.post(
+            "/api/profiles/import",
+            json={"document": {**exported, "alias": "bad-version", "version": 0}},
+        )
 
     assert imported.status_code == 409
     assert invalid.status_code == 422
+    assert bad_description.status_code == 422
+    assert bad_version.status_code == 422
 
     exported["alias"] = "imported-model"
+    exported["version"] = 4
     with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
         login(client)
         imported = client.post("/api/profiles/import", json={"document": exported})
@@ -579,6 +664,8 @@ def test_profile_import_recreates_export_with_exported_enabled_state(
     assert imported.status_code == 201
     assert imported.json()["alias"] == "imported-model"
     assert imported.json()["enabled"] is True
+    assert imported.json()["description"] == "Round trip"
+    assert imported.json()["version"] == 4
     assert {"id": "ctx-size", "value": 4096} in imported.json()["configuration"]["arguments"]
 
 
@@ -728,3 +815,63 @@ def test_profile_update_populates_and_persists_all_editor_settings(
         {"id": "threads", "value": 8},
         {"id": "batch-size", "value": 512},
     ]
+
+
+def test_profile_version_moves_up_on_change_or_takes_a_typed_value(
+    tmp_path: Path, login: Login
+) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model = tmp_path / "model.gguf"
+    model.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "ctx-size"}), raw_help="help"
+            ),
+            devices_output=None,
+            errors=(),
+        )
+
+    def body(runtime_id: str, context: int, **extra: object) -> dict[str, object]:
+        return {
+            "alias": "custom-model",
+            "runtime_id": runtime_id,
+            "model_path": str(model),
+            "arguments": [{"id": "ctx-size", "value": context}],
+            **extra,
+        }
+
+    settings = Settings(data_dir=tmp_path / "data")
+    with TestClient(create_app(settings, runtime_prober=fake_probe)) as client:
+        login(client)
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CPU", "executable_path": str(executable)}
+        ).json()["id"]
+        created = client.post("/api/profiles", json=body(runtime_id, 4096)).json()
+        path = f"/api/profiles/{created['id']}"
+        unchanged = client.put(path, json=body(runtime_id, 4096)).json()
+        described = client.put(path, json=body(runtime_id, 4096, description="Notes")).json()
+        changed = client.put(path, json=body(runtime_id, 8192)).json()
+        typed = client.put(path, json=body(runtime_id, 8192, version=7)).json()
+        cloned = client.post(f"{path}/clone", json={"alias": "custom-copy"}).json()
+        invalid = client.put(path, json=body(runtime_id, 8192, version=0))
+        set_on_create = client.post(
+            "/api/profiles", json={**body(runtime_id, 4096, version=3), "alias": "started-at-3"}
+        ).json()
+        not_recommended = client.post(f"{path}/upgrade")
+
+    assert created["version"] == 1
+    assert created["recommendation"] is None
+    assert unchanged["version"] == 1
+    assert described["version"] == 1
+    assert changed["version"] == 2
+    assert typed["version"] == 7
+    assert cloned["version"] == 7
+    assert cloned["recommendation"] is None
+    assert invalid.status_code == 422
+    assert set_on_create["version"] == 3
+    assert not_recommended.status_code == 409

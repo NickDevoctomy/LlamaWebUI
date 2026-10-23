@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, false, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -50,9 +50,19 @@ class ModelProfileRecord(Base):
         String(36), ForeignKey("runtimes.id", ondelete="RESTRICT"), index=True
     )
     model_path: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     configuration: Mapped[dict[str, object]] = mapped_column(JSON)
     preset: Mapped[str] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # The model needs the machine to itself: nothing else may be loaded beside it.
+    exclusive: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
+    # The bundled recommendation this profile was added from, and the arguments it was
+    # added with. Comparing against them tells whether the profile was changed since.
+    recommendation_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    recommendation_baseline: Mapped[list[dict[str, object]] | None] = mapped_column(
+        JSON, nullable=True
+    )
     # Download job whose completion enables this profile; cleared once acted on.
     enable_on_download: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

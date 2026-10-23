@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   Check,
+  CircleArrowUp,
   ClipboardPaste,
   Copy,
   Cpu,
@@ -54,13 +55,26 @@ function formatAssetSize(size: number) {
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GiB`
 }
 
-export function Field({ label, hint, children }: {
+/** The profile's version, and how it stands against the recommendation it came from. */
+function ProfileVersionTags({ profile }: { profile: Profile }) {
+  const version = profile.version ?? 1
+  const recommendation = profile.recommendation
+  if (!recommendation) return <span className="profile-tag" title="Profile version">v{version}</span>
+  const newer = recommendation.latest_version != null && recommendation.latest_version > version
+  return <>
+    <span className="profile-tag recommended-tag" title={`Added from the recommendation ${recommendation.title ?? recommendation.id}`}>Recommended v{version}</span>
+    {recommendation.modified && <span className="profile-tag warning-tag" title={newer ? `Version ${recommendation.latest_version} is available, but these settings were changed after the profile was added, so it cannot be upgraded automatically.` : 'These settings were changed after the profile was added, so future versions of the recommendation cannot be applied automatically.'}>{newer ? `Modified · v${recommendation.latest_version} available` : 'Modified'}</span>}
+  </>
+}
+
+export function Field({ label, hint, className, children }: {
   label: string
   hint?: string
+  className?: string
   children: React.ReactNode
 }) {
   return (
-    <label className="form-field">
+    <label className={className ? `form-field ${className}` : 'form-field'}>
       <span>{label}</span>
       {children}
       {hint && <small>{hint}</small>}
@@ -326,6 +340,9 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
   const [batchSize, setBatchSize] = useState('')
   const [flashAttention, setFlashAttention] = useState('')
   const [preserveReasoning, setPreserveReasoning] = useState(true)
+  const [exclusive, setExclusive] = useState(false)
+  const [description, setDescription] = useState('')
+  const [versionText, setVersionText] = useState('1')
   const [deleting, setDeleting] = useState<Profile>()
   const [cloning, setCloning] = useState<Profile>()
   const [cloneAlias, setCloneAlias] = useState('')
@@ -391,6 +408,9 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
     setBatchSize('')
     setFlashAttention('')
     setPreserveReasoning(true)
+    setExclusive(false)
+    setDescription('')
+    setVersionText('1')
     setCommandOpen(false)
     setCommandText('')
     setParsedCommand(undefined)
@@ -434,7 +454,10 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
   }
 
   function profilePayload(): ProfileCreate {
-    const base = { alias, runtime_id: runtimeId, model_path: modelPath, enabled: editing ? editing.enabled : true }
+    // Only a typed version is sent; otherwise the server numbers the profile itself.
+    const typed = Number(versionText)
+    const version = !editing?.recommendation && Number.isInteger(typed) && typed >= 1 && typed !== (editing?.version ?? 1) ? typed : undefined
+    const base = { alias, runtime_id: runtimeId, model_path: modelPath, enabled: editing ? editing.enabled : true, exclusive, description: description.trim() || null, ...(version ? { version } : {}) }
     if (catalog && !fallback) {
       const present = presentIds()
       return { ...base, arguments: storedArguments(catalog, entries), acknowledged: acknowledged.filter((id) => present.has(id)) }
@@ -485,6 +508,9 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
     setModelPath(profile.model_path)
     setRuntimeId(profile.runtime_id)
     setLoadedRuntimeId(profile.runtime_id)
+    setExclusive(Boolean(profile.exclusive))
+    setDescription(profile.description ?? '')
+    setVersionText(String(profile.version ?? 1))
     const configuration = profile.configuration
     loadStored(storedList(configuration))
     setAcknowledged(Array.isArray(configuration.acknowledged) ? configuration.acknowledged.filter((item): item is string => typeof item === 'string') : [])
@@ -561,6 +587,18 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
       await queryClient.invalidateQueries({ queryKey: ['profiles'] })
     },
   })
+  const upgrade = useMutation({
+    mutationFn: (profile: Profile) => api.upgradeProfile(profile.id),
+    onMutate: () => setActionError(''),
+    onError: (error: Error) => setActionError(error.message),
+    onSettled: async () => { await queryClient.invalidateQueries({ queryKey: ['profiles'] }) },
+  })
+  const toggle = useMutation({
+    mutationFn: (profile: Profile) => api.setProfileEnabled(profile.id, !profile.enabled),
+    onMutate: () => setActionError(''),
+    onError: (error: Error) => setActionError(error.message),
+    onSettled: async () => { await queryClient.invalidateQueries({ queryKey: ['profiles'] }) },
+  })
   const redownload = useMutation({
     mutationFn: (downloadId: string) => api.redownload(downloadId),
     onSuccess: async () => {
@@ -627,9 +665,15 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
         {profiles.length ? <div className="record-list">{profiles.map((profile) => (
           <article className="record-row" key={profile.id}>
             <span className="record-icon"><FileCog size={18} /></span>
-            <div className="record-copy"><button className="record-link" onClick={() => editProfile(profile)} type="button"><strong>{profile.alias}</strong></button><span>{profile.model_path}</span></div>
+            <div className="record-copy"><span className="record-title"><button className="record-link" onClick={() => editProfile(profile)} type="button"><strong>{profile.alias}</strong></button><ProfileVersionTags profile={profile} />{profile.exclusive && <span className="profile-tag" title="Nothing else can be loaded beside this profile">Exclusive</span>}</span>{profile.description && <span className="record-description">{profile.description}</span>}<span>{profile.model_path}</span></div>
             <div className="record-meta wide"><small>Runtime</small><span>{runtimes.find((item) => item.id === profile.runtime_id)?.name ?? 'Missing runtime'}</span></div>
-            {profile.validation_state === 'pending' ? <span className="state-pill downloading" title={profile.auto_enable ? 'Model is downloading. The profile switches on by itself when it finishes.' : 'Model is downloading.'}>{profile.download?.total_bytes ? `Downloading ${Math.min(100, Math.round(profile.download.completed_bytes / profile.download.total_bytes * 100))}%` : 'Downloading'}</span> : profile.validation_state === 'broken' ? <button className="state-pill error" disabled={running || !profile.source_download} onClick={() => setRepairing(profile)} title={profile.source_download ? 'Repair missing model' : 'Model file is missing'} type="button">Broken</button> : <span className={`state-pill ${profile.validation_state === 'unverified' ? 'warning' : profile.enabled ? 'ready' : ''}`} title={profile.validation_state === 'unverified' ? 'File size verified; checksum unavailable for this legacy download' : undefined}>{profile.validation_state === 'unverified' ? 'Unverified' : profile.enabled ? 'Enabled' : 'Disabled'}</span>}
+            {profile.validation_state === 'pending' ? <span className="state-pill downloading" title={profile.auto_enable ? 'Model is downloading. The profile switches on by itself when it finishes.' : 'Model is downloading.'}>{profile.download?.total_bytes ? `Downloading ${Math.min(100, Math.round(profile.download.completed_bytes / profile.download.total_bytes * 100))}%` : 'Downloading'}</span> : profile.validation_state === 'broken' ? <button className="state-pill error" disabled={running || !profile.source_download} onClick={() => setRepairing(profile)} title={profile.source_download ? 'Repair missing model' : 'Model file is missing'} type="button">Broken</button> : <div className="profile-state">
+              {profile.recommendation?.upgradable && <button className="button primary compact" disabled={running || upgrade.isPending} onClick={() => upgrade.mutate(profile)} title={running ? 'Stop the router to upgrade a profile' : `Replace these settings with version ${profile.recommendation.latest_version} of the recommendation. The alias, model location and enabled state are kept.`} type="button">{upgrade.isPending && upgrade.variables?.id === profile.id ? <LoaderCircle className="spin" size={14} /> : <CircleArrowUp size={14} />} Upgrade to v{profile.recommendation.latest_version}</button>}
+              {profile.validation_state === 'unverified' && <span className="state-pill warning" title="File size verified; checksum unavailable for this legacy download">Unverified</span>}
+              <button aria-checked={profile.enabled} aria-label={`Enable ${profile.alias}`} className="profile-switch" disabled={running || toggle.isPending} onClick={() => toggle.mutate(profile)} role="switch" title={running ? 'Stop the router to change which profiles it publishes' : profile.enabled ? 'Published to the router when it starts' : 'Not published to the router'} type="button">
+                <span aria-hidden="true" className="switch-track"><span /></span>{profile.enabled ? 'Enabled' : 'Disabled'}
+              </button>
+            </div>}
             <div className="row-actions"><button className="button row-button" disabled={running || validate.isPending} onClick={() => validate.mutate(profile)} type="button"><Check size={13} /> Validate</button><button className="button row-button" disabled={running} onClick={() => editProfile(profile)} type="button"><Pencil size={13} /> Edit</button><span className="action-divider" aria-hidden="true" /><button aria-label="Reset" className="icon-button small" disabled={running} onClick={() => setResetting(profile)} title="Reset settings" type="button"><RotateCcw size={15} /></button><button aria-label="Export" className="icon-button small" disabled={running || actionPending !== undefined} onClick={() => void exportProfile(profile)} title="Export profile JSON" type="button">{actionPending === `export:${profile.id}` ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}</button><button aria-label="Command" className="icon-button small" disabled={running || actionPending !== undefined} onClick={() => void showCommand(profile)} title="Show llama-server command" type="button">{actionPending === `command:${profile.id}` ? <LoaderCircle className="spin" size={15} /> : <TerminalSquare size={15} />}</button><button aria-label="Clone" className="icon-button small" disabled={running} onClick={() => { setCloning(profile); setCloneAlias(`${profile.alias}-copy`) }} title="Clone profile" type="button"><Copy size={15} /></button><button aria-label={`Delete profile ${profile.alias}`} className="icon-button small danger-icon" disabled={running} onClick={() => setDeleting(profile)} title="Delete profile" type="button"><Trash2 size={15} /></button></div>
           </article>
         ))}</div> : <div className="empty"><FileCog size={28} /><strong>No profiles configured</strong><span>{runtimes.length ? 'Create a profile for a local GGUF model.' : 'Register a runtime before creating a model profile.'}</span>{runtimes.length > 0 && <button className="button primary" onClick={() => openCreate()} type="button"><Plus size={15} /> Create profile</button>}</div>}
@@ -653,6 +697,10 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
                 <Field label="API model alias" hint="Lowercase letters, numbers, dots, underscores, or hyphens."><input autoFocus aria-invalid={Boolean(alias) && !aliasValid} maxLength={64} onChange={(event) => setAlias(event.target.value.toLowerCase().replace(/\s+/g, '-'))} placeholder="qwen3.8-flash" required value={alias} /></Field>
                 <Field label="Runtime" hint={editing && loadedRuntimeId && runtimeId !== loadedRuntimeId ? 'Switching runtimes keeps every setting; unsupported ones are flagged on the Arguments tab.' : undefined}><select onChange={(event) => setRuntimeId(event.target.value)} required value={runtimeId}><option value="">Select runtime</option>{runtimes.filter((item) => item.usable).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.build ?? 'unknown'}</option>)}</select></Field>
               </div>
+              <Field label="Description" hint="Optional. Shown in the profile list to tell profiles apart."><textarea maxLength={500} onChange={(event) => setDescription(event.target.value)} placeholder="What this profile is tuned for" rows={2} value={description} /></Field>
+              <div>
+                <Field className="version-field" label="Version" hint={editing?.recommendation ? 'Follows the recommendation it was added from. Upgrade it from the profile list when a new version ships.' : 'Goes up by one when you save changed settings, or type a number to set it.'}><input disabled={Boolean(editing?.recommendation)} min="1" onChange={(event) => setVersionText(event.target.value)} step="1" type="number" value={versionText} /></Field>
+              </div>
               <Field label="Primary GGUF file" hint="For sharded models, select the first 00001-of-000NN file."><input onChange={(event) => setModelPath(event.target.value)} placeholder="E:\\models\\model-00001-of-00003.gguf" required value={modelPath} /></Field>
               {availableLibrary.length > 0 && <Field label="Downloaded model" hint="Only completed downloads whose files and sizes still validate are listed."><select onChange={(event) => {
                 const model = availableLibrary.find((item) => item.download_id === event.target.value)
@@ -661,6 +709,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
                 setSelectedLibraryModel(model)
                 if (!alias) setAlias(suggestedAlias(model))
               }} value={selectedLibraryModel?.download_id ?? ''}><option value="">Select a validated download</option>{availableLibrary.map((model) => <option disabled={profiles.some((profile) => profile.model_path === model.primary_path)} key={model.download_id} value={model.download_id}>{model.repo_id} · {model.group_key}</option>)}</select></Field>}
+              <label className="toggle-row"><span><strong>Exclusive</strong><small>This model needs the machine to itself. While it is loaded, no other model can be loaded, and it cannot load beside another.</small></span><input checked={exclusive} onChange={(event) => setExclusive(event.target.checked)} type="checkbox" /></label>
             </>}
             {tab === 'arguments' && (!runtimeId ? <div className="capability-note"><Gauge size={16} /><span>Select a runtime on the Basic tab to load its arguments.</span></div>
               : fallback ? <>

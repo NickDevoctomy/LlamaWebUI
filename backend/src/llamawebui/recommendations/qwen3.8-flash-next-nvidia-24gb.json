@@ -1,5 +1,6 @@
 {
   "format": "llamawebui.recommendation.v1",
+  "version": 1,
   "id": "qwen3.8-flash-next-ud-iq4-xs-nvidia-24gb",
   "title": "Qwen3.8 Flash Next, 192K context on a 24 GB NVIDIA GPU",
   "summary": "Starting point for a 24 GB NVIDIA card with 128 GB of system memory. Still being tuned for this hardware.",
@@ -23,6 +24,8 @@
   },
   "profile": {
     "alias": "qwen3.8-flash-next-24gb",
+    "description": "Qwen3.8 Flash Next for a 24 GB NVIDIA GPU with 128 GB of RAM. Dense layers and the KV cache sit on the GPU, most MoE experts in system memory. 192K context with a q8_0 cache. Uses nearly all VRAM and RAM, so it runs on its own.",
+    "exclusive": true,
     "arguments": [
       { "id": "flash-attn", "value": "on" },
       { "id": "n-cpu-moe", "value": 38 },
