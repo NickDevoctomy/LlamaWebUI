@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Check, ChevronDown, ChevronRight, Copy, Download, Eye, FileText, LoaderCircle, Play, Square, Timer, Trash2, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { AlertCircle, Check, ChevronDown, ChevronRight, Code, Copy, Download, Eye, FileText, LoaderCircle, Maximize2, Play, RotateCcw, Square, Timer, Trash2, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { api, type BenchmarkRun, type BenchmarkRunDetail, type BenchmarkStage, type Profile, type RouterState, type TimelineEntry } from './api'
 import { formatRate, formatSeconds, formatWhen, reasoningLabel } from './benchmarkFormat'
 import { Sparkline } from './Dashboard'
@@ -164,7 +164,7 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
       </div>
       <footer className="dialog-actions"><button className="button secondary" onClick={onClose} type="button">Close</button></footer>
     </Dialog>
-    {artifact && <ArtifactViewer onClose={() => setArtifact(undefined)} path={artifact} runId={runId} />}
+    {artifact && <ArtifactViewer files={data?.artifacts.map((file) => file.path) ?? []} onClose={() => setArtifact(undefined)} path={artifact} runId={runId} />}
   </>
 }
 
@@ -172,12 +172,75 @@ function formatSize(bytes: number) {
   return bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
-/** A file the model wrote, shown as plain text: generated pages are never run here. */
-function ArtifactViewer({ runId, path, onClose }: { runId: string; path: string; onClose: () => void }) {
+/** Whether a reference in a page is a relative path rather than a URL with a scheme or host. */
+function isRelative(ref: string) {
+  return !/^([a-z][a-z\d+.-]*:|\/\/|#)/i.test(ref)
+}
+
+/**
+ * Storage throws in a frame with an opaque origin, and generated games often keep a high
+ * score there, so the preview gets an in-memory stand-in that lasts until it reloads.
+ */
+const PREVIEW_STORAGE = `for (const name of ['localStorage', 'sessionStorage']) {
+  try { window[name] } catch {
+    const data = new Map()
+    const store = {
+      get length() { return data.size },
+      key: (index) => [...data.keys()][index] ?? null,
+      getItem: (key) => data.has(String(key)) ? data.get(String(key)) : null,
+      setItem: (key, value) => { data.set(String(key), String(value)) },
+      removeItem: (key) => { data.delete(String(key)) },
+      clear: () => { data.clear() },
+    }
+    Object.defineProperty(window, name, { value: store, configurable: true })
+  }
+}`
+
+/**
+ * The page ready to preview. A preview has no folder of its own, so scripts and stylesheets it
+ * links from the run's files are embedded as data URLs, which keeps attributes such as defer
+ * and type="module" working as written. References to anything else are left alone.
+ */
+async function previewPage(html: string, path: string, files: string[], read: (path: string) => Promise<string>) {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const storage = doc.createElement('script')
+  storage.textContent = PREVIEW_STORAGE
+  doc.head.prepend(storage)
+  const base = new URL(path, 'https://run.invalid/')
+  const local = (ref: string | null) => {
+    if (!ref || !isRelative(ref)) return undefined
+    const url = new URL(ref, base)
+    const file = decodeURIComponent(url.pathname.slice(1))
+    return url.origin === base.origin && files.includes(file) ? file : undefined
+  }
+  const embed = async (element: Element, attribute: string, type: string) => {
+    const file = local(element.getAttribute(attribute))
+    if (file) element.setAttribute(attribute, `data:${type};charset=utf-8,${encodeURIComponent(await read(file))}`)
+  }
+  for (const script of Array.from(doc.querySelectorAll('script[src]'))) await embed(script, 'src', 'text/javascript')
+  for (const link of Array.from(doc.querySelectorAll('link[rel~="stylesheet" i][href]'))) await embed(link, 'href', 'text/css')
+  return `${doc.doctype ? '<!DOCTYPE html>\n' : ''}${doc.documentElement.outerHTML}`
+}
+
+/**
+ * A file the model wrote, shown as read-only text. HTML files can also be previewed in a
+ * sandboxed frame: scripts run, but with an opaque origin, so the page cannot reach this app.
+ */
+function ArtifactViewer({ runId, path, files, onClose }: { runId: string; path: string; files: string[]; onClose: () => void }) {
   const file = useQuery({ queryKey: ['benchmark-artifact', runId, path], queryFn: () => api.benchmarkArtifact(runId, path) })
   const [wrap, setWrap] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [tab, setTab] = useState<'source' | 'preview'>('source')
+  const [reloads, setReloads] = useState(0)
+  const frame = useRef<HTMLIFrameElement>(null)
+  const html = /\.html?$/i.test(path)
+  const previewing = html && tab === 'preview'
   const content = file.data?.content ?? ''
+  const page = useQuery({
+    queryKey: ['benchmark-artifact-preview', runId, path, content],
+    queryFn: () => previewPage(content, path, files, async (other) => (await api.benchmarkArtifact(runId, other)).content),
+    enabled: previewing && Boolean(file.data),
+  })
   const lines = content ? content.split('\n').length : 0
   function download() {
     const url = URL.createObjectURL(new Blob([content], { type: 'text/plain' }))
@@ -187,19 +250,33 @@ function ArtifactViewer({ runId, path, onClose }: { runId: string; path: string;
     link.click()
     URL.revokeObjectURL(url)
   }
-  return <Dialog description={file.data ? `${lines.toLocaleString()} lines · read-only` : 'Loading the file…'} onClose={onClose} title={path} wide>
+  return <Dialog description={file.data ? `${lines.toLocaleString()} lines · read-only` : 'Loading the file…'} fill={previewing} onClose={onClose} title={path} wide>
     <div className="form-body artifact-viewer">
       {file.error ? <div className="form-error" role="alert"><AlertCircle size={15} /> {file.error.message}</div>
         : !file.data ? <div className="capability-note" role="status"><LoaderCircle className="spin" size={16} /><span>Loading the file…</span></div>
           : <>
             <div className="artifact-toolbar">
-              <label className="compare-toggle"><input checked={wrap} onChange={(event) => setWrap(event.target.checked)} type="checkbox" /> Wrap lines</label>
+              {html && <div aria-label="View" className="segmented artifact-tabs" role="tablist">
+                <button aria-selected={tab === 'source'} onClick={() => setTab('source')} role="tab" type="button"><Code size={14} /> Source</button>
+                <button aria-selected={tab === 'preview'} onClick={() => setTab('preview')} role="tab" type="button"><Eye size={14} /> Preview</button>
+              </div>}
+              {previewing
+                ? <span className="artifact-preview-actions">
+                  <button className="button secondary compact" onClick={() => setReloads(reloads + 1)} type="button"><RotateCcw size={14} /> Reload</button>
+                  <button className="button secondary compact" disabled={page.data == null} onClick={() => { void frame.current?.requestFullscreen?.().catch(() => undefined) }} type="button"><Maximize2 size={14} /> Full screen</button>
+                </span>
+                : <label className="compare-toggle"><input checked={wrap} onChange={(event) => setWrap(event.target.checked)} type="checkbox" /> Wrap lines</label>}
               <span>
                 <button className="button secondary compact" onClick={() => { void navigator.clipboard?.writeText(content).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1500) }).catch(() => undefined) }} type="button">{copied ? <Check size={14} /> : <Copy size={14} />} {copied ? 'Copied' : 'Copy'}</button>
                 <button className="button secondary compact" onClick={download} type="button"><Download size={14} /> Download</button>
               </span>
             </div>
-            <textarea aria-label={`Contents of ${path}`} className="artifact-text" data-wrap={wrap} readOnly spellCheck={false} value={content} wrap={wrap ? 'soft' : 'off'} />
+            {previewing
+              ? page.data != null
+                ? <iframe className="artifact-preview" key={reloads} ref={frame} referrerPolicy="no-referrer" sandbox="allow-scripts" srcDoc={page.data} title={`Preview of ${path}`} />
+                : page.error ? <div className="form-error" role="alert"><AlertCircle size={15} /> {page.error.message}</div>
+                  : <div className="capability-note" role="status"><LoaderCircle className="spin" size={16} /><span>Loading the page…</span></div>
+              : <textarea aria-label={`Contents of ${path}`} className="artifact-text" data-wrap={wrap} readOnly spellCheck={false} value={content} wrap={wrap ? 'soft' : 'off'} />}
           </>}
     </div>
     <footer className="dialog-actions"><button className="button secondary" onClick={onClose} type="button">Close</button></footer>

@@ -87,12 +87,14 @@ export function Field({ label, hint, className, children }: {
 /** Dialogs currently open, oldest first. */
 const openDialogs: symbol[] = []
 
-export function Dialog({ title, description, onClose, children, wide = false }: {
+export function Dialog({ title, description, onClose, children, wide = false, fill = false }: {
   title: string
   description: string
   onClose: () => void
   children: React.ReactNode
   wide?: boolean
+  /** Take up the whole window, for content such as a page preview that wants the room. */
+  fill?: boolean
 }) {
   const dialogId = useId()
   const titleId = `${dialogId}-title`
@@ -150,7 +152,7 @@ export function Dialog({ title, description, onClose, children, wide = false }: 
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose()
     }}>
-      <section ref={dialogRef} aria-describedby={descriptionId} aria-labelledby={titleId} aria-modal="true" className={wide ? 'dialog wide' : 'dialog'} role="dialog">
+      <section ref={dialogRef} aria-describedby={descriptionId} aria-labelledby={titleId} aria-modal="true" className={['dialog', wide && 'wide', fill && 'fill'].filter(Boolean).join(' ')} role="dialog">
         <header className="dialog-header">
           <div><p className="eyebrow">Configuration</p><h2 id={titleId}>{title}</h2><p id={descriptionId}>{description}</p></div>
           <button aria-label="Close" className="icon-button" onClick={onClose} type="button"><X size={18} /></button>

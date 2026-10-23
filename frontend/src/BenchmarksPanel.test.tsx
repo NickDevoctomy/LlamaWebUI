@@ -142,11 +142,12 @@ describe('BenchmarksPanel', () => {
         { round: 1, name: 'write_file', path: 'tetris/index.html', ok: true, result: 'Wrote 25 bytes to tetris/index.html' },
         { round: 1, name: 'write_file', path: 'C:/test.py', ok: false, result: "Error: 'C:/test.py' is outside your workspace." },
       ],
-      artifacts: [{ path: 'tetris/index.html', size: 25 }],
+      artifacts: [{ path: 'tetris/index.html', size: 25 }, { path: 'tetris/game.js', size: 30 }],
       timeline: [],
     }
     vi.spyOn(api, 'benchmarkRun').mockResolvedValue(detail)
-    const read = vi.spyOn(api, 'benchmarkArtifact').mockResolvedValue({ path: 'tetris/index.html', content: '<script>alert(1)</script>\n<p>hi</p>' })
+    const page = '<script>alert(1)</script>\n<script src="game.js"></script><script src="https://cdn.example/x.js"></script>\n<p>hi</p>'
+    const read = vi.spyOn(api, 'benchmarkArtifact').mockImplementation(async (_run, path) => ({ path, content: path.endsWith('game.js') ? 'startGame("</script>")' : page }))
     renderPanel()
 
     expect(await screen.findByText(/· 1 file/)).toBeInTheDocument()
@@ -159,11 +160,32 @@ describe('BenchmarksPanel', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Open tetris/index.html' }))
     const viewer = await screen.findByRole('dialog', { name: 'tetris/index.html' })
     const editor = await within(viewer).findByRole('textbox', { name: 'Contents of tetris/index.html' })
-    // Shown as text in a read-only editor: the page is never rendered.
-    expect(editor).toHaveValue('<script>alert(1)</script>\n<p>hi</p>')
+    // Opens on the source, as text in a read-only editor.
+    expect(editor).toHaveValue(page)
     expect(editor).toHaveAttribute('readonly')
-    expect(within(viewer).getByText('2 lines · read-only')).toBeInTheDocument()
+    expect(within(viewer).getByText('3 lines · read-only')).toBeInTheDocument()
     expect(read).toHaveBeenCalledWith('run-1', 'tetris/index.html')
+
+    // The preview runs the page in a sandbox with an opaque origin, cut off from this app.
+    fireEvent.click(within(viewer).getByRole('tab', { name: 'Preview' }))
+    // The run's own game.js is embedded, since the preview has no folder to load it from.
+    const preview = await within(viewer).findByTitle('Preview of tetris/index.html')
+    expect(preview).toHaveAttribute('sandbox', 'allow-scripts')
+    const srcdoc = preview.getAttribute('srcdoc')
+    expect(srcdoc).toContain('<script>alert(1)</script>')
+    expect(srcdoc).toContain(`<script src="data:text/javascript;charset=utf-8,${encodeURIComponent('startGame("</script>")')}"></script>`)
+    // Storage throws without an origin, so the page gets an in-memory stand-in first.
+    expect(srcdoc).toMatch(/^<html><head><script>for \(const name of \['localStorage'/)
+    expect(srcdoc).toContain('<script src="https://cdn.example/x.js"></script>')
+    expect(srcdoc).toContain('<p>hi</p>')
+    expect(read).toHaveBeenCalledWith('run-1', 'tetris/game.js')
+    // Previewing gives the page the whole window, with full screen a click away.
+    expect(viewer).toHaveClass('fill')
+    expect(within(viewer).getByRole('button', { name: 'Full screen' })).toBeEnabled()
+    expect(within(viewer).queryByRole('textbox')).not.toBeInTheDocument()
+    fireEvent.click(within(viewer).getByRole('tab', { name: 'Source' }))
+    expect(within(viewer).getByRole('textbox', { name: 'Contents of tetris/index.html' })).toBeInTheDocument()
+    expect(viewer).not.toHaveClass('fill')
 
     // Escape closes only the editor on top, not the run underneath.
     fireEvent.keyDown(document, { key: 'Escape' })
