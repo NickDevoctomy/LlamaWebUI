@@ -110,6 +110,7 @@ from llamawebui.services.model_artifact_registry import ModelArtifactError, Mode
 from llamawebui.services.model_event_stream import stream_model_events
 from llamawebui.services.model_library import ModelLibrary
 from llamawebui.services.model_locator import ModelLocation, local_models, locate_model
+from llamawebui.services.process_memory import ProcessMemorySampler
 from llamawebui.services.profile_registry import (
     ProfileAliasExistsError,
     ProfileNotFoundError,
@@ -500,7 +501,11 @@ def _download_payload(job: DownloadJobRecord) -> dict[str, object]:
     }
 
 
-def _server_payload(supervisor: RouterSupervisor, settings: Settings) -> dict[str, object]:
+def _server_payload(
+    supervisor: RouterSupervisor,
+    settings: Settings,
+    memory: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     return {
         "state": supervisor.state,
         "pid": supervisor.pid,
@@ -508,6 +513,8 @@ def _server_payload(supervisor: RouterSupervisor, settings: Settings) -> dict[st
         "endpoint": f"http://{settings.router_host}:{settings.router_port}",
         "logs": supervisor.logs,
         "timing": supervisor.timing,
+        "memory": memory or [],
+        "context": supervisor.context,
         "arguments": supervisor.launch_arguments,
         "system": _system_metrics(settings.data_dir),
     }
@@ -702,6 +709,7 @@ def create_app(
     router_supervisor: RouterSupervisor | None = None,
     router_port_probe: RouterPortProbe = probe_router_port,
     router_client: RouterClient | None = None,
+    process_memory: ProcessMemorySampler | None = None,
     static_dir: Path | None = None,
     argument_catalog: ArgumentCatalog | None = None,
     hardware_detector: Callable[[], HardwareProfile] = detect_hardware,
@@ -802,6 +810,7 @@ def create_app(
                 ready_timeout_seconds=app_settings.router_ready_timeout_seconds,
             )
         )
+        app.state.process_memory = process_memory or ProcessMemorySampler()
         app.state.router_client = router_client or HttpRouterClient(
             app_settings.router_host,
             app_settings.router_port,
@@ -1349,7 +1358,9 @@ def create_app(
     @app.get("/api/server/status")
     async def server_status(request: Request) -> dict[str, object]:
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
-        return _server_payload(supervisor, app_settings)
+        sampler = cast(ProcessMemorySampler, request.app.state.process_memory)
+        memory = await asyncio.to_thread(sampler.sample, supervisor.pid)
+        return _server_payload(supervisor, app_settings, memory)
 
     @app.get("/api/server/runs")
     async def list_server_runs(request: Request) -> list[dict[str, object]]:

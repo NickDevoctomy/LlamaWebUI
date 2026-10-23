@@ -14,6 +14,7 @@ from llamawebui.config import Settings
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
 from llamawebui.services.auth_service import CSRF_HEADER, CSRF_HEADER_VALUE
 from llamawebui.services.model_event_stream import stream_model_events
+from llamawebui.services.process_memory import ProcessMemorySampler
 from llamawebui.services.router_client import RouterAPIError, RouterModel, RouterModelEvent
 from llamawebui.services.router_supervisor import (
     RouterProcess,
@@ -165,6 +166,7 @@ def test_server_start_status_and_stop(tmp_path: Path, login: Login) -> None:
         router_supervisor=supervisor,
         router_port_probe=available_port,
         router_client=FakeRouterClient(),
+        process_memory=ProcessMemorySampler(lambda pid: [{"model": "local-model", "pid": pid}]),
     )
     with TestClient(app) as client:
         login(client)
@@ -186,6 +188,8 @@ def test_server_start_status_and_stop(tmp_path: Path, login: Login) -> None:
         runs = client.get("/api/server/runs")
 
     assert stopped.json()["state"] == "stopped"
+    assert stopped.json()["memory"] == []
+    assert running.json()["memory"] == [{"model": "local-model", "pid": 4321}]
     assert created_token.status_code == 201
     assert started.status_code == 200
     assert started.json()["state"] == "ready"

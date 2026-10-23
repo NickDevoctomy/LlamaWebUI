@@ -1,6 +1,6 @@
-import { Activity, ArrowUpRight, Check, Copy, Cpu, Download, FolderCog, KeyRound, Library, TerminalSquare } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
-import type { AccessToken, DownloadJob, LibraryModel, Profile, RouterModel, Runtime, ServerStatus } from './api'
+import { Activity, ArrowUpRight, Check, ChevronLeft, Copy, Cpu, Download, FolderCog, KeyRound, Library, MemoryStick, TerminalSquare } from 'lucide-react'
+import { Fragment, useEffect, useRef, useState } from 'react'
+import type { AccessToken, DownloadJob, LibraryModel, ModelContext, ModelMemory, Profile, RouterModel, Runtime, ServerStatus, StoredArgument } from './api'
 
 const HISTORY_LENGTH = 60
 
@@ -10,6 +10,7 @@ export interface StatusSample {
   gpu: number | null
   vram: number | null
   decode: number | null
+  rollingPeak: number | null
 }
 
 function percent(used: number | undefined, total: number | undefined) {
@@ -35,6 +36,7 @@ export function useStatusHistory(status: ServerStatus | undefined, updatedAt: nu
       gpu: system?.gpu?.utilization_percent ?? null,
       vram: percent(system?.gpu?.memory_used_bytes, system?.gpu?.memory_total_bytes),
       decode: numeric(status.timing?.decode_tokens_per_second),
+      rollingPeak: numeric(status.timing?.decode_tokens_per_second_rolling_peak),
     }
     setHistory((current) => [...current.slice(1 - HISTORY_LENGTH), sample])
   }, [status, updatedAt])
@@ -57,23 +59,137 @@ function stateLabel(value?: string) {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : 'Unknown'
 }
 
-export function Sparkline({ values, max }: { values: (number | null)[]; max?: number }) {
-  const points = values.map((value, index) => [index, value] as const).filter((point): point is readonly [number, number] => point[1] != null)
-  if (points.length < 2) return <div aria-hidden="true" className="sparkline empty-spark" />
-  const top = max ?? Math.max(...points.map(([, value]) => value), 1)
-  const span = Math.max(values.length - 1, 1)
+function plotted(values: (number | null)[]) {
+  return values.map((value, index) => [index, value] as const).filter((point): point is readonly [number, number] => point[1] != null)
+}
+
+/**
+ * Trend line with an optional second series drawn over it and an optional
+ * horizontal ceiling, painted last so it stays visible where the two meet.
+ */
+export function Sparkline({ values, max, overlay, ceiling }: { values: (number | null)[]; max?: number; overlay?: (number | null)[]; ceiling?: number | null }) {
+  const points = plotted(values)
+  const overlayPoints = overlay ? plotted(overlay) : []
+  if (points.length < 2 && overlayPoints.length < 2) return <div aria-hidden="true" className="sparkline empty-spark" />
+  const top = max ?? Math.max(...points.map(([, value]) => value), ...overlayPoints.map(([, value]) => value), ceiling ?? 0, 1)
+  const span = Math.max(values.length - 1, (overlay?.length ?? 0) - 1, 1)
   const x = (index: number) => index / span * 100
   const y = (value: number) => 30 - Math.min(value / top, 1) * 28
-  const line = points.map(([index, value]) => `${x(index).toFixed(2)},${y(value).toFixed(2)}`).join(' ')
-  const area = `${x(points[0][0]).toFixed(2)},32 ${line} ${x(points[points.length - 1][0]).toFixed(2)},32`
-  const [lastIndex, lastValue] = points[points.length - 1]
+  const path = (series: (readonly [number, number])[]) => series.map(([index, value]) => `${x(index).toFixed(2)},${y(value).toFixed(2)}`).join(' ')
+  const line = path(points)
+  const last = points.at(-1)
   return (
     <div aria-hidden="true" className="sparkline">
       <svg preserveAspectRatio="none" viewBox="0 0 100 32">
-        <polygon className="spark-area" points={area} />
-        <polyline className="spark-line" points={line} vectorEffect="non-scaling-stroke" />
+        {points.length >= 2 && <>
+          <polygon className="spark-area" points={`${x(points[0][0]).toFixed(2)},32 ${line} ${x(points[points.length - 1][0]).toFixed(2)},32`} />
+          <polyline className="spark-line" points={line} vectorEffect="non-scaling-stroke" />
+        </>}
+        {overlayPoints.length >= 2 && <polyline className="spark-overlay" points={path(overlayPoints)} vectorEffect="non-scaling-stroke" />}
+        {ceiling != null && ceiling > 0 && <line className="spark-ceiling" vectorEffect="non-scaling-stroke" x1="0" x2="100" y1={y(ceiling).toFixed(2)} y2={y(ceiling).toFixed(2)} />}
       </svg>
-      <span className="spark-end" style={{ left: `${x(lastIndex)}%`, top: `${y(lastValue) / 32 * 100}%` }} />
+      {points.length >= 2 && last && <span className="spark-end" style={{ left: `${x(last[0])}%`, top: `${y(last[1]) / 32 * 100}%` }} />}
+    </div>
+  )
+}
+
+const DRAFT_FLAGS = new Set(['--spec-draft-model', '--model-draft', '-md'])
+
+/** File name of the speculative-decoding draft model a profile loads alongside its main model. */
+export function draftModel(profile: Profile) {
+  const stored = Array.isArray(profile.configuration.arguments) ? profile.configuration.arguments as StoredArgument[] : []
+  for (const argument of stored) {
+    const value = 'id' in argument
+      ? argument.id === 'spec-draft-model' ? argument.value : null
+      : DRAFT_FLAGS.has(argument.flag) ? argument.value : null
+    if (typeof value === 'string' && value.trim()) return value.trim().split(/[\\/]/).at(-1) ?? null
+  }
+  return null
+}
+
+type MemoryLocation = 'vram' | 'ram' | 'mapped'
+
+const MEMORY_LOCATIONS: { id: MemoryLocation; label: string }[] = [
+  { id: 'vram', label: 'VRAM' },
+  { id: 'ram', label: 'RAM' },
+  { id: 'mapped', label: 'Mapped from disk' },
+]
+const MEMORY_KINDS: { location: MemoryLocation; kind: string; label: string; bytes: (entry: ModelMemory) => number }[] = [
+  { location: 'vram', kind: 'dedicated', label: 'Dedicated', bytes: (entry) => entry.vram_bytes ?? 0 },
+  { location: 'ram', kind: 'pinned', label: 'Shared with GPU', bytes: (entry) => Math.min(entry.gpu_shared_bytes ?? 0, entry.ram_bytes) },
+  { location: 'ram', kind: 'private', label: 'Process', bytes: (entry) => entry.ram_bytes - Math.min(entry.gpu_shared_bytes ?? 0, entry.ram_bytes) },
+  { location: 'mapped', kind: 'files', label: 'Model files', bytes: (entry) => entry.mapped_bytes },
+]
+
+function MemoryPanel({ memory }: { memory: ModelMemory[] }) {
+  const segments = MEMORY_KINDS.map(({ location, kind, label, bytes }) => {
+    const parts = memory.map((entry) => ({ model: entry.model, bytes: bytes(entry) })).filter((part) => part.bytes > 0)
+    return { location: MEMORY_LOCATIONS.find((item) => item.id === location)!, kind: { id: kind, label }, parts, bytes: parts.reduce((total, part) => total + part.bytes, 0) }
+  }).filter((segment) => segment.bytes > 0)
+  const total = segments.reduce((sum, segment) => sum + segment.bytes, 0)
+  const groups = MEMORY_LOCATIONS
+    .map((location) => ({ location, segments: segments.filter((segment) => segment.location.id === location.id) }))
+    .filter((group) => group.segments.length)
+    .map((group) => ({ ...group, bytes: group.segments.reduce((sum, segment) => sum + segment.bytes, 0) }))
+  const describe = (segment: (typeof segments)[number]) => [
+    `${segment.location.label} · ${segment.kind.label}: ${formatBytes(segment.bytes)}`,
+    ...segment.parts.map((part) => `${part.model}: ${formatBytes(part.bytes)}`),
+  ].join('\n')
+  return (
+    <section className="data-panel memory-panel">
+      <div className="panel-heading"><div><h2>Model memory</h2><p>Measured from each model process. A draft model shares its main model&apos;s process.</p></div>{total ? <strong className="memory-total">{formatBytes(total)}</strong> : <MemoryStick size={18} />}</div>
+      {total ? <div className="memory-body">
+        <div aria-label={groups.map((group) => `${group.location.label} ${formatBytes(group.bytes)}`).join(', ')} className="memory-bar" role="img">
+          {segments.map((segment) => <span data-kind={segment.kind.id} data-location={segment.location.id} key={`${segment.location.id}-${segment.kind.id}`} style={{ flexGrow: segment.bytes }} title={describe(segment)} />)}
+        </div>
+        <div className="memory-legend">
+          {groups.map(({ location, segments: items, bytes }) => <div className="memory-group" key={location.id}>
+            <strong>{location.label}<span>{formatBytes(bytes)}</span></strong>
+            <ul>{items.map((segment) => <li key={segment.kind.id} title={describe(segment)}><i data-kind={segment.kind.id} data-location={location.id} />{segment.kind.label}<span>{formatBytes(segment.bytes)}</span></li>)}</ul>
+          </div>)}
+        </div>
+      </div> : <div className="empty compact-empty"><MemoryStick size={24} /><strong>No model memory reported</strong><span>The split appears once a model has loaded.</span></div>}
+    </section>
+  )
+}
+
+function ContextUsage({ entries }: { entries: ModelContext[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const several = entries.length > 1
+  const rows = entries.flatMap((entry) => entry.slots.map((slot) => ({
+    key: `${entry.model ?? ''}-${slot.id}`,
+    label: several ? `${entry.model ?? 'router'} · slot ${slot.id}` : `Slot ${slot.id}`,
+    used: slot.used,
+    total: entry.shared_capacity ?? slot.total,
+  })))
+  const used = rows.reduce((sum, row) => sum + row.used, 0)
+  const total = entries.reduce((sum, entry) => sum + (entry.shared_capacity ?? entry.slots.reduce((slots, slot) => slots + (slot.total ?? 0), 0)), 0) || null
+  const fill = (value: number, capacity: number | null) => capacity ? Math.min(100, value / capacity * 100) : 0
+  const amount = (value: number, capacity: number | null) => <>{value.toLocaleString()}<small>/ {capacity ? capacity.toLocaleString() : '—'} tokens</small></>
+  if (!rows.length) return <div className="context-usage"><dt>Context</dt><dd>—<small>tokens</small></dd></div>
+  if (expanded) return (
+    <div className="context-usage expanded">
+      <dt>Context<button className="button secondary compact" onClick={() => setExpanded(false)} type="button"><ChevronLeft size={13} /> Total</button></dt>
+      <dd>
+        <ul className="context-slots">
+          {rows.map((row) => <li key={row.key}>
+            <span className="context-slot-label">{row.label}</span>
+            <span className="context-slot-value">{amount(row.used, row.total)}</span>
+            <span className="context-bar"><span style={{ width: `${fill(row.used, row.total)}%` }} /></span>
+          </li>)}
+        </ul>
+      </dd>
+    </div>
+  )
+  return (
+    <div className="context-usage">
+      <dt>Context</dt>
+      <dd>
+        <button aria-label="Show context breakdown" className="context-toggle" onClick={() => setExpanded(true)} title="Show per-slot breakdown" type="button">
+          <span className="context-amount">{amount(used, total)}</span>
+          <span className="context-bar"><span style={{ width: `${fill(used, total)}%` }} /></span>
+        </button>
+      </dd>
     </div>
   )
 }
@@ -135,16 +251,22 @@ export function DashboardPanel({ status, history, runtime, runtimes, profiles, m
   const timing = status?.timing ?? {}
   const decode = numeric(timing.decode_tokens_per_second)
   const prompt = numeric(timing.prompt_tokens_per_second)
-  const peak = numeric(timing.decode_tokens_per_second_peak)
-  const context = numeric(timing.context_tokens)
-  const loaded = models.filter((model) => model.status.value === 'loaded').length
+  const rollingPeak = numeric(timing.decode_tokens_per_second_rolling_peak)
+  const sessionPeak = numeric(timing.decode_tokens_per_second_session_peak)
+  const liveStatus = (alias: string) => models.find((model) => model.id === alias)?.status.value
+  const loadedDrafts = profiles.filter((profile) => draftModel(profile) && liveStatus(profile.alias) === 'loaded').length
+  const loaded = models.filter((model) => model.status.value === 'loaded').length + loadedDrafts
+  // Only models the router still holds; a stopped router reports nothing live.
+  const resident = (name: string | null) => name == null || ['loaded', 'loading'].includes(liveStatus(name) ?? '')
+  const memory = running ? status?.memory ?? [] : []
+  const context = running ? (status?.context ?? []).filter((entry) => resident(entry.model)) : []
   const activeDownloads = downloads.filter((job) => ['queued', 'downloading', 'paused'].includes(job.state))
   const enabledProfiles = profiles.filter((profile) => profile.enabled).length
   const libraryBytes = library.reduce((total, model) => total + model.total_bytes, 0)
   const recentLogs = status?.logs.slice(-6) ?? []
   const series = (key: keyof StatusSample) => history.map((sample) => sample[key])
   const heroSummary = running
-    ? `Serving ${loaded} loaded ${loaded === 1 ? 'model' : 'models'} from ${enabledProfiles} enabled ${enabledProfiles === 1 ? 'profile' : 'profiles'}.`
+    ? `Serving ${loaded} loaded ${loaded === 1 ? 'model' : 'models'}${loadedDrafts ? ` (${loadedDrafts} ${loadedDrafts === 1 ? 'draft' : 'drafts'})` : ''} from ${enabledProfiles} enabled ${enabledProfiles === 1 ? 'profile' : 'profiles'}.`
     : state === 'crashed'
       ? 'The router exited unexpectedly. Check the recent output below, then start it again.'
       : runtime
@@ -178,16 +300,18 @@ export function DashboardPanel({ status, history, runtime, runtimes, profiles, m
           <div className="throughput-primary">
             <span className="throughput-label">Decode</span>
             <strong>{formatRate(decode)}<small>tok/s</small></strong>
-            <Sparkline values={series('decode')} />
+            <Sparkline ceiling={sessionPeak} overlay={series('rollingPeak')} values={series('decode')} />
           </div>
           <dl className="throughput-grid">
             <div><dt>Prompt</dt><dd>{formatRate(prompt)}<small>tok/s</small></dd></div>
-            <div><dt>Peak decode</dt><dd>{formatRate(peak)}<small>tok/s</small></dd></div>
-            <div><dt>Context</dt><dd>{context == null ? '—' : context.toLocaleString()}<small>tokens</small></dd></div>
-            <div><dt>Loaded</dt><dd>{loaded}<small>{loaded === 1 ? 'model' : 'models'}</small></dd></div>
+            <div title="Average over the last 10 seconds, with the peak since the router started in brackets"><dt>Peak decode</dt><dd>{formatRate(rollingPeak)}{sessionPeak != null && <span className="session-peak">({formatRate(sessionPeak)})</span>}<small>tok/s</small></dd></div>
+            <div><dt>Loaded</dt><dd>{loaded}<small>{loaded === 1 ? 'model' : 'models'}{loadedDrafts ? ` · ${loadedDrafts} ${loadedDrafts === 1 ? 'draft' : 'drafts'}` : ''}</small></dd></div>
+            <ContextUsage entries={context} />
           </dl>
         </div>
       </section>
+
+      <MemoryPanel memory={memory} />
 
       <div className="shortcut-grid">
         {shortcuts.map(({ section, icon: Icon, label, value, detail }) => {
@@ -220,17 +344,25 @@ export function DashboardPanel({ status, history, runtime, runtimes, profiles, m
       </section>
 
       <section className="data-panel roster-panel">
-        <div className="panel-heading"><div><h2>Models</h2><p>{running ? `${loaded} of ${models.length || profiles.length} loaded in the router` : 'Profiles published when the router starts'}</p></div>{onNavigate && <button className="button secondary compact" onClick={() => onNavigate('Profiles')} type="button">Manage</button>}</div>
+        <div className="panel-heading"><div><h2>Models</h2><p>{running ? `${loaded - loadedDrafts} of ${models.length || profiles.length} loaded in the router` : 'Profiles published when the router starts'}</p></div>{onNavigate && <button className="button secondary compact" onClick={() => onNavigate('Profiles')} type="button">Manage</button>}</div>
         {profiles.length ? <ul className="roster">
           {profiles.slice(0, 8).map((profile) => {
-            const live = models.find((model) => model.id === profile.alias)?.status.value
+            const live = liveStatus(profile.alias)
             const value = profile.validation_state === 'broken' ? 'broken' : profile.validation_state === 'pending' ? 'downloading' : live ?? (profile.enabled ? 'available' : 'disabled')
             const size = profile.configuration.model_size
-            return <li key={profile.id}>
-              <span className={`roster-dot ${value}`} />
-              <span className="roster-copy"><strong>{profile.alias}</strong><span>{typeof size === 'number' ? formatBytes(size) : profile.model_path.split(/[\\/]/).at(-1)}</span></span>
-              <span className={`state-pill ${value === 'broken' ? 'error' : value}`}>{value}</span>
-            </li>
+            const draft = draftModel(profile)
+            return <Fragment key={profile.id}>
+              <li>
+                <span className={`roster-dot ${value}`} />
+                <span className="roster-copy"><strong>{profile.alias}</strong><span>{typeof size === 'number' ? formatBytes(size) : profile.model_path.split(/[\\/]/).at(-1)}</span></span>
+                <span className={`state-pill ${value === 'broken' ? 'error' : value}`}>{value}</span>
+              </li>
+              {draft && <li className="roster-draft">
+                <span className={`roster-dot ${value}`} />
+                <span className="roster-copy"><strong>{draft}</strong><span>Draft model for {profile.alias}</span></span>
+                <span className={`state-pill ${value === 'broken' ? 'error' : value}`}>{value}</span>
+              </li>}
+            </Fragment>
           })}
         </ul> : <div className="empty compact-empty"><FolderCog size={24} /><strong>No model profiles yet</strong><span>Create a profile to publish a model to the router.</span></div>}
         {profiles.length > 8 && <div className="panel-footer"><span>{profiles.length - 8} more profiles</span></div>}

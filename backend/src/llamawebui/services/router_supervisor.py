@@ -21,6 +21,7 @@ import httpx
 from llamawebui.domain.router_lifecycle import RouterLaunch, RouterState, require_transition
 from llamawebui.services.logging_utils import redact_text
 from llamawebui.services.process_job import ProcessJob
+from llamawebui.services.router_telemetry import RouterTelemetry
 
 LOGGER = logging.getLogger("llamawebui.router")
 _EXIT_POLL_SECONDS = 0.2
@@ -182,6 +183,7 @@ class RouterSupervisor:
         *,
         log_capacity: int = 500,
         restart_policy: RouterRestartPolicy | None = None,
+        clock: Callable[[], float] = monotonic,
     ) -> None:
         self._launcher = launcher
         self._health_probe = health_probe
@@ -198,14 +200,9 @@ class RouterSupervisor:
         self._restart_enabled = False
         self._launch: RouterLaunch | None = None
         self._launch_arguments: tuple[str, ...] = ()
-        self._timing: dict[str, float | int | None] = {
-            "prompt_tokens_per_second": None,
-            "decode_tokens_per_second": None,
-            "decode_tokens_per_second_peak": None,
-            "task_id": None,
-            "context_tokens": None,
-            "task_elapsed_seconds": None,
-        }
+        self._telemetry = RouterTelemetry(clock)
+        self._timing: dict[str, float | int | None] = {}
+        self._reset_timing()
 
     @property
     def state(self) -> RouterState:
@@ -225,7 +222,26 @@ class RouterSupervisor:
 
     @property
     def timing(self) -> dict[str, float | int | None]:
-        return dict(self._timing)
+        return {
+            **self._timing,
+            "decode_tokens_per_second_rolling_peak": self._telemetry.rolling_peak(),
+            "decode_tokens_per_second_session_peak": self._telemetry.session_peak,
+        }
+
+    @property
+    def context(self) -> list[dict[str, object]]:
+        """Tokens held in each model slot's context."""
+        return self._telemetry.context()
+
+    def _reset_timing(self) -> None:
+        self._telemetry.reset()
+        self._timing = {
+            "prompt_tokens_per_second": None,
+            "decode_tokens_per_second": None,
+            "decode_tokens_per_second_peak": None,
+            "task_id": None,
+            "task_elapsed_seconds": None,
+        }
 
     @property
     def launch_arguments(self) -> tuple[str, ...]:
@@ -251,6 +267,8 @@ class RouterSupervisor:
         require_transition(self._state, RouterState.STARTING)
         self._set_state(RouterState.STARTING)
         self._last_exit_code = None
+        # Each launch, including an automatic restart, starts a new session.
+        self._reset_timing()
         try:
             process = await self._launcher(arguments)
         except Exception:
@@ -454,6 +472,7 @@ class RouterSupervisor:
             text = line.decode(errors="replace").rstrip("\r\n")
             self._logs.append(redact_text(text))
             self._parse_timing(text)
+            self._telemetry.observe(text)
             LOGGER.debug(
                 "router_output",
                 extra={"component": "router", "event": "output", "line": redact_text(text)},
@@ -480,13 +499,6 @@ class RouterSupervisor:
             self._timing["decode_tokens_per_second"] = float(generation.group(3))
             if generation.group(4):
                 self._timing["decode_tokens_per_second_peak"] = float(generation.group(4))
-        context = re.search(
-            r"(?:context|n_ctx)\s*[=:]\s*(\d+)(?:\s*/\s*(\d+))?",
-            text,
-            re.IGNORECASE,
-        )
-        if context:
-            self._timing["context_tokens"] = int(context.group(1))
 
     def _set_state(self, state: RouterState) -> None:
         self._state = state

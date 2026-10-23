@@ -292,7 +292,6 @@ async def test_supervisor_parses_prompt_and_decode_timing() -> None:
         "tg = 14.81 t/s, "
         "tg_3s = 16.65 t/s"
     )
-    supervisor._parse_timing("slot context n_ctx=32768")
 
     assert supervisor.timing == {
         "prompt_tokens_per_second": 83.24,
@@ -300,8 +299,40 @@ async def test_supervisor_parses_prompt_and_decode_timing() -> None:
         "decode_tokens_per_second_peak": 16.65,
         "task_id": 125,
         "task_elapsed_seconds": 491.2,
-        "context_tokens": 32768,
+        "decode_tokens_per_second_rolling_peak": None,
+        "decode_tokens_per_second_session_peak": None,
     }
+
+
+async def test_supervisor_starts_a_new_telemetry_session_on_each_launch(tmp_path: Path) -> None:
+    output = asyncio.StreamReader()
+    processes = [FakeProcess(stdout=output), FakeProcess()]
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        return processes.pop(0)
+
+    supervisor = RouterSupervisor(launcher, clock=lambda: 100.0)
+    await supervisor.start(launch_configuration(tmp_path))
+    output.feed_data(
+        b"[ 5001] slot print_timing: id  0 | task 3 | n_gen =     40, tg =  50.00 t/s, "
+        b"tg_3s =  61.00 t/s\n"
+        b"[ 5001] srv    load_model: initializing, n_slots = 1, n_ctx_slot = 4096\n"
+    )
+    output.feed_eof()
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert supervisor.timing["decode_tokens_per_second_session_peak"] == 61.0
+    assert supervisor.timing["decode_tokens_per_second_peak"] == 61.0
+    assert supervisor.context[0]["slots"] == [{"id": 0, "used": 0, "total": 4096}]
+
+    await supervisor.stop()
+    await supervisor.start(launch_configuration(tmp_path))
+
+    assert supervisor.timing["decode_tokens_per_second_session_peak"] is None
+    assert supervisor.timing["decode_tokens_per_second_peak"] is None
+    assert supervisor.context == []
+    await supervisor.stop()
 
 
 async def test_supervisor_waits_for_health_and_captures_bounded_logs(tmp_path: Path) -> None:

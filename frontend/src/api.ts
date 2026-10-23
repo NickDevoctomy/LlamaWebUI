@@ -13,6 +13,9 @@ export interface ServerStatus {
   endpoint: string
   logs: string[]
   timing: Record<string, number | string | null>
+  memory?: ModelMemory[]
+  /** Tokens held in each model slot's context. */
+  context?: ModelContext[]
   system: {
     cpu_percent: number
     ram_used_bytes: number
@@ -27,6 +30,27 @@ export interface ServerStatus {
     gpu_supported: boolean
   }
   arguments: string[]
+}
+
+/** Memory a model process holds as measured by the OS; a draft shares its main model's process. */
+export interface ModelMemory {
+  model: string
+  pid: number
+  /** Dedicated GPU memory; null when the platform does not report it per process. */
+  vram_bytes: number | null
+  /** System memory shared with the GPU (pinned host buffers); Windows only. */
+  gpu_shared_bytes: number | null
+  /** Private resident memory, which includes any shared GPU memory. */
+  ram_bytes: number
+  /** Resident pages of memory-mapped model files, read from disk. */
+  mapped_bytes: number
+}
+
+export interface ModelContext {
+  model: string | null
+  /** Set when slots share one unified KV cache of this many tokens. */
+  shared_capacity: number | null
+  slots: { id: number; used: number; total: number | null }[]
 }
 
 export interface Runtime {
