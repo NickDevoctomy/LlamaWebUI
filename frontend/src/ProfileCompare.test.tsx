@@ -98,6 +98,19 @@ describe('ProfileCompare', () => {
     expect(within(row).getAllByText('qwen.gguf').map((cell) => cell.getAttribute('title'))).toEqual(['E:\\models\\a\\qwen.gguf', 'D:\\backup\\qwen.gguf'])
   })
 
+  it('lines up the benchmark results stored on each profile', async () => {
+    const result = { run_id: 'r', benchmark_title: 'Tetris', profile_version: 1, completed_at: '2026-10-23T11:00:00', decode_tokens_per_second: 21.37, prompt_tokens_per_second: 412.5, load_seconds: 41.3 }
+    renderCompare([
+      profile('fast', { benchmark_results: { tetris: result } }),
+      profile('slow', { benchmark_results: { tetris: { ...result, decode_tokens_per_second: 15.02 } } }),
+    ])
+
+    const row = await screen.findByRole('row', { name: /^Decode average/ })
+    expect(row).toHaveTextContent('21.4 tok/s15.0 tok/s')
+    expect(screen.getByText('Benchmark · Tetris')).toBeInTheDocument()
+    expect(screen.queryByRole('row', { name: /Model load/ })).not.toBeInTheDocument()
+  })
+
   it('stays hidden until there are two profiles to compare', () => {
     const { container } = renderCompare(profiles.slice(0, 1))
     expect(container).toBeEmptyDOMElement()

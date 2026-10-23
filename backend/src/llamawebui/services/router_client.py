@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -15,6 +15,13 @@ class RouterAPIError(RuntimeError):
     def __init__(self, status_code: int, message: str) -> None:
         self.status_code = status_code
         super().__init__(message)
+
+
+class RouterUnavailableError(RouterAPIError):
+    """The router could not be reached or did not answer in time, as opposed to refusing."""
+
+    def __init__(self, message: str, error: Exception) -> None:
+        super().__init__(502, f"{message} ({type(error).__name__})")
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +156,61 @@ class HttpRouterClient:
         except RouterAPIError:
             raise
         except httpx.HTTPError as error:
-            raise RouterAPIError(502, "llama.cpp model event stream failed") from error
+            raise RouterUnavailableError("llama.cpp model event stream failed", error) from error
+
+    async def chat_stream(
+        self,
+        model: str,
+        messages: Sequence[Mapping[str, object]],
+        *,
+        max_tokens: int,
+        tools: Sequence[Mapping[str, object]] = (),
+        options: Mapping[str, object] | None = None,
+    ) -> AsyncIterator[dict[str, object]]:
+        """Stream a chat completion, yielding each chunk llama.cpp sends.
+
+        Chunks carry speed timings as they go, and prompt progress while the
+        prompt is processed, so a caller can follow both phases live.
+        """
+        # Extra fields, such as reasoning controls, go first so none can replace the rest.
+        body: dict[str, object] = {
+            **(options or {}),
+            "model": model,
+            "messages": list(messages),
+            "max_tokens": max_tokens,
+            "stream": True,
+            "timings_per_token": True,
+            "return_progress": True,
+        }
+        if tools:
+            body["tools"] = list(tools)
+        try:
+            # Generation can run for many minutes, so only connecting is time-limited.
+            timeout = httpx.Timeout(30.0, read=None)
+            async with httpx.AsyncClient(
+                base_url=self._base_url, headers=self._headers(), timeout=timeout
+            ) as client, client.stream("POST", "/v1/chat/completions", json=body) as response:
+                if response.is_error:
+                    await response.aread()
+                    raise RouterAPIError(response.status_code, _error_message(response))
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line.removeprefix("data:").strip()
+                    if data == "[DONE]":
+                        return
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError as error:
+                        raise RouterAPIError(
+                            502, "llama.cpp returned an invalid completion chunk"
+                        ) from error
+                    if isinstance(chunk, dict):
+                        yield cast(dict[str, object], chunk)
+        except RouterAPIError:
+            raise
+        except httpx.HTTPError as error:
+            raise RouterUnavailableError("llama.cpp completion stream failed", error) from error
 
     async def _model_action(self, path: str, model: str) -> None:
         if not model.strip():
@@ -172,7 +233,7 @@ class HttpRouterClient:
             ) as client:
                 response = await client.request(method, path, params=params, json=json_body)
         except httpx.HTTPError as error:
-            raise RouterAPIError(502, "llama.cpp router request failed") from error
+            raise RouterUnavailableError("llama.cpp router request failed", error) from error
         if response.is_error:
             raise RouterAPIError(response.status_code, _error_message(response))
         try:

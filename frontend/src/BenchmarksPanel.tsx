@@ -1,0 +1,404 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertCircle, Check, ChevronDown, ChevronRight, Copy, Download, Eye, FileText, LoaderCircle, Play, Square, Timer, Trash2, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { api, type BenchmarkRun, type BenchmarkRunDetail, type BenchmarkStage, type Profile, type RouterState, type TimelineEntry } from './api'
+import { formatRate, formatSeconds, formatWhen, reasoningLabel } from './benchmarkFormat'
+import { Sparkline } from './Dashboard'
+import { Dialog } from './SetupPanels'
+
+const STEPS: { stage: BenchmarkStage; label: string }[] = [
+  { stage: 'starting', label: 'Start server' },
+  { stage: 'loading', label: 'Load model' },
+  { stage: 'prefill', label: 'Process prompt' },
+  { stage: 'decoding', label: 'Generate' },
+  { stage: 'stopping', label: 'Stop server' },
+]
+const ORDER: BenchmarkStage[] = ['starting', 'loading', 'prefill', 'decoding', 'stopping', 'done']
+
+function stepState(run: BenchmarkRun, step: BenchmarkStage) {
+  const reached = ORDER.indexOf(run.stage)
+  const index = ORDER.indexOf(step)
+  if (run.state === 'running') return index < reached ? 'done' : index === reached ? 'active' : 'pending'
+  if (step === 'stopping') return 'done'
+  if (run.state === 'completed') return 'done'
+  return index < reached ? 'done' : index === reached ? 'failed' : 'pending'
+}
+
+function stepFigure(run: BenchmarkRun, step: BenchmarkStage) {
+  const { stats, live } = run
+  if (step === 'starting') return formatSeconds(stats.server_start_seconds)
+  if (step === 'loading') return formatSeconds(stats.load_seconds)
+  if (step === 'prefill') {
+    const rate = stats.prompt_tokens_per_second ?? live?.prefill?.rate
+    const tokens = stats.prompt_tokens ?? live?.prefill?.tokens
+    return rate != null ? `${formatRate(rate)}${tokens != null ? ` · ${tokens.toLocaleString()} tokens` : ''}` : '—'
+  }
+  if (step === 'decoding') {
+    const rate = stats.decode_tokens_per_second ?? live?.decode?.rate
+    const tokens = stats.generated_tokens ?? live?.decode?.tokens
+    return rate != null ? `${formatRate(rate)}${tokens != null ? ` · ${tokens.toLocaleString()} tokens` : ''}` : '—'
+  }
+  return ''
+}
+
+/** A span of time as people say it: 4 ms, 12.3 s, 3m 10s. */
+function formatSpan(seconds: number) {
+  if (seconds < 1) return `${Math.max(Math.round(seconds * 1000), 1)} ms`
+  if (seconds < 60) return formatSeconds(seconds)
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m ${Math.floor(seconds - minutes * 60)}s`
+}
+
+/** How long a step took, or has taken so far while it is still going; empty if unknown. */
+function formatDuration(entry: TimelineEntry, elapsed?: number | null) {
+  if (entry.end != null) return formatSpan(entry.end - entry.start)
+  return elapsed != null ? formatSpan(Math.max(elapsed - entry.start, 0)) : ''
+}
+
+/** What a running benchmark is doing right now, such as "Thinking 3m 10s". */
+function currentActivity(run: BenchmarkRunDetail) {
+  const entry = run.state === 'running' ? run.timeline?.at(-1) : undefined
+  if (!entry || entry.end != null) return undefined
+  const doing = activityName(entry)
+  const soFar = formatDuration(entry, run.live?.elapsed)
+  return soFar ? `${doing}… ${soFar}` : `${doing}…`
+}
+
+function activityName(entry: TimelineEntry) {
+  switch (entry.kind) {
+    case 'reading': return entry.round > 1 ? 'Reading tool results' : 'Reading prompt'
+    case 'thinking': return 'Thinking'
+    case 'answer': return 'Writing answer'
+    case 'tool_call': return 'Writing tool call'
+    case 'tool': return `Running ${entry.name}`
+  }
+}
+
+function tokenCount(tokens?: number) {
+  return tokens ? ` · ${tokens.toLocaleString()} ${tokens === 1 ? 'token' : 'tokens'}` : ''
+}
+
+/** What generation spent its time on: reading, thinking, answering and each tool call. */
+function GenerationTimeline({ run }: { run: BenchmarkRunDetail }) {
+  const rounds = Math.max(1, ...run.timeline.map((entry) => entry.round))
+  return <ol aria-label="Generation steps" className="generation-timeline">
+    {run.timeline.flatMap((entry, index) => {
+      // With several rounds, each one gets a heading row where it starts.
+      const starts = rounds > 1 && (index === 0 || run.timeline[index - 1].round !== entry.round)
+      const heading = starts ? [<li className="timeline-round" key={`round-${entry.round}`}>Round {entry.round}</li>] : []
+      return [...heading, timelineRow(run, entry, index)]
+    })}
+  </ol>
+}
+
+function timelineRow(run: BenchmarkRunDetail, entry: TimelineEntry, index: number) {
+  const expandable = entry.kind !== 'reading' && entry.kind !== 'tool_call'
+  const head = (label: React.ReactNode, detail = '') => <>
+    <span className="timeline-label">{expandable ? <ChevronRight aria-hidden="true" className="timeline-chevron" size={13} /> : <span className="timeline-chevron" />}<span className="timeline-body"><span className="timeline-name">{label}{entry.end == null ? '…' : ''}</span><small>{detail}</small></span></span>
+    <span className="timeline-time">{formatDuration(entry, run.live?.elapsed)}</span>
+  </>
+  if (entry.kind === 'thinking' || entry.kind === 'answer') {
+    const source = entry.kind === 'thinking' ? run.reasoning : run.output
+    const text = source.slice(entry.from, entry.to ?? source.length).trim()
+    return <li data-kind={entry.kind} key={index}>
+      <details>
+        <summary>{head(entry.kind === 'thinking' ? 'Thinking' : 'Answer', `${text.length.toLocaleString()} characters${tokenCount(entry.tokens)}`)}</summary>
+        <pre>{text || '(nothing yet)'}</pre>
+      </details>
+    </li>
+  }
+  if (entry.kind === 'tool') {
+    const call = run.tool_calls[entry.call]
+    return <li data-kind="tool" data-ok={entry.ok ?? call?.ok} key={index}>
+      <details>
+        <summary>{head(<>Ran <code>{entry.name}</code>{entry.path ? <code>{entry.path}</code> : null}</>, entry.ok === false ? 'refused' : entry.end == null ? '' : 'done')}</summary>
+        <pre>{call?.result ?? 'Running…'}</pre>
+      </details>
+    </li>
+  }
+  if (entry.kind === 'tool_call') {
+    const names = entry.names?.join(', ')
+    return <li data-kind="tool_call" key={index}><div className="timeline-row">{head(`Writing tool ${entry.names && entry.names.length > 1 ? 'calls' : 'call'}${names ? `: ${names}` : ''}`, tokenCount(entry.tokens).replace(/^ · /, ''))}</div></li>
+  }
+  const read = entry.kind === 'reading' ? entry.prompt_tokens : undefined
+  return <li data-kind="reading" key={index}><div className="timeline-row">{head(activityName(entry), read ? `${read.toLocaleString()} tokens` : '')}</div></li>
+}
+
+/** The run's steps; with the run's detail, Generate opens into what it spent its time on. */
+function RunSteps({ run, detail }: { run: BenchmarkRun; detail?: BenchmarkRunDetail }) {
+  const [open, setOpen] = useState(false)
+  const activity = detail ? currentActivity(detail) : undefined
+  return <ol className="benchmark-steps">
+    {STEPS.map(({ stage, label }) => {
+      const state = stepState(run, stage)
+      const expandable = stage === 'decoding' && Boolean(detail?.timeline?.length)
+      return <li data-state={state} key={stage}>
+        <span className="benchmark-step-icon" aria-hidden="true">{state === 'done' ? <Check size={13} /> : state === 'active' ? <LoaderCircle className="spin" size={13} /> : state === 'failed' ? <X size={13} /> : null}</span>
+        {expandable
+          ? <button aria-expanded={open} className="benchmark-step-label benchmark-step-toggle" onClick={() => setOpen(!open)} type="button">{label}{!open && activity && <span className="benchmark-step-activity">({activity})</span>}<ChevronDown aria-hidden="true" size={14} /></button>
+          : <span className="benchmark-step-label">{label}</span>}
+        <span className="benchmark-step-figure">{stepFigure(run, stage)}</span>
+        {expandable && open && detail && <div className="benchmark-step-detail"><GenerationTimeline run={detail} /></div>}
+      </li>
+    })}
+  </ol>
+}
+
+function StatePill({ run }: { run: BenchmarkRun }) {
+  const tone = run.state === 'completed' ? 'ready' : run.state === 'failed' ? 'error' : run.state === 'running' ? 'loading' : ''
+  return <span className={`state-pill ${tone}`}>{run.state}</span>
+}
+
+function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
+  const run = useQuery({
+    queryKey: ['benchmark-run', runId],
+    queryFn: () => api.benchmarkRun(runId),
+    refetchInterval: (query) => query.state.data?.state === 'running' ? 1000 : false,
+  })
+  const data = run.data
+  const [artifact, setArtifact] = useState<string>()
+  return <>
+    <Dialog description={data ? `${data.profile_alias} v${data.profile_version} · ${formatWhen(data.started_at)}` : 'Loading the run…'} onClose={onClose} title={data ? `${data.benchmark_title} benchmark` : 'Benchmark run'} wide>
+      <div className="form-body benchmark-detail">
+        {!data ? <div className="capability-note" role="status"><LoaderCircle className="spin" size={16} /><span>Loading the run…</span></div> : <RunDetailBody onOpenArtifact={setArtifact} run={data} />}
+      </div>
+      <footer className="dialog-actions"><button className="button secondary" onClick={onClose} type="button">Close</button></footer>
+    </Dialog>
+    {artifact && <ArtifactViewer onClose={() => setArtifact(undefined)} path={artifact} runId={runId} />}
+  </>
+}
+
+function formatSize(bytes: number) {
+  return bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+/** A file the model wrote, shown as plain text: generated pages are never run here. */
+function ArtifactViewer({ runId, path, onClose }: { runId: string; path: string; onClose: () => void }) {
+  const file = useQuery({ queryKey: ['benchmark-artifact', runId, path], queryFn: () => api.benchmarkArtifact(runId, path) })
+  const [wrap, setWrap] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const content = file.data?.content ?? ''
+  const lines = content ? content.split('\n').length : 0
+  function download() {
+    const url = URL.createObjectURL(new Blob([content], { type: 'text/plain' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = path.split('/').at(-1) || 'artifact.txt'
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+  return <Dialog description={file.data ? `${lines.toLocaleString()} lines · read-only` : 'Loading the file…'} onClose={onClose} title={path} wide>
+    <div className="form-body artifact-viewer">
+      {file.error ? <div className="form-error" role="alert"><AlertCircle size={15} /> {file.error.message}</div>
+        : !file.data ? <div className="capability-note" role="status"><LoaderCircle className="spin" size={16} /><span>Loading the file…</span></div>
+          : <>
+            <div className="artifact-toolbar">
+              <label className="compare-toggle"><input checked={wrap} onChange={(event) => setWrap(event.target.checked)} type="checkbox" /> Wrap lines</label>
+              <span>
+                <button className="button secondary compact" onClick={() => { void navigator.clipboard?.writeText(content).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1500) }).catch(() => undefined) }} type="button">{copied ? <Check size={14} /> : <Copy size={14} />} {copied ? 'Copied' : 'Copy'}</button>
+                <button className="button secondary compact" onClick={download} type="button"><Download size={14} /> Download</button>
+              </span>
+            </div>
+            <textarea aria-label={`Contents of ${path}`} className="artifact-text" data-wrap={wrap} readOnly spellCheck={false} value={content} wrap={wrap ? 'soft' : 'off'} />
+          </>}
+    </div>
+    <footer className="dialog-actions"><button className="button secondary" onClick={onClose} type="button">Close</button></footer>
+  </Dialog>
+}
+
+function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpenArtifact: (path: string) => void }) {
+  const { stats } = run
+  const decode = run.samples.filter((sample) => sample.phase === 'decode').map((sample) => sample.rate)
+  const prefill = run.samples.filter((sample) => sample.phase === 'prefill').map((sample) => sample.rate)
+  const facts: [string, string][] = [
+    ['Server start', formatSeconds(stats.server_start_seconds)],
+    ['Model load', formatSeconds(stats.load_seconds)],
+    ['First token', formatSeconds(stats.first_token_seconds)],
+    ['Prompt', stats.prompt_tokens != null ? `${stats.prompt_tokens.toLocaleString()} tokens` : '—'],
+    ['Prefill', formatRate(stats.prompt_tokens_per_second)],
+    ['Tokens / limit', stats.generated_tokens != null ? `${stats.generated_tokens.toLocaleString()} / ${run.max_tokens.toLocaleString()}` : '—'],
+    ['Decode average', formatRate(stats.decode_tokens_per_second)],
+    ['Decode peak (3 s)', formatRate(stats.decode_peak_tokens_per_second)],
+    ['Decode at end (3 s)', formatRate(stats.decode_final_tokens_per_second)],
+    ['Reasoning', reasoningLabel(run.reasoning_level)],
+    ['Total', formatSeconds(stats.total_seconds)],
+    ...(run.tools ? [['Tool calls', `${stats.tool_calls ?? run.tool_calls.length} in ${stats.rounds ?? 1} ${stats.rounds === 1 ? 'request' : 'requests'}`] as [string, string]] : []),
+  ]
+  const refused = run.tool_calls.filter((call) => !call.ok).length
+  return <>
+    {run.error && run.state !== 'cancelled' && <div className="form-error" role="alert"><AlertCircle size={15} /> {run.error}</div>}
+    <div className="benchmark-detail-head"><StatePill run={run} />{stats.finish_reason && <span className="profile-tag" title="Why generation ended">{stats.finish_reason === 'length' ? 'Hit the token limit' : `Finished: ${stats.finish_reason}`}</span>}</div>
+    <RunSteps detail={run} run={run} />
+    <dl className="benchmark-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+    {decode.length > 1 && <div className="benchmark-chart"><span>Decode speed over the run (3 s windows)</span><Sparkline ceiling={stats.decode_peak_tokens_per_second} values={decode} /></div>}
+    {prefill.length > 1 && <div className="benchmark-chart"><span>Prefill speed</span><Sparkline values={prefill} /></div>}
+    {run.tools && <section className="benchmark-text">
+      <h3>Artifacts</h3>
+      {run.artifacts.length ? <ul className="artifact-list">
+        {run.artifacts.map((artifact) => <li key={artifact.path}>
+          <button aria-label={`Open ${artifact.path}`} className="artifact-link" onClick={() => onOpenArtifact(artifact.path)} type="button"><FileText size={15} /><span>{artifact.path}</span><small>{formatSize(artifact.size)}</small></button>
+        </li>)}
+      </ul> : <p className="benchmark-empty">{run.state === 'running' ? 'No files written yet.' : 'The model did not write any files.'}</p>}
+    </section>}
+    {run.tool_calls.length > 0 && <details className="benchmark-text">
+      <summary>Tool calls ({run.tool_calls.length}{refused ? `, ${refused} refused` : ''})</summary>
+      <ol className="tool-call-list">
+        {run.tool_calls.map((call, index) => <li data-ok={call.ok} key={index}>
+          <span className="tool-call-name">{call.name}{call.path ? <code>{call.path}</code> : null}</span>
+          <span className="tool-call-result">{call.result}</span>
+        </li>)}
+      </ol>
+    </details>}
+    <section className="benchmark-text"><h3>Output</h3><pre>{run.output || (run.state === 'running' ? 'Waiting for output…' : 'No output.')}</pre></section>
+    {run.reasoning && <details className="benchmark-text"><summary>Reasoning ({run.reasoning.length.toLocaleString()} characters)</summary><pre>{run.reasoning}</pre></details>}
+    {run.system_prompt && <details className="benchmark-text"><summary>System prompt{run.system_prompt_id ? ` (${run.system_prompt_id})` : ''}</summary><pre>{run.system_prompt}</pre></details>}
+    <details className="benchmark-text"><summary>Prompt</summary><pre>{run.prompt}</pre></details>
+  </>
+}
+
+/** Run a bundled prompt against one profile from a stopped router, and keep the measurements. */
+export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: Profile[]; routerState?: RouterState; canRun: boolean }) {
+  const queryClient = useQueryClient()
+  const catalog = useQuery({ queryKey: ['benchmarks'], queryFn: api.benchmarks, refetchInterval: (query) => query.state.data?.active_run_id ? 1000 : false })
+  const runs = useQuery({
+    queryKey: ['benchmark-runs'],
+    queryFn: api.benchmarkRuns,
+    refetchInterval: (query) => query.state.data?.some((run) => run.state === 'running') ? 1000 : false,
+  })
+  const [profileId, setProfileId] = useState('')
+  const [benchmarkId, setBenchmarkId] = useState('')
+  const [maxTokens, setMaxTokens] = useState('')
+  const [tools, setTools] = useState(true)
+  // Undefined until chosen, so the catalog's default applies; '' means no system prompt.
+  const [systemPromptId, setSystemPromptId] = useState<string>()
+  // '' sends no level, so the model's chat template picks its own default.
+  const [reasoningLevel, setReasoningLevel] = useState('')
+  const [viewing, setViewing] = useState<string>()
+  const [deleting, setDeleting] = useState<BenchmarkRun>()
+  const enabled = profiles.filter((profile) => profile.enabled)
+  const profile = profiles.find((item) => item.id === profileId) ?? enabled[0]
+  const benchmarks = catalog.data?.benchmarks ?? []
+  const benchmark = benchmarks.find((item) => item.id === benchmarkId) ?? benchmarks[0]
+  const systemPrompts = catalog.data?.system_prompts ?? []
+  const chosenSystemPrompt = systemPromptId ?? catalog.data?.default_system_prompt_id ?? ''
+  const systemPrompt = systemPrompts.find((item) => item.id === chosenSystemPrompt)
+  const tokens = Number(maxTokens || catalog.data?.default_max_tokens || 32768)
+  const active = runs.data?.find((run) => run.state === 'running')
+  // The running benchmark's full detail, so its steps can show what generation is doing.
+  const activeDetail = useQuery({
+    queryKey: ['benchmark-run', active?.id],
+    queryFn: () => api.benchmarkRun(active!.id),
+    enabled: Boolean(active),
+    refetchInterval: 1000,
+  })
+  const routerStopped = routerState === 'stopped' || routerState === 'crashed'
+
+  // When a run finishes its result lands on the profile and the router stops: refresh both.
+  const activeId = active?.id
+  const [watched, setWatched] = useState<string>()
+  useEffect(() => {
+    if (activeId) setWatched(activeId)
+    else if (watched) {
+      setWatched(undefined)
+      void queryClient.invalidateQueries({ queryKey: ['profiles'] })
+      void queryClient.invalidateQueries({ queryKey: ['server'] })
+    }
+  }, [activeId, queryClient, watched])
+
+  const start = useMutation({
+    mutationFn: () => api.startBenchmark({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools, system_prompt_id: systemPrompt?.id ?? null, reasoning_level: reasoningLevel || null }),
+    onSettled: async () => {
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ['benchmark-runs'] }), queryClient.invalidateQueries({ queryKey: ['benchmarks'] })])
+    },
+  })
+  const cancel = useMutation({
+    mutationFn: (runId: string) => api.cancelBenchmark(runId),
+    onSettled: async () => { await queryClient.invalidateQueries({ queryKey: ['benchmark-runs'] }) },
+  })
+  const removal = useMutation({
+    mutationFn: (runId: string) => api.deleteBenchmarkRun(runId),
+    onSuccess: async () => {
+      setDeleting(undefined)
+      await queryClient.invalidateQueries({ queryKey: ['benchmark-runs'] })
+    },
+  })
+
+  const blocker = !canRun ? 'Running a benchmark needs permission to start and stop the server.'
+    : active ? 'A benchmark is already running.'
+      : !routerStopped ? 'Stop the router first. A benchmark starts it on its own, so nothing else shares the machine.'
+        : !enabled.length ? 'Enable a profile to benchmark it.'
+          : !benchmarks.length ? 'No benchmark prompts are installed.'
+            : undefined
+  const tokensValid = Number.isInteger(tokens) && tokens >= 16 && tokens <= 131072
+
+  return <>
+    <section className="data-panel benchmark-run-panel">
+      <div className="panel-heading"><div><h2>Run a benchmark</h2><p>Starts the server, loads one profile, sends the prompt and measures it, then stops the server again.</p></div><Timer size={18} /></div>
+      <form className="benchmark-form" onSubmit={(event) => { event.preventDefault(); start.mutate() }}>
+        <label className="compare-pick"><span>Profile</span><select aria-label="Profile" onChange={(event) => setProfileId(event.target.value)} value={profile?.id ?? ''}>
+          {profiles.map((item) => <option disabled={!item.enabled} key={item.id} value={item.id}>{item.alias}{item.enabled ? '' : ' (disabled)'}</option>)}
+        </select></label>
+        <label className="compare-pick"><span>Benchmark</span><select aria-label="Benchmark" onChange={(event) => setBenchmarkId(event.target.value)} value={benchmark?.id ?? ''}>
+          {benchmarks.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+        </select></label>
+        <label className="compare-pick benchmark-tokens"><span>Max tokens</span><input aria-label="Max tokens" max={131072} min={16} onChange={(event) => setMaxTokens(event.target.value)} placeholder={String(catalog.data?.default_max_tokens ?? 32768)} type="number" value={maxTokens} /></label>
+        <button className="button primary" disabled={Boolean(blocker) || !tokensValid || start.isPending || !profile || !benchmark} type="submit">{start.isPending ? <LoaderCircle className="spin" size={15} /> : <Play size={14} fill="currentColor" />} Run benchmark</button>
+      </form>
+      <label className="benchmark-option"><input checked={tools} onChange={(event) => setTools(event.target.checked)} type="checkbox" /><span><strong>File tools</strong><small>The model can write, read and list files, only inside this run&apos;s own folder. They appear as artifacts on the run.</small></span></label>
+      <div className="benchmark-choices">
+        {systemPrompts.length > 0 && <label className="compare-pick"><span>System prompt</span><select aria-label="System prompt" onChange={(event) => setSystemPromptId(event.target.value)} value={chosenSystemPrompt}>
+          <option value="">None: the prompt on its own</option>
+          {systemPrompts.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+        </select></label>}
+        <label className="compare-pick"><span>Reasoning</span><select aria-label="Reasoning" onChange={(event) => setReasoningLevel(event.target.value)} value={reasoningLevel}>
+          <option value="">Model default</option>
+          {(catalog.data?.reasoning_levels ?? []).map((level) => <option key={level} value={level}>{reasoningLabel(level)}</option>)}
+        </select></label>
+      </div>
+      <p className="benchmark-hint">Reasoning levels are passed to the model&apos;s chat template, which decides what each one means. Model default is whatever the template picks when nothing is sent, which can be its highest level. A level the template does not support fails the run with its message.</p>
+      {benchmark && <details className="benchmark-prompt"><summary>{systemPrompt ? 'System prompt and prompt' : 'Prompt'}</summary>{systemPrompt && <pre aria-label="System prompt text">{systemPrompt.text}</pre>}<pre>{benchmark.prompt}</pre></details>}
+      {(blocker || start.error) && <p className={start.error ? 'form-error' : 'benchmark-note'} role={start.error ? 'alert' : 'status'}><AlertCircle size={15} /> {start.error?.message ?? blocker}</p>}
+      {active && <div className="benchmark-active">
+        <div className="benchmark-active-head">
+          <strong>{active.benchmark_title} on {active.profile_alias}</strong>
+          <span>
+            <button className="button secondary compact" onClick={() => setViewing(active.id)} type="button"><Eye size={14} /> Watch output</button>
+            <button className="button danger compact" disabled={cancel.isPending || !canRun} onClick={() => cancel.mutate(active.id)} type="button"><Square size={12} fill="currentColor" /> Cancel</button>
+          </span>
+        </div>
+        <RunSteps detail={activeDetail.data?.id === active.id ? activeDetail.data : undefined} run={activeDetail.data?.id === active.id ? activeDetail.data : active} />
+      </div>}
+    </section>
+
+    <section className="data-panel">
+      <div className="panel-heading"><div><h2>Runs</h2><p>Every run keeps its timings and output until you delete it. The latest result of each benchmark also stays on its profile.</p></div></div>
+      {runs.data?.length ? <ul className="benchmark-runs">
+        {runs.data.map((run) => <li key={run.id}>
+          <span className="benchmark-run-copy">
+            <strong>{run.benchmark_title} · {run.profile_alias} <span className="profile-tag">v{run.profile_version}</span></strong>
+            <span>{formatWhen(run.started_at)}{run.system_prompt_id ? ` · ${run.system_prompt_id}` : ''}{run.reasoning_level ? ` · reasoning ${reasoningLabel(run.reasoning_level).toLowerCase()}` : ''}{run.stats.files_written ? ` · ${run.stats.files_written} ${run.stats.files_written === 1 ? 'file' : 'files'}` : ''}{run.error && run.state === 'failed' ? ` · ${run.error}` : ''}</span>
+          </span>
+          <dl className="benchmark-run-figures">
+            <div><dt>Total</dt><dd>{formatSeconds(run.stats.total_seconds)}</dd></div>
+            <div><dt>Load</dt><dd>{formatSeconds(run.stats.load_seconds)}</dd></div>
+            <div><dt>Prefill</dt><dd>{formatRate(run.stats.prompt_tokens_per_second ?? run.live?.prefill?.rate)}</dd></div>
+            <div><dt>Decode avg</dt><dd>{formatRate(run.stats.decode_tokens_per_second ?? run.live?.decode?.rate)}</dd></div>
+            <div><dt>Peak</dt><dd>{formatRate(run.stats.decode_peak_tokens_per_second)}</dd></div>
+            <div><dt>Tokens</dt><dd>{run.stats.generated_tokens?.toLocaleString() ?? run.live?.decode?.tokens?.toLocaleString() ?? '—'}</dd></div>
+          </dl>
+          <span className="row-actions">
+            <StatePill run={run} />
+            <button aria-label={`View run ${run.benchmark_title} on ${run.profile_alias}`} className="button row-button" onClick={() => setViewing(run.id)} type="button"><Eye size={13} /> View</button>
+            <button aria-label={`Delete run ${run.benchmark_title} on ${run.profile_alias}`} className="icon-button small danger-icon" disabled={run.state === 'running' || !canRun} onClick={() => setDeleting(run)} title="Delete run" type="button"><Trash2 size={15} /></button>
+          </span>
+        </li>)}
+      </ul> : <div className="empty compact-empty"><Timer size={24} /><strong>No benchmark runs yet</strong><span>Runs appear here with their timings and output.</span></div>}
+    </section>
+
+    {viewing && <RunDetail onClose={() => setViewing(undefined)} runId={viewing} />}
+    {deleting && <Dialog description="The run's timings and output are removed. The latest result already written to the profile is kept." onClose={() => setDeleting(undefined)} title="Delete benchmark run?">
+      <div className="confirm-body"><Trash2 size={24} /><p><strong>{deleting.benchmark_title}</strong> on <strong>{deleting.profile_alias}</strong>, {formatWhen(deleting.started_at)}.</p>{removal.error && <div className="form-error"><AlertCircle size={15} /> {removal.error.message}</div>}</div>
+      <footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep run</button><button className="button danger" disabled={removal.isPending} onClick={() => removal.mutate(deleting.id)} type="button">{removal.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete run</button></footer>
+    </Dialog>}
+  </>
+}

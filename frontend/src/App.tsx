@@ -26,6 +26,7 @@ import {
   ShieldAlert,
   Square,
   TerminalSquare,
+  Timer,
   Trash2,
   UserRound,
   Shield,
@@ -34,6 +35,7 @@ import {
 } from 'lucide-react'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { AccessPanel } from './AccessPanel'
+import { BenchmarksPanel } from './BenchmarksPanel'
 import { api, type LibraryModel, type LogicalModel, type Profile, type RouterModel, type Runtime } from './api'
 import { DashboardPanel, formatBytes, useStatusHistory } from './Dashboard'
 import { DiscoverPanel, DownloadsPanel } from './DiscoveryPanels'
@@ -46,6 +48,7 @@ import { APP_VERSION } from './version'
 const navigation = [
   ['Dashboard', CircleGauge, 'server.read', 'Operate'],
   ['Server', Server, 'server.read', 'Operate'],
+  ['Benchmarks', Timer, 'server.read', 'Operate'],
   ['Models', Library, 'library.read', 'Models'],
   ['Recommended', BadgeCheck, 'profiles.read', 'Models'],
   ['Discover', Search, 'huggingface.read', 'Models'],
@@ -61,6 +64,7 @@ const navigation = [
 const sectionSummaries: Record<string, string> = {
   Dashboard: 'Router health, throughput and host resources at a glance.',
   Server: 'Process state, runtime selection and live router output.',
+  Benchmarks: 'Measure how fast a profile loads, reads a prompt and generates.',
   Models: 'GGUF files in the managed library and the records reconciled from them.',
   Recommended: 'Profiles tuned on known hardware. Add one and its model downloads for you.',
   Discover: 'Search Hugging Face and pick a quantization to download.',
@@ -355,6 +359,8 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
               onRefresh={() => { void refreshModels() }}
               running={running}
             />
+          ) : section === 'Benchmarks' ? (
+            <BenchmarksPanel canRun={canRead('server.lifecycle.write')} profiles={profiles.data ?? []} routerState={status.data?.state} />
           ) : section === 'Server' ? (
             <ServerPanel
               canManageModels={canRead('server.write')}

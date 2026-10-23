@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeftRight, GitCompareArrows } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { api, type ArgumentCatalog, type Profile, type Runtime, type StoredArgument } from './api'
+import { api, type ArgumentCatalog, type BenchmarkResult, type Profile, type Runtime, type StoredArgument } from './api'
+import { formatRate, formatSeconds, reasoningLabel } from './benchmarkFormat'
 
 type Side = string | null
 
@@ -88,6 +89,31 @@ function argumentRows(left: Profile, right: Profile, catalog?: ArgumentCatalog):
   }).sort((a, b) => order(a) - order(b) || a.label.localeCompare(b.label))
 }
 
+/** Each benchmark's stored results, so two profiles' speeds line up side by side. */
+function benchmarkRows(left: Profile, right: Profile): CompareRow[] {
+  const leftResults = left.benchmark_results ?? {}
+  const rightResults = right.benchmark_results ?? {}
+  const ids = [...new Set([...Object.keys(leftResults), ...Object.keys(rightResults)])].sort()
+  const figures: [string, string, (result: BenchmarkResult) => string][] = [
+    ['decode', 'Decode average', (result) => formatRate(result.decode_tokens_per_second)],
+    ['peak', 'Decode peak (3 s)', (result) => formatRate(result.decode_peak_tokens_per_second)],
+    ['prefill', 'Prefill', (result) => formatRate(result.prompt_tokens_per_second)],
+    ['load', 'Model load', (result) => formatSeconds(result.load_seconds)],
+    ['first', 'First token', (result) => formatSeconds(result.first_token_seconds)],
+    ['reasoning', 'Reasoning', (result) => reasoningLabel(result.reasoning_level)],
+  ]
+  return ids.flatMap((id) => {
+    const title = (leftResults[id] ?? rightResults[id]).benchmark_title
+    return figures.map(([key, label, format]) => ({
+      key: `benchmark:${id}:${key}`,
+      group: `Benchmark · ${title}`,
+      label,
+      left: leftResults[id] ? format(leftResults[id]) : null,
+      right: rightResults[id] ? format(rightResults[id]) : null,
+    }))
+  })
+}
+
 function SideValue({ value, title }: { value: Side; title?: string }) {
   return value === null ? <span className="compare-missing">Not set</span> : <span title={title ?? value}>{value}</span>
 }
@@ -102,7 +128,7 @@ export function ProfileCompare({ profiles, runtimes }: { profiles: Profile[]; ru
   const right = profiles.find((profile) => profile.id === rightId) ?? profiles.find((profile) => profile.id !== left?.id)
 
   const rows = useMemo(() => left && right
-    ? [...generalRows(left, right, runtimes), ...argumentRows(left, right, catalog.data)]
+    ? [...generalRows(left, right, runtimes), ...argumentRows(left, right, catalog.data), ...benchmarkRows(left, right)]
     : [], [left, right, runtimes, catalog.data])
   if (profiles.length < 2 || !left || !right) return null
 

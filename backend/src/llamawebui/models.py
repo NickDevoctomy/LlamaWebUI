@@ -65,10 +65,55 @@ class ModelProfileRecord(Base):
     )
     # Download job whose completion enables this profile; cleared once acted on.
     enable_on_download: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Latest completed result per benchmark id. Kept when the runs themselves are deleted.
+    benchmark_results: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
+
+
+class BenchmarkRunRecord(Base):
+    """One benchmark of a profile: its timings, speed samples and generated output."""
+
+    __tablename__ = "benchmark_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("model_profiles.id", ondelete="CASCADE"), index=True
+    )
+    profile_alias: Mapped[str] = mapped_column(String(64))
+    profile_version: Mapped[int] = mapped_column(Integer)
+    runtime_id: Mapped[str] = mapped_column(String(36))
+    benchmark_id: Mapped[str] = mapped_column(String(64))
+    benchmark_title: Mapped[str] = mapped_column(String(200))
+    prompt: Mapped[str] = mapped_column(Text)
+    max_tokens: Mapped[int] = mapped_column(Integer)
+    # Whether the model could read and write files in the run's own folder, and each
+    # call it made, in order.
+    tools: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # The system prompt the run was sent with, if any, and its text at the time.
+    system_prompt_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # "off", or an effort level for the chat template; None keeps the model's default.
+    reasoning_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    tool_calls: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON, default=list, server_default=text("'[]'")
+    )
+    # What generation spent its time on: reading, thinking, answering and tool calls.
+    timeline: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON, default=list, server_default=text("'[]'")
+    )
+    # running, completed, failed or cancelled; stage is the step a run reached.
+    state: Mapped[str] = mapped_column(String(20))
+    stage: Mapped[str] = mapped_column(String(20))
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stats: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    samples: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    output: Mapped[str] = mapped_column(Text, default="")
+    reasoning: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class DownloadJobRecord(Base):

@@ -32,6 +32,7 @@ import {
   unadvertisedOnRuntime,
 } from './argumentCatalog'
 import { LaunchPreview, ProfileArgumentEditor } from './ProfileArgumentEditor'
+import { BenchmarkSummary } from './benchmarkFormat'
 import { ProfileCompare } from './ProfileCompare'
 
 function optionalNumber(value: string) {
@@ -83,6 +84,9 @@ export function Field({ label, hint, className, children }: {
   )
 }
 
+/** Dialogs currently open, oldest first. */
+const openDialogs: symbol[] = []
+
 export function Dialog({ title, description, onClose, children, wide = false }: {
   title: string
   description: string
@@ -107,8 +111,12 @@ export function Dialog({ title, description, onClose, children, wide = false }: 
       'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
     )
     focusable?.focus()
+    const token = Symbol('dialog')
+    openDialogs.push(token)
 
     function handleKeyDown(event: KeyboardEvent) {
+      // With dialogs stacked, only the topmost one answers the keyboard.
+      if (openDialogs.at(-1) !== token) return
       if (event.key === 'Escape') {
         event.preventDefault()
         onCloseRef.current()
@@ -133,6 +141,7 @@ export function Dialog({ title, description, onClose, children, wide = false }: 
     document.addEventListener('keydown', handleKeyDown)
     return () => {
       document.removeEventListener('keydown', handleKeyDown)
+      openDialogs.splice(openDialogs.indexOf(token), 1)
       previousFocus.current?.focus()
     }
   }, [])
@@ -666,7 +675,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
         {profiles.length ? <div className="record-list">{profiles.map((profile) => (
           <article className="record-row" key={profile.id}>
             <span className="record-icon"><FileCog size={18} /></span>
-            <div className="record-copy"><span className="record-title"><button className="record-link" onClick={() => editProfile(profile)} type="button"><strong>{profile.alias}</strong></button><ProfileVersionTags profile={profile} />{profile.exclusive && <span className="profile-tag" title="Nothing else can be loaded beside this profile">Exclusive</span>}</span>{profile.description && <span className="record-description">{profile.description}</span>}<span>{profile.model_path}</span></div>
+            <div className="record-copy"><span className="record-title"><button className="record-link" onClick={() => editProfile(profile)} type="button"><strong>{profile.alias}</strong></button><ProfileVersionTags profile={profile} />{profile.exclusive && <span className="profile-tag" title="Nothing else can be loaded beside this profile">Exclusive</span>}</span>{profile.description && <span className="record-description">{profile.description}</span>}{Object.entries(profile.benchmark_results ?? {}).map(([id, result]) => <span className="record-benchmark" key={id}><BenchmarkSummary result={result} /></span>)}<span>{profile.model_path}</span></div>
             <div className="record-meta wide"><small>Runtime</small><span>{runtimes.find((item) => item.id === profile.runtime_id)?.name ?? 'Missing runtime'}</span></div>
             {profile.validation_state === 'pending' ? <span className="state-pill downloading" title={profile.auto_enable ? 'Model is downloading. The profile switches on by itself when it finishes.' : 'Model is downloading.'}>{profile.download?.total_bytes ? `Downloading ${Math.min(100, Math.round(profile.download.completed_bytes / profile.download.total_bytes * 100))}%` : 'Downloading'}</span> : profile.validation_state === 'broken' ? <button className="state-pill error" disabled={running || !profile.source_download} onClick={() => setRepairing(profile)} title={profile.source_download ? 'Repair missing model' : 'Model file is missing'} type="button">Broken</button> : <div className="profile-state">
               {profile.recommendation?.upgradable && <button className="button primary compact" disabled={running || upgrade.isPending} onClick={() => upgrade.mutate(profile)} title={running ? 'Stop the router to upgrade a profile' : `Replace these settings with version ${profile.recommendation.latest_version} of the recommendation. The alias, model location and enabled state are kept.`} type="button">{upgrade.isPending && upgrade.variables?.id === profile.id ? <LoaderCircle className="spin" size={14} /> : <CircleArrowUp size={14} />} Upgrade to v{profile.recommendation.latest_version}</button>}

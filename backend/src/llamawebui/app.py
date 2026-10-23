@@ -18,6 +18,12 @@ from pydantic import BaseModel, Field, field_validator
 from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.domain.argument_catalog import ArgumentCatalog, default_catalog
+from llamawebui.domain.benchmark import (
+    Benchmark,
+    SystemPrompt,
+    load_benchmarks,
+    load_system_prompts,
+)
 from llamawebui.domain.download_job import DownloadState
 from llamawebui.domain.effective_catalog import build_effective_catalog
 from llamawebui.domain.model_profile import (
@@ -51,6 +57,7 @@ from llamawebui.domain.recommendation import (
 from llamawebui.domain.router_lifecycle import RouterLaunch, RouterState
 from llamawebui.models import (
     AccessTokenRecord,
+    BenchmarkRunRecord,
     DownloadJobRecord,
     ModelProfileRecord,
     RuntimeRecord,
@@ -74,6 +81,16 @@ from llamawebui.services.auth_service import (
     UserAlreadyExistsError,
 )
 from llamawebui.services.authorization import privilege_for_request
+from llamawebui.services.benchmark_runner import (
+    DEFAULT_MAX_TOKENS,
+    REASONING_LEVELS,
+    BenchmarkBusyError,
+    BenchmarkClient,
+    BenchmarkRunner,
+    BenchmarkRunNotFoundError,
+    BenchmarkRunRegistry,
+)
+from llamawebui.services.benchmark_workspace import WorkspaceError
 from llamawebui.services.database_backup import backup_database
 from llamawebui.services.diagnostics import DiagnosticsExporter
 from llamawebui.services.download_coordinator import DownloadCoordinator
@@ -149,6 +166,7 @@ from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRe
 from llamawebui.version import __version__
 
 MODEL_EVENT_KEEPALIVE_SECONDS = 15.0
+DEFAULT_SYSTEM_PROMPT_ID = "coding-agent"
 PROFILE_DESCRIPTION_LIMIT = 500
 _ACTIVE_DOWNLOAD_STATES = frozenset(
     {DownloadState.QUEUED, DownloadState.DOWNLOADING, DownloadState.PAUSED}
@@ -305,6 +323,20 @@ class ProfileCloneRequest(BaseModel):
 
 class ProfileEnabledRequest(BaseModel):
     enabled: bool
+
+
+class BenchmarkRunRequest(BaseModel):
+    profile_id: str = Field(min_length=1, max_length=36)
+    benchmark_id: str = Field(min_length=1, max_length=64)
+    max_tokens: int = Field(default=DEFAULT_MAX_TOKENS, ge=16, le=131072)
+    # Let the model read and write files, confined to the run's own folder.
+    tools: bool = True
+    # A bundled system prompt to send first, by id; none sends the prompt on its own.
+    system_prompt_id: str | None = Field(default=None, max_length=64)
+    # "off" or an effort level for the chat template; none keeps the model's own default.
+    reasoning_level: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = (
+        None
+    )
 
 
 class LoginRequest(BaseModel):
@@ -495,6 +527,7 @@ def _profile_payload(
         "description": profile.description,
         "version": profile.version,
         "recommendation": recommendation_status(profile, recommendations, catalog),
+        "benchmark_results": profile.benchmark_results or {},
         "validation_state": validation_state,
         "auto_enable": profile.enable_on_download is not None,
         "download": download,
@@ -792,6 +825,8 @@ def create_app(
     argument_catalog: ArgumentCatalog | None = None,
     hardware_detector: Callable[[], HardwareProfile] = detect_hardware,
     recommendations: tuple[Recommendation, ...] | None = None,
+    benchmarks: tuple[Benchmark, ...] | None = None,
+    system_prompts: tuple[SystemPrompt, ...] | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
     packaged_static_dir = static_dir or Path(__file__).parent / "static"
@@ -911,6 +946,33 @@ def create_app(
         )
         app.state.active_server_run_id = None
         app.state.router_lifecycle_lock = asyncio.Lock()
+        app.state.benchmarks = benchmarks if benchmarks is not None else load_benchmarks()
+        app.state.system_prompts = (
+            system_prompts if system_prompts is not None else load_system_prompts()
+        )
+        app.state.benchmark_runs = BenchmarkRunRegistry(
+            engine, app_settings.data_dir / "benchmark-runs"
+        )
+        app.state.benchmark_runs.fail_interrupted()
+        app.state.benchmark_runs.prune_folders()
+
+        async def start_router_for_benchmark(runtime_id: str) -> None:
+            async with app.state.router_lifecycle_lock:
+                await start_router(runtime_id, app)
+
+        async def stop_router_after_benchmark() -> None:
+            async with app.state.router_lifecycle_lock:
+                await app.state.router_supervisor.stop()
+                app.state.token_registry.remove_materialized_tokens()
+
+        app.state.benchmark_runner = BenchmarkRunner(
+            app.state.benchmark_runs,
+            cast(BenchmarkClient, app.state.router_client),
+            start_router=start_router_for_benchmark,
+            stop_router=stop_router_after_benchmark,
+            router_stopped=lambda: app.state.router_supervisor.state
+            in {RouterState.STOPPED, RouterState.CRASHED},
+        )
 
         def record_router_state(
             state: RouterState, pid: int | None, exit_code: int | None
@@ -961,6 +1023,9 @@ def create_app(
                 "application_stopping",
                 extra={"component": "application", "event": "shutdown"},
             )
+            runner = cast(BenchmarkRunner, app.state.benchmark_runner)
+            if runner.active_run_id is not None:
+                await runner.cancel(runner.active_run_id)
             async with app.state.router_lifecycle_lock:
                 await app.state.router_supervisor.stop()
             app.state.token_registry.remove_materialized_tokens()
@@ -1041,12 +1106,12 @@ def create_app(
             arguments.extend(("--api-key-file", str(tokens.key_file)))
         return arguments
 
-    async def start_router(runtime_id: str, request: Request) -> dict[str, object]:
-        runtimes = cast(RuntimeRegistry, request.app.state.runtime_registry)
-        profiles = cast(ProfileRegistry, request.app.state.profile_registry)
-        tokens = cast(TokenRegistry, request.app.state.token_registry)
-        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
-        run_registry = cast(ServerRunRegistry, request.app.state.server_run_registry)
+    async def start_router(runtime_id: str, owner: FastAPI) -> dict[str, object]:
+        runtimes = cast(RuntimeRegistry, owner.state.runtime_registry)
+        profiles = cast(ProfileRegistry, owner.state.profile_registry)
+        tokens = cast(TokenRegistry, owner.state.token_registry)
+        supervisor = cast(RouterSupervisor, owner.state.router_supervisor)
+        run_registry = cast(ServerRunRegistry, owner.state.server_run_registry)
         if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1068,7 +1133,7 @@ def create_app(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="runtime has no enabled model profiles",
             )
-        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        artifacts = cast(ModelArtifactRegistry, owner.state.model_artifact_registry)
         broken = tuple(
             profile.alias
             for profile in enabled_profiles
@@ -1079,7 +1144,7 @@ def create_app(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"enabled model profiles are broken: {', '.join(broken)}",
             )
-        catalog = _argument_catalog(request)
+        catalog = cast(ArgumentCatalog, owner.state.argument_catalog)
         capabilities = runtime_capabilities(runtime)
         launch_profiles = tuple(
             profile_from_record(profile, catalog) for profile in enabled_profiles
@@ -1121,7 +1186,7 @@ def create_app(
                 supervisor.record_log(f"profile {launch_profile.alias} warning: {warning}")
         endpoint = f"http://{app_settings.router_host}:{app_settings.router_port}"
         run = run_registry.create(runtime.id, endpoint)
-        request.app.state.active_server_run_id = run.id
+        owner.state.active_server_run_id = run.id
         if not await router_port_probe(app_settings.router_host, app_settings.router_port):
             detail = (
                 "router port is already in use: "
@@ -1459,7 +1524,7 @@ def create_app(
     ) -> dict[str, object]:
         lock = cast(asyncio.Lock, request.app.state.router_lifecycle_lock)
         async with lock:
-            return await start_router(start_request.runtime_id, request)
+            return await start_router(start_request.runtime_id, request.app)
 
     @app.post("/api/server/stop")
     async def stop_server(request: Request) -> dict[str, object]:
@@ -1503,7 +1568,7 @@ def create_app(
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT, detail=str(error)
                 ) from error
-            return await start_router(runtime_id, request)
+            return await start_router(runtime_id, request.app)
 
     @app.post("/api/server/rollback")
     async def rollback_server(request: Request) -> dict[str, object]:
@@ -1562,10 +1627,10 @@ def create_app(
                 )
             try:
                 await supervisor.stop()
-                return await start_router(previous_runtime_id, request)
+                return await start_router(previous_runtime_id, request.app)
             except HTTPException as error:
                 try:
-                    await start_router(current_runtime_id, request)
+                    await start_router(current_runtime_id, request.app)
                 except HTTPException as restore_error:
                     raise HTTPException(
                         status_code=status.HTTP_502_BAD_GATEWAY,
@@ -1634,6 +1699,180 @@ def create_app(
         except RouterAPIError as error:
             raise _router_api_error(error) from error
         return {"success": True}
+
+    def benchmark_run_payload(
+        runner: BenchmarkRunner, record: BenchmarkRunRecord, *, detail: bool
+    ) -> dict[str, object]:
+        progress = runner.progress(record.id)
+        payload: dict[str, object] = {
+            "id": record.id,
+            "profile_id": record.profile_id,
+            "profile_alias": record.profile_alias,
+            "profile_version": record.profile_version,
+            "benchmark_id": record.benchmark_id,
+            "benchmark_title": record.benchmark_title,
+            "max_tokens": record.max_tokens,
+            "tools": record.tools,
+            "system_prompt_id": record.system_prompt_id,
+            "reasoning_level": record.reasoning_level,
+            "state": record.state,
+            "stage": progress["stage"] if progress else record.stage,
+            "error": record.error,
+            "stats": dict(progress["stats"]) if progress else record.stats,  # type: ignore[call-overload]
+            "started_at": record.started_at.isoformat() if record.started_at else None,
+            "finished_at": record.finished_at.isoformat() if record.finished_at else None,
+        }
+        if progress:
+            payload["live"] = {
+                "prefill": progress.get("prefill"),
+                "decode": progress.get("decode"),
+                # Lets open timeline steps show how long they have been going.
+                "elapsed": runner.generation_elapsed(record.id),
+            }
+        if detail:
+            payload["prompt"] = record.prompt
+            payload["system_prompt"] = record.system_prompt
+            payload["samples"] = list(progress["samples"]) if progress else record.samples  # type: ignore[call-overload]
+            payload["output"] = progress["output"] if progress else record.output
+            payload["reasoning"] = progress["reasoning"] if progress else record.reasoning
+            payload["tool_calls"] = (
+                list(cast(list[dict[str, object]], progress["tool_calls"]))
+                if progress
+                else record.tool_calls
+            )
+            payload["timeline"] = (
+                [dict(entry) for entry in cast(list[dict[str, object]], progress["timeline"])]
+                if progress
+                else record.timeline
+            )
+            runs = cast(BenchmarkRunRegistry, app.state.benchmark_runs)
+            payload["artifacts"] = runs.workspace(record.id).files()
+        return payload
+
+    @app.get("/api/benchmarks")
+    async def list_benchmarks(request: Request) -> dict[str, object]:
+        runner = cast(BenchmarkRunner, request.app.state.benchmark_runner)
+        benchmarks = cast(tuple[Benchmark, ...], request.app.state.benchmarks)
+        system_prompts = cast(tuple[SystemPrompt, ...], request.app.state.system_prompts)
+        return {
+            "benchmarks": [item.to_payload() for item in benchmarks],
+            "system_prompts": [item.to_payload() for item in system_prompts],
+            # Runs default to the coding agent framing a client like OpenCode sends.
+            "default_system_prompt_id": next(
+                (item.id for item in system_prompts if item.id == DEFAULT_SYSTEM_PROMPT_ID),
+                None,
+            ),
+            "default_max_tokens": DEFAULT_MAX_TOKENS,
+            "reasoning_levels": list(REASONING_LEVELS),
+            "active_run_id": runner.active_run_id,
+        }
+
+    @app.get("/api/benchmarks/runs")
+    async def list_benchmark_runs(
+        request: Request, profile_id: str | None = None
+    ) -> list[dict[str, object]]:
+        runner = cast(BenchmarkRunner, request.app.state.benchmark_runner)
+        runs = cast(BenchmarkRunRegistry, request.app.state.benchmark_runs)
+        return [
+            benchmark_run_payload(runner, record, detail=False)
+            for record in runs.list(profile_id)
+        ]
+
+    @app.post("/api/benchmarks/runs", status_code=status.HTTP_201_CREATED)
+    async def start_benchmark_run(
+        run_request: BenchmarkRunRequest, request: Request
+    ) -> dict[str, object]:
+        runner = cast(BenchmarkRunner, request.app.state.benchmark_runner)
+        benchmark = next(
+            (
+                item
+                for item in cast(tuple[Benchmark, ...], request.app.state.benchmarks)
+                if item.id == run_request.benchmark_id
+            ),
+            None,
+        )
+        if benchmark is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="benchmark not found")
+        system_prompt = None
+        if run_request.system_prompt_id is not None:
+            system_prompt = next(
+                (
+                    item
+                    for item in cast(tuple[SystemPrompt, ...], request.app.state.system_prompts)
+                    if item.id == run_request.system_prompt_id
+                ),
+                None,
+            )
+            if system_prompt is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="system prompt not found"
+                )
+        try:
+            profile = cast(ProfileRegistry, request.app.state.profile_registry).get(
+                run_request.profile_id
+            )
+        except ProfileNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        try:
+            record = runner.start(
+                profile,
+                benchmark,
+                run_request.max_tokens,
+                tools=run_request.tools,
+                system_prompt=system_prompt,
+                reasoning_level=run_request.reasoning_level,
+            )
+        except BenchmarkBusyError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return benchmark_run_payload(runner, record, detail=True)
+
+    @app.get("/api/benchmarks/runs/{run_id}")
+    async def get_benchmark_run(run_id: str, request: Request) -> dict[str, object]:
+        runner = cast(BenchmarkRunner, request.app.state.benchmark_runner)
+        runs = cast(BenchmarkRunRegistry, request.app.state.benchmark_runs)
+        try:
+            record = runs.get(run_id)
+        except BenchmarkRunNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        return benchmark_run_payload(runner, record, detail=True)
+
+    @app.post("/api/benchmarks/runs/{run_id}/cancel")
+    async def cancel_benchmark_run(run_id: str, request: Request) -> dict[str, object]:
+        runner = cast(BenchmarkRunner, request.app.state.benchmark_runner)
+        if not await runner.cancel(run_id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="this benchmark is not running"
+            )
+        record = cast(BenchmarkRunRegistry, request.app.state.benchmark_runs).get(run_id)
+        return benchmark_run_payload(runner, record, detail=False)
+
+    @app.get("/api/benchmarks/runs/{run_id}/artifacts/{path:path}")
+    async def read_benchmark_artifact(
+        run_id: str, path: str, request: Request
+    ) -> dict[str, object]:
+        """A file the run's model wrote, as text in JSON.
+
+        Never served as a page: generated HTML must not run with this app's session.
+        """
+        runs = cast(BenchmarkRunRegistry, request.app.state.benchmark_runs)
+        try:
+            runs.get(run_id)
+            content = runs.workspace(run_id).read(path)
+        except BenchmarkRunNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except WorkspaceError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        return {"path": path, "content": content}
+
+    @app.delete("/api/benchmarks/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def delete_benchmark_run(run_id: str, request: Request) -> None:
+        runs = cast(BenchmarkRunRegistry, request.app.state.benchmark_runs)
+        try:
+            runs.delete(run_id)
+        except BenchmarkRunNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except BenchmarkBusyError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     @app.get("/api/tokens")
     async def list_access_tokens(request: Request) -> list[dict[str, object]]:

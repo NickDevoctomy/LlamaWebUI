@@ -85,6 +85,8 @@ export interface Profile {
   version?: number
   /** Set when the profile was added from a bundled recommendation. */
   recommendation?: ProfileRecommendation | null
+  /** Latest completed result per benchmark id; kept when the runs are deleted. */
+  benchmark_results?: Record<string, BenchmarkResult>
   validation_state: 'available' | 'unverified' | 'pending' | 'broken'
   /** Switches on by itself when its model download completes. */
   auto_enable?: boolean
@@ -104,6 +106,121 @@ export interface HostHardware {
   memory_bytes: number
   gpus: string[]
   discrete_vram_bytes: number
+}
+
+export interface Benchmark {
+  id: string
+  title: string
+  prompt: string
+}
+
+export interface SystemPrompt {
+  id: string
+  title: string
+  text: string
+}
+
+export interface BenchmarkCatalog {
+  benchmarks: Benchmark[]
+  /** Bundled system prompts a run can be sent with, ahead of the benchmark prompt. */
+  system_prompts: SystemPrompt[]
+  default_system_prompt_id: string | null
+  /** 'off', or effort levels the chat template is asked for. */
+  reasoning_levels: string[]
+  default_max_tokens: number
+  active_run_id: string | null
+}
+
+/** Timings in seconds and speeds in tokens per second; any may be missing for a run that stopped early. */
+export interface BenchmarkStats {
+  server_start_seconds?: number
+  load_seconds?: number
+  first_token_seconds?: number
+  prompt_tokens?: number
+  prompt_seconds?: number
+  prompt_tokens_per_second?: number
+  generated_tokens?: number
+  decode_seconds?: number
+  /** Average over the whole generation, as llama.cpp reports it. */
+  decode_tokens_per_second?: number
+  /** Fastest 3-second window, comparable to the dashboard's peak. */
+  decode_peak_tokens_per_second?: number
+  /** Speed over the last 3 seconds of generation. */
+  decode_final_tokens_per_second?: number
+  generation_seconds?: number
+  total_seconds?: number
+  finish_reason?: string
+  /** Requests sent: one, plus one more after each round of tool calls. */
+  rounds?: number
+  tool_calls?: number
+  files_written?: number
+}
+
+/** The latest completed result of a benchmark, written onto the profile. */
+export interface BenchmarkResult extends BenchmarkStats {
+  run_id: string
+  benchmark_title: string
+  profile_version: number
+  completed_at: string
+  reasoning_level?: string | null
+}
+
+export type BenchmarkState = 'running' | 'completed' | 'failed' | 'cancelled'
+export type BenchmarkStage = 'starting' | 'loading' | 'prefill' | 'decoding' | 'stopping' | 'done'
+
+export interface BenchmarkRun {
+  id: string
+  profile_id: string
+  profile_alias: string
+  profile_version: number
+  benchmark_id: string
+  benchmark_title: string
+  max_tokens: number
+  /** Whether the model could read and write files in the run's own folder. */
+  tools: boolean
+  system_prompt_id: string | null
+  /** 'off', an effort level, or null for the model's own default. */
+  reasoning_level: string | null
+  state: BenchmarkState
+  stage: BenchmarkStage
+  error: string | null
+  stats: BenchmarkStats
+  started_at: string | null
+  finished_at: string | null
+  /** Current speeds while the run is in progress. */
+  live?: {
+    prefill?: { tokens: number | null; rate: number | null } | null
+    decode?: { tokens: number | null; rate: number | null } | null
+    /** Seconds since the prompt was sent, on the same clock as the run's timeline. */
+    elapsed?: number | null
+  }
+}
+
+/**
+ * One step of generation, in seconds from when the prompt was sent; end is null while it runs.
+ * Thinking and answer entries point into the run's reasoning and output text by position.
+ */
+export type TimelineEntry = { round: number; start: number; end: number | null } & (
+  | { kind: 'reading'; prompt_tokens?: number }
+  | { kind: 'thinking' | 'answer'; tokens?: number; from: number; to?: number }
+  | { kind: 'tool_call'; tokens?: number; names?: string[] }
+  | { kind: 'tool'; name: string; call: number; path?: string | null; ok?: boolean }
+)
+
+export interface BenchmarkRunDetail extends BenchmarkRun {
+  /** What generation spent its time on, step by step. */
+  timeline: TimelineEntry[]
+  prompt: string
+  /** The system prompt's text as it was sent, or null for none. */
+  system_prompt: string | null
+  /** Speed over the recent window (span seconds), sampled about every half second. */
+  samples: { t: number; phase: 'prefill' | 'decode'; tokens: number | null; rate: number; span?: number }[]
+  output: string
+  reasoning: string
+  /** Each file tool call, in order; results are cut short. */
+  tool_calls: { round: number; name: string; path: string | null; ok: boolean; result: string }[]
+  /** Files the model wrote into the run's folder. */
+  artifacts: { path: string; size: number }[]
 }
 
 /** How a profile added from a recommendation compares with the bundled version. */
@@ -557,6 +674,17 @@ export const api = {
     request<EffectiveArgumentCatalog>(`/api/runtimes/${encodeURIComponent(runtimeId)}/argument-catalog`),
   resetProfile: (profileId: string) =>
     request<Profile>(`/api/profiles/${profileId}/reset`, { method: 'POST' }),
+  benchmarks: () => request<BenchmarkCatalog>('/api/benchmarks'),
+  benchmarkRuns: () => request<BenchmarkRun[]>('/api/benchmarks/runs'),
+  benchmarkRun: (runId: string) => request<BenchmarkRunDetail>(`/api/benchmarks/runs/${runId}`),
+  benchmarkArtifact: (runId: string, path: string) =>
+    request<{ path: string; content: string }>(`/api/benchmarks/runs/${runId}/artifacts/${path.split('/').map(encodeURIComponent).join('/')}`),
+  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number; tools: boolean; system_prompt_id: string | null; reasoning_level: string | null }) =>
+    request<BenchmarkRunDetail>('/api/benchmarks/runs', { method: 'POST', body: JSON.stringify(body) }),
+  cancelBenchmark: (runId: string) =>
+    request<BenchmarkRun>(`/api/benchmarks/runs/${runId}/cancel`, { method: 'POST' }),
+  deleteBenchmarkRun: (runId: string) =>
+    request<void>(`/api/benchmarks/runs/${runId}`, { method: 'DELETE' }),
   upgradeProfile: (profileId: string) =>
     request<Profile>(`/api/profiles/${profileId}/upgrade`, { method: 'POST' }),
   setProfileEnabled: (profileId: string, enabled: boolean) =>
