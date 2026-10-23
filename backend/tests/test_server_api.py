@@ -9,11 +9,12 @@ import pytest
 from conftest import Login
 from fastapi.testclient import TestClient
 
-from llamawebui.app import create_app
+from llamawebui.app import _exclusive_conflict, create_app
 from llamawebui.config import Settings
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
 from llamawebui.services.auth_service import CSRF_HEADER, CSRF_HEADER_VALUE
 from llamawebui.services.model_event_stream import stream_model_events
+from llamawebui.services.process_memory import ProcessMemorySampler
 from llamawebui.services.router_client import RouterAPIError, RouterModel, RouterModelEvent
 from llamawebui.services.router_supervisor import (
     RouterProcess,
@@ -165,6 +166,7 @@ def test_server_start_status_and_stop(tmp_path: Path, login: Login) -> None:
         router_supervisor=supervisor,
         router_port_probe=available_port,
         router_client=FakeRouterClient(),
+        process_memory=ProcessMemorySampler(lambda pid: [{"model": "local-model", "pid": pid}]),
     )
     with TestClient(app) as client:
         login(client)
@@ -186,6 +188,8 @@ def test_server_start_status_and_stop(tmp_path: Path, login: Login) -> None:
         runs = client.get("/api/server/runs")
 
     assert stopped.json()["state"] == "stopped"
+    assert stopped.json()["memory"] == []
+    assert running.json()["memory"] == [{"model": "local-model", "pid": 4321}]
     assert created_token.status_code == 201
     assert started.status_code == 200
     assert started.json()["state"] == "ready"
@@ -793,6 +797,23 @@ async def test_server_recovers_with_durable_attempt_history(tmp_path: Path) -> N
     assert any(event.type == "router.model.model_status" for event in events)
 
 
+def router_model(model_id: str, state: str) -> RouterModel:
+    return RouterModel(id=model_id, path=None, status={"value": state}, metadata={})
+
+
+def test_exclusive_profiles_never_share_the_router() -> None:
+    models = [router_model("small", "loaded"), router_model("big", "unloaded")]
+
+    assert _exclusive_conflict("small", models, {"big"}) is None
+    assert _exclusive_conflict("big", models, {"big"}) == "big is exclusive: unload small first"
+    assert _exclusive_conflict("other", models, set()) is None
+    loading = [router_model("big", "loading")]
+    assert _exclusive_conflict("small", loading, {"big"}) == (
+        "big is exclusive: unload it before loading another model"
+    )
+    assert _exclusive_conflict("big", [router_model("big", "loaded")], {"big"}) is None
+
+
 def test_router_model_operations_require_running_server(tmp_path: Path, login: Login) -> None:
     router_client = FakeRouterClient()
     app = create_app(
@@ -860,9 +881,19 @@ def test_router_model_list_load_and_unload(tmp_path: Path, login: Login) -> None
             "/api/profiles",
             json={"alias": "local-model", "runtime_id": runtime_id, "model_path": str(model)},
         )
+        exclusive_profile = client.post(
+            "/api/profiles",
+            json={
+                "alias": "big-model",
+                "runtime_id": runtime_id,
+                "model_path": str(model),
+                "exclusive": True,
+            },
+        )
         client.post("/api/server/start", json={"runtime_id": runtime_id})
         listed = client.get("/api/server/models", params={"reload": True})
         loaded = client.post("/api/server/models/load", json={"model": "local-model"})
+        blocked = client.post("/api/server/models/load", json={"model": "big-model"})
         unloaded = client.post("/api/server/models/unload", json={"model": "local-model"})
         events = client.get("/api/server/models/events")
         router_client.error = RouterAPIError(503, "native router unavailable")
@@ -873,6 +904,10 @@ def test_router_model_list_load_and_unload(tmp_path: Path, login: Login) -> None
     assert listed.json()[0]["id"] == "local-model"
     assert listed.json()[0]["status"] == {"value": "loaded"}
     assert loaded.json() == {"success": True}
+    assert exclusive_profile.json()["exclusive"] is True
+    assert blocked.status_code == 409
+    assert blocked.json() == {"detail": "big-model is exclusive: unload local-model first"}
+    assert ("load", "big-model") not in router_client.actions
     assert unloaded.json() == {"success": True}
     assert events.headers["content-type"].startswith("text/event-stream")
     assert events.text == (

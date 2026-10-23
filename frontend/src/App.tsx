@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Activity,
   AlertCircle,
+  BadgeCheck,
   Box,
   ChevronDown,
   CircleGauge,
@@ -15,6 +15,7 @@ import {
   Library,
   LoaderCircle,
   LogOut,
+  Menu,
   Play,
   RefreshCw,
   RotateCcw,
@@ -25,51 +26,64 @@ import {
   ShieldAlert,
   Square,
   TerminalSquare,
+  Timer,
   Trash2,
   UserRound,
   Shield,
   Pencil,
+  X,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { AccessPanel } from './AccessPanel'
-import { api, type DownloadJob, type LibraryModel, type LogicalModel, type Profile, type RouterModel, type Runtime } from './api'
+import { BenchmarksPanel } from './BenchmarksPanel'
+import { api, type LibraryModel, type LogicalModel, type Profile, type RouterModel, type Runtime } from './api'
+import { DashboardPanel, formatBytes, useStatusHistory } from './Dashboard'
 import { DiscoverPanel, DownloadsPanel } from './DiscoveryPanels'
+import { ErrorBoundary } from './ErrorBoundary'
+import { RecommendationsPanel } from './Recommendations'
 import { Dialog, ProfilePanel, RuntimePanel } from './SetupPanels'
+import { ThemeSwitch } from './theme'
 import { APP_VERSION } from './version'
 
 const navigation = [
-  ['Dashboard', CircleGauge, 'server.read'],
-  ['Models', Library, 'library.read'],
-  ['Discover', Search, 'huggingface.read'],
-  ['Downloads', Download, 'downloads.read'],
-  ['Server', Server, 'server.read'],
-  ['Profiles', FolderCog, 'profiles.read'],
-  ['Access', KeyRound, 'tokens.read'],
-  ['Runtimes', Cpu, 'runtimes.read'],
-  ['Settings', Settings, 'settings.read'],
-  ['Users', UserRound, 'auth.read'],
-  ['Roles', Shield, 'auth.read'],
+  ['Dashboard', CircleGauge, 'server.read', 'Operate'],
+  ['Server', Server, 'server.read', 'Operate'],
+  ['Benchmarks', Timer, 'server.read', 'Operate'],
+  ['Models', Library, 'library.read', 'Models'],
+  ['Recommended', BadgeCheck, 'profiles.read', 'Models'],
+  ['Discover', Search, 'huggingface.read', 'Models'],
+  ['Downloads', Download, 'downloads.read', 'Models'],
+  ['Profiles', FolderCog, 'profiles.read', 'Models'],
+  ['Runtimes', Cpu, 'runtimes.read', 'Models'],
+  ['Access', KeyRound, 'tokens.read', 'Administration'],
+  ['Users', UserRound, 'auth.read', 'Administration'],
+  ['Roles', Shield, 'auth.read', 'Administration'],
+  ['Settings', Settings, 'settings.read', 'Administration'],
 ] as const
+
+const sectionSummaries: Record<string, string> = {
+  Dashboard: 'Router health, throughput and host resources at a glance.',
+  Server: 'Process state, runtime selection and live router output.',
+  Benchmarks: 'Measure how fast a profile loads, reads a prompt and generates.',
+  Models: 'GGUF files in the managed library and the records reconciled from them.',
+  Recommended: 'Profiles tuned on known hardware. Add one and its model downloads for you.',
+  Discover: 'Search Hugging Face and pick a quantization to download.',
+  Downloads: 'Transfers in progress, paused, failed and finished.',
+  Profiles: 'Model aliases and the llama-server settings each one launches with.',
+  Runtimes: 'llama-server builds this control plane can launch.',
+  Access: 'API keys for clients and generated client configuration.',
+  Users: 'Who can sign in to this control plane.',
+  Roles: 'Privilege sets assigned to accounts.',
+  Settings: 'Control-plane preferences.',
+  Account: 'Your sign-in details.',
+}
+
+function sectionGroup(section: string) {
+  return navigation.find(([label]) => label === section)?.[3] ?? 'Account'
+}
 
 function stateLabel(value?: string) {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : 'Unknown'
-}
-
-function modelState(profile: Profile, models: RouterModel[]) {
-  const live = models.find((model) => model.id === profile.alias)
-  return live?.status.value ?? (profile.enabled ? 'available' : 'disabled')
-}
-
-function modelSize(profile: Profile) {
-  const size = profile.configuration.model_size
-  return typeof size === 'number' ? `${(size / 1024 ** 3).toFixed(1)} GB` : 'Local'
-}
-
-function formatBytes(bytes: number) {
-  if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-  return `${(bytes / 1024 ** index).toFixed(index > 2 ? 1 : 0)} ${units[index]}`
 }
 
 function App() {
@@ -123,6 +137,7 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: Awaited<ReturnType<typ
 function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awaited<ReturnType<typeof api.currentUser>>; authReady: boolean; onLogout: () => void; loggingOut: boolean }) {
   const [section, setSection] = useState(user.default_credentials ? 'Account' : 'Dashboard')
   const [discoveryRepository, setDiscoveryRepository] = useState<string>()
+  const [discoverySearch, setDiscoverySearch] = useState<string>()
   const [selectedRuntime, setSelectedRuntime] = useState('')
   const [profileSeed, setProfileSeed] = useState<LibraryModel>()
   const queryClient = useQueryClient()
@@ -143,8 +158,21 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
     queryKey: ['server'],
     queryFn: api.serverStatus,
     enabled: authReady && canRead('server.read'),
-    refetchInterval: (query) => query.state.data?.state === 'ready' ? 2000 : false,
+    refetchInterval: (query) => query.state.data?.state === 'ready' ? 2000 : 5000,
   })
+  const history = useStatusHistory(status.data, status.dataUpdatedAt)
+  const [navOpen, setNavOpen] = useState(false)
+  useEffect(() => {
+    if (!navOpen) return
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setNavOpen(false) }
+    document.addEventListener('keydown', close)
+    return () => document.removeEventListener('keydown', close)
+  }, [navOpen])
+  const navigate = (label: string) => {
+    setSection(label)
+    setNavOpen(false)
+    if (label === 'Discover') { setDiscoveryRepository(undefined); setDiscoverySearch(undefined) }
+  }
   const runtimes = useQuery({ queryKey: ['runtimes'], queryFn: api.runtimes, enabled: authReady && canRead('runtimes.read') })
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles, enabled: authReady && canRead('profiles.read') })
   const tokens = useQuery({ queryKey: ['tokens'], queryFn: api.tokens, enabled: authReady && canRead('tokens.read') })
@@ -161,6 +189,8 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
     queryKey: ['models'],
     queryFn: api.models,
     enabled: authReady && running && canRead('server.read'),
+    // Poll quickly while a model loads so its state change shows promptly.
+    refetchInterval: (query) => query.state.data?.some((model) => model.status.value === 'loading') ? 1000 : 5000,
   })
   const users = useQuery({ queryKey: ['users'], queryFn: api.users, enabled: authReady && canRead('auth.read') })
   const roles = useQuery({ queryKey: ['roles'], queryFn: api.roles, enabled: authReady && canRead('auth.read') })
@@ -197,7 +227,10 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
   const modelAction = useMutation({
     mutationFn: ({ id, loaded }: { id: string; loaded: boolean }) =>
       loaded ? api.unloadModel(id) : api.loadModel(id),
-    onSuccess: refresh,
+    onSettled: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['models'] }),
+      queryClient.invalidateQueries({ queryKey: ['server'] }),
+    ]),
   })
   const rollback = useMutation({
     mutationFn: api.rollback,
@@ -207,69 +240,78 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
   const runtime = runtimes.data?.find((item) => item.id === selectedRuntime)
     ?? runtimes.data?.find((item) => item.usable)
   const loadedCount = models.data?.filter((model) => model.status.value === 'loaded').length ?? 0
-  const error = lifecycle.error ?? rollback.error ?? modelAction.error ?? status.error
+  // The router reports ready while it is still loading a model, so surface that separately.
+  const loadingModel = running ? models.data?.find((model) => model.status.value === 'loading') : undefined
+  const error = lifecycle.error ?? rollback.error ?? status.error
+
+  const activeDownloadCount = downloads.data?.filter((job) => ['queued', 'downloading'].includes(job.state)).length ?? 0
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand" aria-label="Llama Web UI">
-          <div className="brand-mark"><Command size={17} strokeWidth={2.4} /></div>
-          <div><strong>Llama</strong><span>CONTROL</span></div>
+    <div className="app-shell" data-nav-open={navOpen || undefined}>
+      <aside className="sidebar" id="primary-sidebar">
+        <div className="sidebar-top">
+          <div className="brand" aria-label="Llama Web UI">
+            <div className="brand-mark"><Command size={17} strokeWidth={2.4} /></div>
+            <div><strong>Llama</strong><span>CONTROL</span></div>
+          </div>
+          <button aria-label="Close navigation" className="icon-button small nav-close" onClick={() => setNavOpen(false)} type="button"><X size={18} /></button>
         </div>
         <nav aria-label="Primary navigation">
-          <p className="nav-label">Workspace</p>
-          {visibleNavigation.map(([label, Icon]) => (
-            <button
-              aria-label={label}
-              aria-current={section === label ? 'page' : undefined}
-              className={section === label ? 'nav-item active' : 'nav-item'}
-              key={label}
-              onClick={() => {
-                setSection(label)
-                if (label === 'Discover') setDiscoveryRepository(undefined)
-              }}
-              type="button"
-            >
-              <Icon size={17} />
-              <span>{label}</span>
-              {label === 'Downloads' && <span className="nav-count">{downloads.data?.filter((job) => ['queued', 'downloading'].includes(job.state)).length ?? 0}</span>}
-            </button>
+          {visibleNavigation.map(([label, Icon, , group], index) => (
+            <Fragment key={label}>
+              {group !== visibleNavigation[index - 1]?.[3] && <p className="nav-label">{group}</p>}
+              <button
+                aria-label={label}
+                aria-current={section === label ? 'page' : undefined}
+                className={section === label ? 'nav-item active' : 'nav-item'}
+                onClick={() => navigate(label)}
+                type="button"
+              >
+                <Icon size={17} />
+                <span>{label}</span>
+                {label === 'Downloads' && activeDownloadCount > 0 && <span className="nav-count">{activeDownloadCount}</span>}
+              </button>
+            </Fragment>
           ))}
         </nav>
         <div className="sidebar-foot">
           <div className="sidebar-user">
-            <button aria-label="Account" className="icon-button account-button" onClick={() => setSection('Account')} title="Account" type="button"><UserRound size={15} /></button>
+            <button aria-label="Account" className="icon-button account-button" onClick={() => navigate('Account')} title="Account" type="button"><UserRound size={15} /></button>
             <div><strong>{user.username}</strong>{user.default_credentials && <span className="default-warning">Default password active</span>}</div>
             <button aria-label="Log out" className="icon-button small sidebar-logout" disabled={loggingOut} onClick={onLogout} title="Log out" type="button"><LogOut size={15} /></button>
           </div>
-          <div className="local-badge"><ShieldCheck size={15} /> Local control plane</div>
-          <span>v{APP_VERSION}</span>
+          <div className="local-badge"><ShieldCheck size={14} /> Local control plane <span>v{APP_VERSION}</span></div>
         </div>
       </aside>
+      <button aria-hidden="true" className="nav-scrim" onClick={() => setNavOpen(false)} tabIndex={-1} type="button" />
 
       <main>
         <header className="topbar">
-          <div className="mobile-brand">LLAMA CONTROL</div>
+          <button aria-controls="primary-sidebar" aria-expanded={navOpen} aria-label="Open navigation" className="icon-button nav-toggle" onClick={() => setNavOpen(true)} type="button"><Menu size={18} /></button>
           <div className="status-cluster">
-            <span className={`state-dot ${status.data?.state ?? 'offline'}`} />
-            <div className="status-primary">
+            <div className="status-primary" data-state={loadingModel ? 'loading' : status.data?.state ?? 'offline'} title={loadingModel ? `Router ${status.data?.state}, loading ${loadingModel.id}` : undefined}>
+              <span className={`state-dot ${loadingModel ? 'loading' : status.data?.state ?? 'offline'}`} />
               <small>Router</small>
-              <strong>{stateLabel(status.data?.state)}</strong>
+              <strong>{loadingModel ? 'Loading model' : stateLabel(status.data?.state)}</strong>
             </div>
-            <div className="status-stat"><small>Endpoint</small><span>{status.data?.endpoint ?? 'Unavailable'}</span></div>
+            <div className="status-stat"><small>Endpoint</small><span className="mono">{status.data?.endpoint ?? 'Unavailable'}</span></div>
             <div className="status-stat"><small>Runtime</small><span>{runtime?.name ?? 'Not selected'}</span></div>
-            <div className="status-stat"><small>Models</small><span>{loadedCount} loaded</span></div>
+            <div className="status-stat"><small>Models</small><span>{loadingModel ? `Loading ${loadingModel.id}` : `${loadedCount} loaded`}</span></div>
           </div>
-          <button className="icon-button" onClick={refresh} title="Refresh data" type="button">
-            <RefreshCw size={17} />
-          </button>
+          <div className="topbar-actions">
+            <ThemeSwitch />
+            <button aria-label="Refresh data" className="icon-button" onClick={refresh} title="Refresh data" type="button">
+              <RefreshCw size={16} />
+            </button>
+          </div>
         </header>
 
         <div className="workspace">
           <section className="page-heading">
             <div>
-              <p className="eyebrow">Local model router</p>
+              <p className="eyebrow">{sectionGroup(section)}</p>
               <h1>{section}</h1>
+              {sectionSummaries[section] && <p className="page-summary">{sectionSummaries[section]}</p>}
             </div>
             <div className="server-actions">
               {running ? (
@@ -291,52 +333,69 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
 
           {error && <div className="error-banner">{error.message}</div>}
 
-          <section className="metrics" aria-label="System overview">
-            <div className="metric">
-              <span className="metric-icon"><CircleGauge size={18} /></span>
-              <div><small>Router health</small><strong>{running ? 'Operational' : stateLabel(status.data?.state)}</strong></div>
-              <span className={running ? 'trend good' : 'trend'}>{running ? 'Healthy' : 'Idle'}</span>
-            </div>
-            <div className="metric">
-              <span className="metric-icon"><Box size={18} /></span>
-              <div><small>Model profiles</small><strong>{profiles.data?.length ?? '—'}</strong></div>
-              <span className="trend">{profiles.data?.filter((item) => item.enabled).length ?? 0} enabled</span>
-            </div>
-            <div className="metric">
-              <span className="metric-icon"><Cpu size={18} /></span>
-              <div><small>Runtime build</small><strong>{runtime?.build ?? 'None'}</strong></div>
-              <span className="trend">{runtime?.backend?.toUpperCase() ?? 'Unconfigured'}</span>
-            </div>
-            <div className="metric">
-              <span className="metric-icon"><KeyRound size={18} /></span>
-              <div><small>Access keys</small><strong>{tokens.data?.filter((token) => token.enabled).length ?? '—'}</strong></div>
-              <span className="trend">Active</span>
-            </div>
-          </section>
-
+          <ErrorBoundary resetKey={section}>
           {section === 'Dashboard' ? (
-            <DashboardPanel status={status.data} runtimes={runtimes.data ?? []} profiles={profiles.data ?? []} models={models.data ?? []} downloads={downloads.data ?? []} />
+            <DashboardPanel
+              downloads={downloads.data ?? []}
+              history={history}
+              library={library.data ?? []}
+              models={models.data ?? []}
+              onNavigate={(label) => { if (visibleNavigation.some(([item]) => item === label)) navigate(label) }}
+              profiles={profiles.data ?? []}
+              running={running}
+              runtime={runtime}
+              runtimes={runtimes.data ?? []}
+              status={status.data}
+              tokens={tokens.data ?? []}
+            />
           ) : section === 'Models' ? (
             <ModelsPanel
               models={library.data ?? []}
               logicalModels={logicalLibrary.data ?? []}
               profiles={profiles.data ?? []}
               onConfigure={(model) => { setProfileSeed(model); setSection('Profiles') }}
-              onDiscover={() => { setDiscoveryRepository(undefined); setSection('Discover') }}
-              onDiscoverRepository={(repoId) => { setDiscoveryRepository(repoId); setSection('Discover') }}
+              onDiscover={() => { setDiscoveryRepository(undefined); setDiscoverySearch(undefined); setSection('Discover') }}
+              onDiscoverRepository={(repoId) => { setDiscoveryRepository(repoId); setDiscoverySearch(undefined); setSection('Discover') }}
               onRefresh={() => { void refreshModels() }}
               running={running}
             />
+          ) : section === 'Benchmarks' ? (
+            <BenchmarksPanel canRun={canRead('server.lifecycle.write')} profiles={profiles.data ?? []} routerState={status.data?.state} />
           ) : section === 'Server' ? (
-            <ServerPanel status={status.data} runtimes={runtimes.data ?? []} profiles={profiles.data ?? []} selectedRuntime={runtime?.id ?? ''} onRuntime={setSelectedRuntime} onRestart={() => lifecycle.mutate('restart')} onRollback={() => rollback.mutate()} restarting={lifecycle.isPending || rollback.isPending} />
+            <ServerPanel
+              canManageModels={canRead('server.write')}
+              modelAction={{
+                error: modelAction.error,
+                pendingId: modelAction.isPending ? modelAction.variables?.id : undefined,
+                run: (id, loaded) => modelAction.mutate({ id, loaded }),
+              }}
+              models={models.data ?? []}
+              onRestart={() => lifecycle.mutate('restart')}
+              onRollback={() => rollback.mutate()}
+              onRuntime={setSelectedRuntime}
+              profiles={profiles.data ?? []}
+              restarting={lifecycle.isPending || rollback.isPending}
+              running={running}
+              runtimes={runtimes.data ?? []}
+              selectedRuntime={runtime?.id ?? ''}
+              status={status.data}
+            />
           ) : section === 'Runtimes' ? (
             <RuntimePanel runtimes={runtimes.data ?? []} />
           ) : section === 'Profiles' ? (
-            <ProfilePanel initialModel={profileSeed} library={library.data ?? []} onInitialModelConsumed={() => setProfileSeed(undefined)} profiles={profiles.data ?? []} running={running} runtimes={runtimes.data ?? []} />
+            <ProfilePanel initialModel={profileSeed} library={library.data ?? []} onDiscover={({ repoId, query }) => { setDiscoveryRepository(repoId ?? undefined); setDiscoverySearch(repoId ? undefined : query); setSection('Discover') }} onInitialModelConsumed={() => setProfileSeed(undefined)} profiles={profiles.data ?? []} running={running} runtimes={runtimes.data ?? []} />
           ) : section === 'Access' ? (
             <AccessPanel running={running} tokens={tokens.data ?? []} />
+          ) : section === 'Recommended' ? (
+            <RecommendationsPanel
+              canApply={canRead('profiles.write') && canRead('downloads.write')}
+              onOpenProfiles={() => navigate('Profiles')}
+              onOpenRuntimes={() => navigate('Runtimes')}
+              profiles={profiles.data ?? []}
+              runtimes={runtimes.data ?? []}
+            />
           ) : section === 'Discover' ? (
-            <DiscoverPanel jobs={downloads.data ?? []} library={library.data ?? []} initialRepoId={discoveryRepository} onQueued={() => setSection('Downloads')} />
+            <DiscoverPanel jobs={downloads.data ?? []} library={library.data ?? []} initialQuery={discoverySearch} initialRepoId={discoveryRepository} onQueued={() => setSection('Downloads')} />
           ) : section === 'Downloads' ? (
             <DownloadsPanel jobs={downloads.data ?? []} library={library.data ?? []} onCreateProfile={(model) => { setProfileSeed(model); setSection('Profiles') }} />
           ) : section === 'Account' ? (
@@ -350,31 +409,11 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
           ) : (
             <CollectionPanel section={section} runtimes={runtimes.data ?? []} profiles={profiles.data ?? []} tokens={tokens.data ?? []} />
           )}
+          </ErrorBoundary>
         </div>
       </main>
     </div>
   )
-}
-
-function DashboardPanel({ status, runtimes, profiles, models, downloads }: {
-  status?: Awaited<ReturnType<typeof api.serverStatus>>
-  runtimes: Runtime[]
-  profiles: Profile[]
-  models: RouterModel[]
-  downloads: DownloadJob[]
-}) {
-  const loaded = models.filter((model) => model.status.value === 'loaded').length
-  const activeDownloads = downloads.filter((job) => ['queued', 'downloading'].includes(job.state)).length
-  return <section className="dashboard-grid">
-    <section className="data-panel dashboard-hero"><div className="panel-heading"><div><p className="eyebrow">Operational overview</p><h2>Dashboard</h2><p>Local control-plane health and active work.</p></div><CircleGauge size={24} /></div><div className="dashboard-stats"><div><small>Router</small><strong>{stateLabel(status?.state)}</strong></div><div><small>Runtime</small><strong>{runtimes.find((runtime) => runtime.usable)?.name ?? 'None'}</strong></div><div><small>Loaded models</small><strong>{loaded}</strong></div><div><small>Profiles</small><strong>{profiles.length}</strong></div></div></section>
-    <section className="data-panel"><div className="panel-heading"><div><h2>Telemetry</h2><p>Native timing samples.</p></div></div><dl className="dashboard-detail"><div><dt>Prompt processing</dt><dd>{status?.timing?.prompt_tokens_per_second ? `${status.timing.prompt_tokens_per_second} t/s` : 'Unavailable'}</dd></div><div><dt>Decode</dt><dd>{status?.timing?.decode_tokens_per_second ? `${status.timing.decode_tokens_per_second} t/s` : 'Unavailable'}</dd></div><div><dt>Peak decode</dt><dd>{status?.timing?.decode_tokens_per_second_peak ? `${status.timing.decode_tokens_per_second_peak} t/s` : 'Unavailable'}</dd></div><div><dt>Active task</dt><dd>{status?.timing?.task_id ?? 'None'}</dd></div><div><dt>Context tokens</dt><dd>{status?.timing?.context_tokens ?? 'Unavailable'}</dd></div></dl></section>
-    <section className="data-panel"><div className="panel-heading"><div><h2>System telemetry</h2><p>Host resources · live snapshot</p></div><Cpu size={20} /></div><div className="gauge-grid"><GaugeCard label="CPU" value={status?.system?.cpu_percent != null ? status.system.cpu_percent : null} suffix="%" /><GaugeCard label="RAM" value={status?.system ? Math.round(status.system.ram_used_bytes / status.system.ram_total_bytes * 100) : null} suffix="%" detail={status?.system ? `${formatBytes(status.system.ram_used_bytes)} / ${formatBytes(status.system.ram_total_bytes)}` : undefined} /><GaugeCard label="Disk" value={status?.system ? Math.round((1 - status.system.disk_free_bytes / status.system.disk_total_bytes) * 100) : null} suffix="%" detail={status?.system ? `${formatBytes(status.system.disk_free_bytes)} free` : undefined} /><GaugeCard label="GPU" value={status?.system?.gpu?.utilization_percent ?? null} suffix="%" detail={status?.system?.gpu_supported ? undefined : 'Unsupported'} /><GaugeCard label="VRAM usage" value={status?.system?.gpu ? Math.round(status.system.gpu.memory_used_bytes / status.system.gpu.memory_total_bytes * 100) : null} suffix="%" detail={status?.system?.gpu ? `${formatBytes(status.system.gpu.memory_used_bytes)} / ${formatBytes(status.system.gpu.memory_total_bytes)}` : 'Unsupported'} /></div><div className="telemetry-foot"><span>Network received</span><strong>{status?.system ? formatBytes(status.system.network_received_bytes) : 'Unavailable'}</strong><span>Disk read</span><strong>{status?.system?.disk_read_bytes != null ? formatBytes(status.system.disk_read_bytes) : 'Unavailable'}</strong><span>Active downloads</span><strong>{activeDownloads}</strong></div></section>
-  </section>
-}
-
-function GaugeCard({ label, value, suffix, detail }: { label: string; value: number | null; suffix: string; detail?: string }) {
-  const percentage = value == null ? 0 : Math.min(100, Math.max(0, value))
-  return <div className="gauge-card"><div className="gauge-ring" style={{ '--gauge-value': `${percentage * 3.6}deg` } as React.CSSProperties}><div><strong>{value == null ? '—' : `${value}${suffix}`}</strong><small>{label}</small></div></div>{detail && <span>{detail}</span>}</div>
 }
 
 function ModelsPanel({ models, logicalModels, profiles, onConfigure, onDiscover, onDiscoverRepository, onRefresh, running }: {
@@ -472,14 +511,83 @@ function ModelsPanel({ models, logicalModels, profiles, onConfigure, onDiscover,
       <div className="panel-heading"><div><h2>Logical library</h2><p>Durable records reconciled from local GGUF files and profile links.</p></div></div>
       <div className="table-wrap"><table className="models-table"><thead><tr><th>Model path</th><th>State</th><th>Files</th><th>Profiles</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{logicalModels.map((model) => <tr key={model.id}><td><div className="model-name"><span className="model-glyph">GG</span><div><strong>{String(model.metadata['general.name'] ?? 'Local model')}</strong><span>{model.primary_path}</span></div></div></td><td><span className={`state-pill ${model.validation_state}`}>{stateLabel(model.validation_state)}</span></td><td>{model.files.length}</td><td>{model.profile_ids.length}</td><td>{model.validation_state === 'missing' && <button className="button row-button" disabled={model.profile_ids.length > 0 || logicalRemoval.isPending} onClick={() => setRemovingLogical(model)} type="button"><Trash2 size={13} /> Remove record</button>}</td></tr>)}</tbody></table>{!logicalModels.length && <div className="empty"><Library size={28} /><strong>No logical models</strong><span>Reconcile the library to create durable records.</span></div>}</div>
       <div className="panel-footer"><span>{logicalModels.length} logical record(s)</span><span>Missing records linked to profiles must be repaired first.</span></div>
-    </section>{removingLogical && <Dialog title="Remove missing record?" description="This removes only the durable record; no files will be changed." onClose={() => setRemovingLogical(undefined)}><div className="confirm-body"><Trash2 size={24} /><p><strong>{removingLogical.primary_path}</strong> is missing and has no linked profiles.</p>{logicalRemoval.error && <div className="form-error"><AlertCircle size={15} /> {logicalRemoval.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setRemovingLogical(undefined)} type="button">Keep record</button><button className="button danger" disabled={logicalRemoval.isPending} onClick={() => logicalRemoval.mutate(removingLogical.id)} type="button">Remove record</button></footer></Dialog>}{importing && <Dialog title="Import external model" description="Create a disabled profile for this complete model set." onClose={() => setImporting(undefined)}><div className="form-body"><label className="field"><span>Profile alias</span><input autoFocus value={importAlias} onChange={(event) => setImportAlias(event.target.value.toLowerCase().replace(/\s+/g, '-'))} required /></label>{importExternal.error && <div className="form-error"><AlertCircle size={15} /> {importExternal.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setImporting(undefined)} type="button">Cancel</button><button className="button primary" disabled={importExternal.isPending || !profiles[0]?.runtime_id || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(importAlias)} onClick={() => importExternal.mutate()} type="button">{importExternal.isPending ? <LoaderCircle className="spin" size={15} /> : <FolderCog size={15} />} Import profile</button></footer></Dialog>}{deleting && <Dialog title="Delete downloaded model?" description="The downloaded files will be removed, but associated profiles will be preserved as broken." onClose={() => setDeleting(undefined)}><div className="confirm-body"><Trash2 size={24} /><p><strong>{deleting.repo_id}</strong> · <span className="mono">{deleting.group_key}</span> at revision <span className="mono">{deleting.revision.slice(0, 9)}</span> will be deleted. Re-downloading this exact artifact will repair its profiles.</p>{removal.error && <div className="form-error"><AlertCircle size={15} /> {removal.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep model</button><button className="button danger" disabled={removal.isPending} onClick={() => removal.mutate(deleting.download_id)} type="button">{removal.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete model</button></footer></Dialog>}</>
+    </section>{removingLogical && <Dialog title="Remove missing record?" description="This removes only the durable record; no files will be changed." onClose={() => setRemovingLogical(undefined)}><div className="confirm-body"><Trash2 size={24} /><p><strong>{removingLogical.primary_path}</strong> is missing and has no linked profiles.</p>{logicalRemoval.error && <div className="form-error"><AlertCircle size={15} /> {logicalRemoval.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setRemovingLogical(undefined)} type="button">Keep record</button><button className="button danger" disabled={logicalRemoval.isPending} onClick={() => logicalRemoval.mutate(removingLogical.id)} type="button">Remove record</button></footer></Dialog>}{importing && <Dialog title="Import external model" description="Create a disabled profile for this complete model set." onClose={() => setImporting(undefined)}><div className="form-body"><label className="form-field"><span>Profile alias</span><input autoFocus value={importAlias} onChange={(event) => setImportAlias(event.target.value.toLowerCase().replace(/\s+/g, '-'))} required /></label>{importExternal.error && <div className="form-error"><AlertCircle size={15} /> {importExternal.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setImporting(undefined)} type="button">Cancel</button><button className="button primary" disabled={importExternal.isPending || !profiles[0]?.runtime_id || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(importAlias)} onClick={() => importExternal.mutate()} type="button">{importExternal.isPending ? <LoaderCircle className="spin" size={15} /> : <FolderCog size={15} />} Import profile</button></footer></Dialog>}{deleting && <Dialog title="Delete downloaded model?" description="The downloaded files will be removed, but associated profiles will be preserved as broken." onClose={() => setDeleting(undefined)}><div className="confirm-body"><Trash2 size={24} /><p><strong>{deleting.repo_id}</strong> · <span className="mono">{deleting.group_key}</span> at revision <span className="mono">{deleting.revision.slice(0, 9)}</span> will be deleted. Re-downloading this exact artifact will repair its profiles.</p>{removal.error && <div className="form-error"><AlertCircle size={15} /> {removal.error.message}</div>}</div><footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep model</button><button className="button danger" disabled={removal.isPending} onClick={() => removal.mutate(deleting.download_id)} type="button">{removal.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete model</button></footer></Dialog>}</>
   )
 }
 
-function ServerPanel({ status, runtimes, profiles, selectedRuntime, onRuntime, onRestart, onRollback, restarting }: {
+interface ModelActionControl {
+  error: Error | null
+  pendingId?: string
+  run: (id: string, loaded: boolean) => void
+}
+
+function routerModelState(model: RouterModel) {
+  const value = model.status.value ?? 'unknown'
+  const failed = model.status.failed === true || (value === 'unloaded' && typeof model.status.exit_code === 'number' && model.status.exit_code !== 0)
+  return { value: failed ? 'failed' : value, exitCode: typeof model.status.exit_code === 'number' ? model.status.exit_code : undefined }
+}
+
+function RouterModelsPanel({ models, profiles, running, canManage, action }: {
+  models: RouterModel[]
+  profiles: Profile[]
+  running: boolean
+  canManage: boolean
+  action: ModelActionControl
+}) {
+  const unpublished = profiles.filter((profile) => !profile.enabled).length
+  const exclusive = new Set(profiles.filter((profile) => profile.exclusive).map((profile) => profile.alias))
+  const occupied = models.filter((model) => ['loaded', 'loading'].includes(model.status.value ?? '')).map((model) => model.id)
+  /** Mirrors the server's rule: an exclusive model never shares the router. */
+  const blockedReason = (id: string) => {
+    const others = occupied.filter((other) => other !== id)
+    if (!others.length) return undefined
+    if (exclusive.has(id)) return `Exclusive: unload ${others.join(', ')} first`
+    const blocker = others.find((other) => exclusive.has(other))
+    return blocker ? `${blocker} is exclusive: unload it first` : undefined
+  }
+  return <section className="data-panel router-models">
+    <div className="panel-heading"><div><h2>Router models</h2><p>Load a profile to check it starts, or unload it to free memory, without sending a request.</p></div><Box size={20} /></div>
+    {action.error && <div className="form-error" role="alert"><AlertCircle size={15} /> {action.error.message}</div>}
+    {!running ? <div className="empty compact-empty"><Box size={24} /><strong>The router is not running</strong><span>Start the router to load or unload its {profiles.filter((profile) => profile.enabled).length} enabled profiles.</span></div>
+      : models.length ? <ul className="router-model-list">
+        {models.map((model) => {
+          const { value, exitCode } = routerModelState(model)
+          const profile = profiles.find((item) => item.alias === model.id)
+          const path = model.path ?? profile?.model_path
+          const pending = action.pendingId === model.id
+          const loaded = value === 'loaded'
+          const busy = pending || value === 'loading'
+          const blocked = loaded ? undefined : blockedReason(model.id)
+          return <li key={model.id}>
+            <span className={`roster-dot ${value === 'failed' ? 'error' : value}`} />
+            <span className="roster-copy"><strong>{model.id}{exclusive.has(model.id) && <span className="profile-tag" title="Nothing else can be loaded beside this model">Exclusive</span>}</strong>{blocked && !busy ? <span className="roster-note">{blocked}</span> : <span title={path}>{path?.split(/[\\/]/).at(-1) ?? 'Model path not reported'}</span>}</span>
+            <span className={`state-pill ${value === 'failed' ? 'error' : value}`}>{value === 'failed' && exitCode !== undefined ? `Failed · exit ${exitCode}` : value}</span>
+            <button
+              aria-label={`${loaded ? 'Unload' : 'Load'} ${model.id}`}
+              className={loaded ? 'button secondary compact' : 'button primary compact'}
+              disabled={!canManage || busy || blocked !== undefined}
+              onClick={() => action.run(model.id, loaded)}
+              title={canManage ? blocked : 'Requires server write access'}
+              type="button"
+            >
+              {busy ? <LoaderCircle className="spin" size={14} /> : loaded ? <Square size={12} fill="currentColor" /> : <Play size={13} fill="currentColor" />}
+              {value === 'loading' ? 'Loading…' : pending ? (loaded ? 'Unloading…' : 'Loading…') : loaded ? 'Unload' : 'Load'}
+            </button>
+          </li>
+        })}
+      </ul> : <div className="empty compact-empty"><Box size={24} /><strong>No models published</strong><span>Enable a profile, then restart the router to publish it.</span></div>}
+    {running && <div className="panel-footer"><span>{models.filter((model) => model.status.value === 'loaded').length} of {models.length} loaded</span><span>{unpublished ? `${unpublished} disabled ${unpublished === 1 ? 'profile is' : 'profiles are'} not published` : 'Load failures appear in the output below'}</span></div>}
+  </section>
+}
+
+function ServerPanel({ status, runtimes, profiles, models, running, canManageModels, modelAction, selectedRuntime, onRuntime, onRestart, onRollback, restarting }: {
   status?: Awaited<ReturnType<typeof api.serverStatus>>
   runtimes: Runtime[]
   profiles: Profile[]
+  models: RouterModel[]
+  running: boolean
+  canManageModels: boolean
+  modelAction: ModelActionControl
   selectedRuntime: string
   onRuntime: (id: string) => void
   onRestart: () => void
@@ -488,6 +596,7 @@ function ServerPanel({ status, runtimes, profiles, selectedRuntime, onRuntime, o
 }) {
   return (
     <div className="server-grid">
+      <RouterModelsPanel action={modelAction} canManage={canManageModels} models={models} profiles={profiles} running={running} />
       <section className="data-panel server-detail"><div className="panel-heading"><div><h2>Process</h2><p>Managed native llama.cpp server.</p></div><TerminalSquare size={20} /></div><dl><div><dt>State</dt><dd><span className={`state-pill ${status?.state}`}>{status?.state ?? 'unknown'}</span></dd></div><div><dt>Process ID</dt><dd>{status?.pid ?? '—'}</dd></div><div><dt>Endpoint</dt><dd className="mono">{status?.endpoint ?? '—'}</dd></div><div><dt>Last exit</dt><dd>{status?.last_exit_code ?? '—'}</dd></div><div><dt>Prompt throughput</dt><dd>{status?.timing?.prompt_tokens_per_second ? `${status.timing.prompt_tokens_per_second} t/s` : '—'}</dd></div><div><dt>Decode throughput</dt><dd>{status?.timing?.decode_tokens_per_second ? `${status.timing.decode_tokens_per_second} t/s` : '—'}</dd></div><div><dt>Active task</dt><dd>{status?.timing?.task_id ?? '—'}</dd></div><div><dt>Task elapsed</dt><dd>{status?.timing?.task_elapsed_seconds ? `${status.timing.task_elapsed_seconds}s` : '—'}</dd></div></dl></section>
       <section className="data-panel server-detail"><div className="panel-heading"><div><h2>Runtime</h2><p>Binary used for the next start or restart.</p></div><Cpu size={20} /></div><label className="select-label">Selected runtime<select value={selectedRuntime} onChange={(event) => onRuntime(event.target.value)}><option value="">Select runtime</option>{runtimes.map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.name} · {runtime.build ?? 'unknown build'}</option>)}</select><ChevronDown size={16} /></label><div className="profile-summary"><small>Enabled profiles</small>{profiles.filter((profile) => profile.enabled && profile.runtime_id === selectedRuntime).map((profile) => <div key={profile.id}><strong>{profile.alias}</strong><span>{profile.model_path}</span></div>)}{!profiles.some((profile) => profile.enabled && profile.runtime_id === selectedRuntime) && <span>None configured for this runtime</span>}</div><div className="panel-footer"><span>Runtime changes are explicit</span><div className="row-actions"><button className="button secondary compact" disabled={!selectedRuntime || status?.state !== 'ready' || restarting} onClick={onRestart} type="button">{restarting ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />} Apply & restart</button><button className="button secondary compact" disabled={status?.state !== 'ready' || restarting} onClick={onRollback} type="button">Rollback</button></div></div><details className="launch-details"><summary>Effective launch arguments</summary><pre>{status?.arguments?.join(' ') || 'Unavailable'}</pre></details></section>
       <section className="data-panel log-panel"><div className="panel-heading"><div><h2>Recent output</h2><p>Chronological output · bounded in-memory tail</p></div></div><pre>{status?.logs.length ? status.logs.join('\n') : 'Waiting for router output…'}</pre></section>

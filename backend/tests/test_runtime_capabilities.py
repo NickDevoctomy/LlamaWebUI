@@ -59,3 +59,63 @@ def test_parse_version_output_preserves_unknown_format() -> None:
     assert version.build is None
     assert version.commit is None
     assert version.raw == output
+
+LLAMA_HELP = """----- common params -----
+
+-h,    --help, --usage                  print usage and exit
+-t,    --threads N                      number of CPU threads to use during generation (default: -1)
+                                        (env: LLAMA_ARG_THREADS)
+-fa,   --flash-attn [on|off|auto]       set Flash Attention ('on', 'off', 'auto', default: 'auto')
+-kvo,  --kv-offload, -nkvo, --no-kv-offload
+                                        whether to enable KV cache offloading (default: enabled)
+-ts,   --tensor-split N0,N1,N2,...      fraction of the model to offload to each GPU
+--cpu-mask M                            CPU affinity mask (default: "")
+--no-only                               negative-only option
+- not an option row
+-x                                      short-only option
+"""
+
+
+def test_parse_help_options_reads_flags_aliases_syntax_and_defaults() -> None:
+    capabilities = parse_help_output(LLAMA_HELP)
+    rows = {option.flag: option for option in capabilities.details}
+
+    assert list(rows) == [
+        "--help",
+        "--threads",
+        "--flash-attn",
+        "--kv-offload",
+        "--tensor-split",
+        "--cpu-mask",
+        "--no-only",
+        "-x",
+    ]
+    assert rows["--help"].aliases == ("-h", "--usage")
+    assert rows["--threads"].default == "-1"
+    assert rows["--threads"].help.endswith("(env: LLAMA_ARG_THREADS)")
+    assert rows["--flash-attn"].syntax == "-fa, --flash-attn [on|off|auto]"
+    assert rows["--flash-attn"].default == "auto"
+    assert rows["--flash-attn"].help.startswith("set Flash Attention")
+    assert rows["--kv-offload"].aliases == ("-kvo", "-nkvo", "--no-kv-offload")
+    assert rows["--kv-offload"].default == "enabled"
+    assert rows["--tensor-split"].syntax == "-ts, --tensor-split N0,N1,N2,..."
+    assert rows["--cpu-mask"].default is None
+    assert capabilities.help_parsed
+
+
+def test_runtime_option_payload_round_trip_and_fingerprint() -> None:
+    from llamawebui.domain.runtime_capabilities import RuntimeOption, flags_fingerprint
+
+    capabilities = parse_help_output(LLAMA_HELP)
+    restored = tuple(
+        RuntimeOption.from_payload(option.to_payload()) for option in capabilities.details
+    )
+    reworded = parse_help_output(LLAMA_HELP.replace("print usage and exit", "show usage"))
+
+    assert restored == capabilities.details
+    assert RuntimeOption.from_payload({"aliases": "bad", "default": 3}) == RuntimeOption(
+        "", (), "", ""
+    )
+    assert capabilities.flags_sha256 == reworded.flags_sha256
+    assert capabilities.flags_sha256 != flags_fingerprint(frozenset({"other"}), ())
+    assert not parse_help_output("").help_parsed

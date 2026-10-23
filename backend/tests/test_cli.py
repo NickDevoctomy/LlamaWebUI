@@ -97,3 +97,11 @@ def test_serve_command_uses_environment_settings(monkeypatch: pytest.MonkeyPatch
     assert captured["port"] == 9124
     assert captured["app"] is not None
     assert str(captured["lock_path"]).endswith("llamawebui.lock")
+
+def test_hf_transfer_command_runs_one_transfer_for_packaged_builds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli.huggingface_transfer_process, "main", lambda: 7)
+    monkeypatch.setattr("sys.argv", ["llamawebui", "hf-transfer"])
+
+    assert cli.main() == 7

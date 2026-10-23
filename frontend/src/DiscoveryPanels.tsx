@@ -16,10 +16,12 @@ function formatCount(value: number) {
   return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 }
 
-export function DiscoverPanel({ jobs, library, initialRepoId, onQueued }: {
+export function DiscoverPanel({ jobs, library, initialRepoId, initialQuery, onQueued }: {
   jobs: DownloadJob[]
   library: LibraryModel[]
   initialRepoId?: string
+  /** Search text to run on arrival, used when no repository is known. */
+  initialQuery?: string
   onQueued: () => void
 }) {
   const queryClient = useQueryClient()
@@ -41,6 +43,11 @@ export function DiscoverPanel({ jobs, library, initialRepoId, onQueued }: {
       tags: [],
     })
   }, [initialRepoId])
+  useEffect(() => {
+    if (!initialQuery || initialRepoId) return
+    setInput(initialQuery)
+    setQuery(initialQuery)
+  }, [initialQuery, initialRepoId])
   const search = useQuery({
     queryKey: ['huggingface-search', query, sort],
     queryFn: () => api.searchModels(query, sort),
@@ -150,7 +157,7 @@ export function DownloadsPanel({ jobs, library, onCreateProfile }: {
     mutationFn: api.clearTerminalDownloads,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['downloads'] }),
   })
-  const terminalCount = jobs.filter((job) => ['completed', 'cancelled'].includes(job.state)).length
+  const terminalCount = jobs.filter((job) => ['completed', 'cancelled', 'failed'].includes(job.state)).length
 
   return (
     <section className="data-panel">

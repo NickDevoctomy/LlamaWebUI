@@ -13,6 +13,9 @@ export interface ServerStatus {
   endpoint: string
   logs: string[]
   timing: Record<string, number | string | null>
+  memory?: ModelMemory[]
+  /** Tokens held in each model slot's context. */
+  context?: ModelContext[]
   system: {
     cpu_percent: number
     ram_used_bytes: number
@@ -27,6 +30,27 @@ export interface ServerStatus {
     gpu_supported: boolean
   }
   arguments: string[]
+}
+
+/** Memory a model process holds as measured by the OS; a draft shares its main model's process. */
+export interface ModelMemory {
+  model: string
+  pid: number
+  /** Dedicated GPU memory; null when the platform does not report it per process. */
+  vram_bytes: number | null
+  /** System memory shared with the GPU (pinned host buffers); Windows only. */
+  gpu_shared_bytes: number | null
+  /** Private resident memory, which includes any shared GPU memory. */
+  ram_bytes: number
+  /** Resident pages of memory-mapped model files, read from disk. */
+  mapped_bytes: number
+}
+
+export interface ModelContext {
+  model: string | null
+  /** Set when slots share one unified KV cache of this many tokens. */
+  shared_capacity: number | null
+  slots: { id: number; used: number; total: number | null }[]
 }
 
 export interface Runtime {
@@ -55,7 +79,18 @@ export interface Profile {
   model_path: string
   configuration: Record<string, unknown>
   enabled: boolean
-  validation_state: 'available' | 'unverified' | 'broken'
+  /** Nothing else may be loaded in the router beside this profile's model. */
+  exclusive?: boolean
+  description?: string | null
+  version?: number
+  /** Set when the profile was added from a bundled recommendation. */
+  recommendation?: ProfileRecommendation | null
+  /** Latest completed result per benchmark id; kept when the runs are deleted. */
+  benchmark_results?: Record<string, BenchmarkResult>
+  validation_state: 'available' | 'unverified' | 'pending' | 'broken'
+  /** Switches on by itself when its model download completes. */
+  auto_enable?: boolean
+  download?: { id: string; state: string; completed_bytes: number; total_bytes: number } | null
   source_download: {
     id: string
     repo_id: string
@@ -66,10 +101,162 @@ export interface Profile {
   } | null
 }
 
+export interface HostHardware {
+  cpu: string | null
+  memory_bytes: number
+  gpus: string[]
+  discrete_vram_bytes: number
+}
+
+export interface Benchmark {
+  id: string
+  title: string
+  prompt: string
+}
+
+export interface SystemPrompt {
+  id: string
+  title: string
+  text: string
+}
+
+export interface BenchmarkCatalog {
+  benchmarks: Benchmark[]
+  /** Bundled system prompts a run can be sent with, ahead of the benchmark prompt. */
+  system_prompts: SystemPrompt[]
+  default_system_prompt_id: string | null
+  /** 'off', or effort levels the chat template is asked for. */
+  reasoning_levels: string[]
+  default_max_tokens: number
+  active_run_id: string | null
+}
+
+/** Timings in seconds and speeds in tokens per second; any may be missing for a run that stopped early. */
+export interface BenchmarkStats {
+  server_start_seconds?: number
+  load_seconds?: number
+  first_token_seconds?: number
+  prompt_tokens?: number
+  prompt_seconds?: number
+  prompt_tokens_per_second?: number
+  generated_tokens?: number
+  decode_seconds?: number
+  /** Average over the whole generation, as llama.cpp reports it. */
+  decode_tokens_per_second?: number
+  /** Fastest 3-second window, comparable to the dashboard's peak. */
+  decode_peak_tokens_per_second?: number
+  /** Speed over the last 3 seconds of generation. */
+  decode_final_tokens_per_second?: number
+  generation_seconds?: number
+  total_seconds?: number
+  finish_reason?: string
+  /** Requests sent: one, plus one more after each round of tool calls. */
+  rounds?: number
+  tool_calls?: number
+  files_written?: number
+}
+
+/** The latest completed result of a benchmark, written onto the profile. */
+export interface BenchmarkResult extends BenchmarkStats {
+  run_id: string
+  benchmark_title: string
+  profile_version: number
+  completed_at: string
+  reasoning_level?: string | null
+}
+
+export type BenchmarkState = 'running' | 'completed' | 'failed' | 'cancelled'
+export type BenchmarkStage = 'starting' | 'loading' | 'prefill' | 'decoding' | 'stopping' | 'done'
+
+export interface BenchmarkRun {
+  id: string
+  profile_id: string
+  profile_alias: string
+  profile_version: number
+  benchmark_id: string
+  benchmark_title: string
+  max_tokens: number
+  /** Whether the model could read and write files in the run's own folder. */
+  tools: boolean
+  system_prompt_id: string | null
+  /** 'off', an effort level, or null for the model's own default. */
+  reasoning_level: string | null
+  state: BenchmarkState
+  stage: BenchmarkStage
+  error: string | null
+  stats: BenchmarkStats
+  started_at: string | null
+  finished_at: string | null
+  /** Current speeds while the run is in progress. */
+  live?: {
+    prefill?: { tokens: number | null; rate: number | null } | null
+    decode?: { tokens: number | null; rate: number | null } | null
+    /** Seconds since the prompt was sent, on the same clock as the run's timeline. */
+    elapsed?: number | null
+  }
+}
+
+/**
+ * One step of generation, in seconds from when the prompt was sent; end is null while it runs.
+ * Thinking and answer entries point into the run's reasoning and output text by position.
+ */
+export type TimelineEntry = { round: number; start: number; end: number | null } & (
+  | { kind: 'reading'; prompt_tokens?: number }
+  | { kind: 'thinking' | 'answer'; tokens?: number; from: number; to?: number }
+  | { kind: 'tool_call'; tokens?: number; names?: string[] }
+  | { kind: 'tool'; name: string; call: number; path?: string | null; ok?: boolean }
+)
+
+export interface BenchmarkRunDetail extends BenchmarkRun {
+  /** What generation spent its time on, step by step. */
+  timeline: TimelineEntry[]
+  prompt: string
+  /** The system prompt's text as it was sent, or null for none. */
+  system_prompt: string | null
+  /** Speed over the recent window (span seconds), sampled about every half second. */
+  samples: { t: number; phase: 'prefill' | 'decode'; tokens: number | null; rate: number; span?: number }[]
+  output: string
+  reasoning: string
+  /** Each file tool call, in order; results are cut short. */
+  tool_calls: { round: number; name: string; path: string | null; ok: boolean; result: string }[]
+  /** Files the model wrote into the run's folder. */
+  artifacts: { path: string; size: number }[]
+}
+
+/** How a profile added from a recommendation compares with the bundled version. */
+export interface ProfileRecommendation {
+  id: string
+  title: string | null
+  latest_version: number | null
+  /** Its settings changed since it was added, so it cannot be upgraded. */
+  modified: boolean
+  upgradable: boolean
+}
+
+export interface Recommendation {
+  id: string
+  version: number
+  title: string
+  summary: string
+  model: { repo_id: string; quantization: string; revision: string | null }
+  tested_on: { label: string; memory_gb: number; unified_memory: boolean; backend: string; notes: string | null }
+  /** memory_gb is system memory plus any discrete VRAM; vram_gb, when set, is the GPU share. */
+  requirements: { memory_gb: number; vram_gb?: number | null; backends: string[] }
+  profile: { alias: string; description?: string | null; exclusive?: boolean; arguments: StoredArgument[] }
+  assessment: { fit: 'fits' | 'tight' | 'insufficient'; hardware_match: boolean; available_memory_gb: number }
+  compatible_runtime_ids: string[]
+  profile_id: string | null
+}
+
+export interface RecommendationList {
+  host: HostHardware
+  recommendations: Recommendation[]
+}
+
 export interface RouterModel {
   id: string
   path: string | null
-  status: { value?: string }
+  status: { value?: string; failed?: boolean; exit_code?: number }
   metadata: Record<string, unknown>
 }
 
@@ -199,12 +386,149 @@ export interface RuntimeRelease {
   groups: { key: string; primary: string; companions: string[] }[]
 }
 
+export type ArgumentValueType = 'boolean' | 'integer' | 'number' | 'string' | 'path' | 'enum' | 'list' | 'json'
+export type ArgumentControl = 'editable' | 'managed' | 'informational' | 'removed'
+export type EffectDirection = 'increase' | 'decrease' | 'tradeoff' | 'neutral'
+export type RuntimeArgumentStatus = 'advertised' | 'alias' | 'not-advertised' | 'unknown'
+export type RawOrigin = 'runtime' | 'custom' | 'catalog-mismatch' | 'deprecated'
+
+export interface ArgumentValueSchema {
+  type: ArgumentValueType
+  default?: string | number | boolean
+  minimum?: number
+  maximum?: number
+  unit?: string
+  options: { value: string; label?: string }[]
+  separator?: string
+  repeat: boolean
+  itemType?: 'string' | 'integer' | 'number' | 'path'
+  pathKind?: 'file' | 'directory' | 'any'
+  /** The file must be a GGUF model, so the editor can offer downloaded models. */
+  fileType?: 'gguf'
+  pattern?: string
+  specialValues: string[]
+  negation?: string
+  negationAliases: string[]
+  arity: number
+}
+
+export interface ArgumentEffect {
+  text: string
+  direction: EffectDirection
+  tags: string[]
+}
+
+export interface ArgumentDefinition {
+  id: string
+  flag: string
+  aliases: string[]
+  label: string
+  category: string
+  isAdvanced: boolean
+  commonRank?: number
+  control: ArgumentControl
+  controlReason?: string
+  value: ArgumentValueSchema
+  help: { summary: string; details?: string; syntax?: string; examples: string[]; notes: string[]; effects: ArgumentEffect[] }
+  effectTags: string[]
+  safety?: { level: 'info' | 'warning' | 'danger'; warning: string; requiresConfirmation: boolean; sensitive: boolean }
+  deprecated?: { message: string; replacement?: string }
+  conflicts: string[]
+  requires: string[]
+  runtime?: { status: RuntimeArgumentStatus; advertisedAs: string | null; syntax: string | null; help: string | null; default: string | null }
+}
+
+export interface RuntimeOptionInfo {
+  flag: string
+  aliases: string[]
+  syntax: string
+  help: string
+  default: string | null
+}
+
+export interface ArgumentCategory {
+  id: string
+  label: string
+  sortOrder: number
+  description?: string
+}
+
+export interface CatalogIssue {
+  level: 'info' | 'warning' | 'error'
+  code: string
+  message: string
+}
+
+export interface ArgumentCatalog {
+  catalogId: string
+  catalogVersion: string
+  source: { url: string; retrieved: string; reference?: string }
+  categories: ArgumentCategory[]
+  effectTags: Record<string, { label: string; color: string; description?: string }>
+  arguments: ArgumentDefinition[]
+}
+
+export interface EffectiveArgumentCatalog extends ArgumentCatalog {
+  runtime: { id?: string; name?: string; build?: string | null; helpParsed: boolean; flagsSha256?: string | null; counts: Record<RuntimeArgumentStatus, number> }
+  uncatalogued: RuntimeOptionInfo[]
+  issues: CatalogIssue[]
+}
+
+export type StoredArgumentValue = string | number | boolean | (string | number)[]
+export type StoredArgument =
+  | { id: string; value: StoredArgumentValue }
+  | { flag: string; value: string | true; origin: RawOrigin }
+
+export interface CommandModelLocation {
+  /** found: the pasted path exists; relocated: matched to a local copy; missing: not on disk. */
+  status: 'found' | 'relocated' | 'missing'
+  requested_path: string | null
+  path: string | null
+  download_id: string | null
+  repo_id: string | null
+  search: string
+}
+
+export interface ParsedProfileCommand {
+  model: CommandModelLocation
+  arguments: StoredArgument[]
+  ignored_arguments: string[]
+}
+
+export interface ProfileIssue {
+  level: 'error' | 'warning'
+  code: string
+  message: string
+  argument: string | null
+}
+
+export interface ProfileValidation {
+  valid: boolean
+  errors: string[]
+  warnings: string[]
+  issues: ProfileIssue[]
+}
+
+export interface ProfilePreview extends ProfileValidation {
+  arguments: string[]
+  command: string
+  preset: string
+  router_arguments: string[]
+}
+
 export interface ProfileCreate {
   alias: string
   runtime_id: string
   model_path: string
   enabled: boolean
-  no_reasoning_preserve: boolean
+  exclusive?: boolean
+  description?: string | null
+  /** Typed by hand; left out, the server numbers the profile itself. */
+  version?: number
+  arguments?: StoredArgument[]
+  acknowledged?: string[]
+  /** Legacy flat fields, used only by the fallback editor when the catalog cannot load. */
+  no_reasoning_preserve?: boolean
   n_gpu_layers?: number
   ctx_size?: number
   flash_attn?: string
@@ -213,6 +537,17 @@ export interface ProfileCreate {
   threads?: number
   batch_size?: number
   ubatch_size?: number
+}
+
+function errorDetail(detail: unknown): string {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => typeof item === 'string' ? item : typeof item === 'object' && item && 'msg' in item ? String((item as { msg: unknown }).msg) : '')
+      .filter(Boolean)
+      .join('; ')
+  }
+  return ''
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -229,8 +564,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null
-    const detail = typeof payload?.detail === 'string' ? payload.detail : response.statusText
-    const error = new Error(detail || 'Request failed') as Error & { status?: number }
+    const error = new Error(errorDetail(payload?.detail) || response.statusText || 'Request failed') as Error & { status?: number }
     error.status = response.status
     throw error
   }
@@ -270,6 +604,12 @@ export const api = {
   runtimes: () => request<Runtime[]>('/api/runtimes'),
   reprobeRuntime: (runtimeId: string) => request<Runtime>(`/api/runtimes/${runtimeId}/probe`, { method: 'POST' }),
   profiles: () => request<Profile[]>('/api/profiles'),
+  recommendations: () => request<RecommendationList>('/api/profiles/recommendations'),
+  applyRecommendation: (id: string, runtimeId: string) =>
+    request<{ profile: Profile; download: DownloadJob; ready: boolean }>(`/api/profiles/recommendations/${id}/apply`, {
+      method: 'POST',
+      body: JSON.stringify({ runtime_id: runtimeId }),
+    }),
   tokens: () => request<AccessToken[]>('/api/tokens'),
   downloads: () => request<DownloadJob[]>('/api/downloads'),
   library: () => request<LibraryModel[]>('/api/library'),
@@ -326,9 +666,29 @@ export const api = {
   updateProfile: (profileId: string, profile: ProfileCreate) =>
     request<Profile>(`/api/profiles/${profileId}`, { method: 'PUT', body: JSON.stringify(profile) }),
   validateProfile: (profileId: string) =>
-    request<{ valid: boolean; errors: string[]; preset: string }>(`/api/profiles/${profileId}/validate`, { method: 'POST' }),
+    request<ProfileValidation & { preset: string; arguments: string[] }>(`/api/profiles/${profileId}/validate`, { method: 'POST' }),
+  previewProfile: (profile: ProfileCreate) =>
+    request<ProfilePreview>('/api/profiles/preview', { method: 'POST', body: JSON.stringify(profile) }),
+  argumentCatalog: () => request<ArgumentCatalog>('/api/argument-catalog'),
+  runtimeArgumentCatalog: (runtimeId: string) =>
+    request<EffectiveArgumentCatalog>(`/api/runtimes/${encodeURIComponent(runtimeId)}/argument-catalog`),
   resetProfile: (profileId: string) =>
     request<Profile>(`/api/profiles/${profileId}/reset`, { method: 'POST' }),
+  benchmarks: () => request<BenchmarkCatalog>('/api/benchmarks'),
+  benchmarkRuns: () => request<BenchmarkRun[]>('/api/benchmarks/runs'),
+  benchmarkRun: (runId: string) => request<BenchmarkRunDetail>(`/api/benchmarks/runs/${runId}`),
+  benchmarkArtifact: (runId: string, path: string) =>
+    request<{ path: string; content: string }>(`/api/benchmarks/runs/${runId}/artifacts/${path.split('/').map(encodeURIComponent).join('/')}`),
+  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number; tools: boolean; system_prompt_id: string | null; reasoning_level: string | null }) =>
+    request<BenchmarkRunDetail>('/api/benchmarks/runs', { method: 'POST', body: JSON.stringify(body) }),
+  cancelBenchmark: (runId: string) =>
+    request<BenchmarkRun>(`/api/benchmarks/runs/${runId}/cancel`, { method: 'POST' }),
+  deleteBenchmarkRun: (runId: string) =>
+    request<void>(`/api/benchmarks/runs/${runId}`, { method: 'DELETE' }),
+  upgradeProfile: (profileId: string) =>
+    request<Profile>(`/api/profiles/${profileId}/upgrade`, { method: 'POST' }),
+  setProfileEnabled: (profileId: string, enabled: boolean) =>
+    request<Profile>(`/api/profiles/${profileId}/enabled`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
   cloneProfile: (profileId: string, alias: string) =>
     request<Profile>(`/api/profiles/${profileId}/clone`, { method: 'POST', body: JSON.stringify({ alias }) }),
   exportProfile: (profileId: string) => fetch(`/api/profiles/${profileId}/export`).then((response) => {
@@ -348,10 +708,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ document, alias: alias || null }),
     }),
-  importProfileCommand: (command: string, alias: string, runtimeId: string) =>
-    request<Profile>('/api/profiles/import-command', {
+  parseProfileCommand: (command: string, runtimeId: string) =>
+    request<ParsedProfileCommand>('/api/profiles/parse-command', {
       method: 'POST',
-      body: JSON.stringify({ command, alias, runtime_id: runtimeId, enabled: false }),
+      body: JSON.stringify({ command, runtime_id: runtimeId }),
     }),
   deleteProfile: (profileId: string) =>
     request<void>(`/api/profiles/${profileId}`, { method: 'DELETE' }),

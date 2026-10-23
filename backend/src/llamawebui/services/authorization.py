@@ -67,6 +67,9 @@ def privilege_for_request(path: str, method: str) -> str | None:
         return None
     if path in {"/api/server/start", "/api/server/stop"}:
         return "server.lifecycle.write"
+    if path.startswith("/api/benchmarks"):
+        # Running a benchmark starts and stops the router.
+        return "server.read" if method in {"GET", "HEAD", "OPTIONS"} else "server.lifecycle.write"
     if path.startswith("/api/auth/"):
         resource = "auth"
     elif path.startswith("/api/server/"):
@@ -75,7 +78,7 @@ def privilege_for_request(path: str, method: str) -> str | None:
         resource = "tokens"
     elif path.startswith("/api/runtimes"):
         resource = "runtimes"
-    elif path.startswith("/api/profiles"):
+    elif path.startswith(("/api/profiles", "/api/argument-catalog")):
         resource = "profiles"
     elif path.startswith("/api/huggingface/"):
         resource = "huggingface"

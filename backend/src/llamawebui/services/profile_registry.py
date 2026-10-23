@@ -1,16 +1,34 @@
 """Persistence operations for validated model profiles."""
 
-from dataclasses import asdict
+import logging
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import Engine, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
-from llamawebui.domain.model_profile import ModelProfile, render_preset
-from llamawebui.domain.runtime_capabilities import RuntimeCapabilities
+from llamawebui.domain.argument_catalog import ArgumentCatalog
+from llamawebui.domain.model_profile import (
+    ModelProfile,
+    ProfileValidationError,
+    render_preset,
+    render_preset_unchecked,
+    validate_profile,
+)
+from llamawebui.domain.profile_arguments import (
+    LEGACY_FIELDS,
+    ProfileConfiguration,
+    is_structured,
+    migrate_legacy_configuration,
+    normalize_configuration,
+)
 from llamawebui.models import ModelProfileRecord, RuntimeRecord
-from llamawebui.services.runtime_registry import RuntimeNotFoundError
+from llamawebui.services.runtime_registry import RuntimeNotFoundError, runtime_capabilities
+
+LOGGER = logging.getLogger("llamawebui.profiles")
+_MODEL_FILE_CODES = frozenset({"model-missing", "model-shards"})
 
 
 class ProfileAliasExistsError(ValueError):
@@ -21,9 +39,72 @@ class ProfileNotFoundError(LookupError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class LegacyMigrationReport:
+    migrated: int
+    preset_mismatches: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RecommendationLink:
+    """The recommendation a profile was added from, at the version it was added."""
+
+    recommendation_id: str
+    version: int
+    baseline: list[dict[str, object]]
+
+
+def stored_configuration(
+    profile: ModelProfile, catalog: ArgumentCatalog, *, model_path: str | None = None
+) -> dict[str, object]:
+    """The JSON document persisted for a profile in the structured (v2) format."""
+    configuration = profile.configuration.to_payload(catalog)
+    configuration["alias"] = profile.alias
+    configuration["model_path"] = (
+        model_path if model_path is not None else str(profile.model_path.resolve())
+    )
+    return configuration
+
+
+def profile_from_record(record: ModelProfileRecord, catalog: ArgumentCatalog) -> ModelProfile:
+    """Build the domain profile for a stored record, reading legacy rows transparently."""
+    configuration = normalize_configuration(record.configuration, catalog)
+    return ModelProfile(
+        alias=record.alias,
+        model_path=Path(record.model_path),
+        arguments=configuration.arguments,
+        acknowledged=configuration.acknowledged,
+    )
+
+
+def configuration_payload(
+    record: ModelProfileRecord, catalog: ArgumentCatalog
+) -> dict[str, object]:
+    """The structured configuration for API responses, converting legacy rows on the fly."""
+    if is_structured(record.configuration):
+        return dict(record.configuration)
+    configuration = normalize_configuration(record.configuration, catalog)
+    payload = {
+        key: value for key, value in record.configuration.items() if key not in LEGACY_FIELDS
+    }
+    payload.update(configuration.to_payload(catalog))
+    return payload
+
+
+def _version_fields(version: int, link: RecommendationLink | None) -> dict[str, object]:
+    if link is None:
+        return {"version": version}
+    return {
+        "version": link.version,
+        "recommendation_id": link.recommendation_id,
+        "recommendation_baseline": link.baseline,
+    }
+
+
 class ProfileRegistry:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, catalog: ArgumentCatalog) -> None:
         self._sessions = sessionmaker(engine, expire_on_commit=False)
+        self._catalog = catalog
 
     def list(self) -> list[ModelProfileRecord]:
         with self._sessions() as session:
@@ -31,6 +112,13 @@ class ProfileRegistry:
                 ModelProfileRecord.alias, ModelProfileRecord.id
             )
             return list(session.scalars(statement))
+
+    def get(self, profile_id: str) -> ModelProfileRecord:
+        with self._sessions() as session:
+            record = session.get(ModelProfileRecord, profile_id)
+            if record is None:
+                raise ProfileNotFoundError(f"model profile not found: {profile_id}")
+            return record
 
     def list_enabled(self, runtime_id: str) -> tuple[ModelProfileRecord, ...]:
         with self._sessions() as session:
@@ -45,7 +133,15 @@ class ProfileRegistry:
             return tuple(session.scalars(statement))
 
     def create(
-        self, *, profile: ModelProfile, runtime_id: str, enabled: bool = True
+        self,
+        *,
+        profile: ModelProfile,
+        runtime_id: str,
+        enabled: bool = True,
+        exclusive: bool = False,
+        description: str | None = None,
+        version: int = 1,
+        link: RecommendationLink | None = None,
     ) -> ModelProfileRecord:
         with self._sessions() as session:
             runtime = session.get(RuntimeRecord, runtime_id)
@@ -56,19 +152,18 @@ class ProfileRegistry:
             ) is not None:
                 raise ProfileAliasExistsError(f"model alias is already registered: {profile.alias}")
 
-            capabilities = RuntimeCapabilities(options=frozenset(runtime.options), raw_help="")
-            preset = render_preset(profile, capabilities)
-            configuration = asdict(profile)
-            configuration["model_path"] = str(profile.model_path.resolve())
-            configuration["advanced"] = [asdict(option) for option in profile.advanced]
+            preset = render_preset(profile, self._catalog, runtime_capabilities(runtime))
             record = ModelProfileRecord(
                 id=str(uuid4()),
                 alias=profile.alias,
                 runtime_id=runtime_id,
                 model_path=str(profile.model_path.resolve()),
-                configuration=configuration,
+                configuration=stored_configuration(profile, self._catalog),
                 preset=preset,
                 enabled=enabled,
+                exclusive=exclusive,
+                description=description,
+                **_version_fields(version, link),
             )
             session.add(record)
             session.commit()
@@ -79,7 +174,10 @@ class ProfileRegistry:
         *,
         alias: str,
         runtime_id: str,
-        configuration: dict[str, object],
+        configuration: ProfileConfiguration,
+        exclusive: bool = False,
+        description: str | None = None,
+        version: int = 1,
     ) -> ModelProfileRecord:
         """Persist an imported profile whose model path needs local repair."""
         with self._sessions() as session:
@@ -89,22 +187,165 @@ class ProfileRegistry:
                 select(ModelProfileRecord.id).where(ModelProfileRecord.alias == alias)
             ) is not None:
                 raise ProfileAliasExistsError(f"model alias is already registered: {alias}")
-            stored_configuration = dict(configuration)
-            stored_configuration["alias"] = alias
-            stored_configuration["model_path"] = ""
-            stored_configuration["enabled"] = False
+            profile = ModelProfile(
+                alias=alias,
+                model_path=Path(),
+                arguments=configuration.arguments,
+                acknowledged=configuration.acknowledged,
+            )
+            stored = stored_configuration(profile, self._catalog, model_path="")
+            stored["enabled"] = False
             record = ModelProfileRecord(
                 id=str(uuid4()),
                 alias=alias,
                 runtime_id=runtime_id,
                 model_path="",
-                configuration=stored_configuration,
+                configuration=stored,
                 preset=f"version = 1\n\n[{alias}]\n",
                 enabled=False,
+                exclusive=exclusive,
+                description=description,
+                version=version,
             )
             session.add(record)
             session.commit()
             return record
+
+    def create_pending(
+        self,
+        *,
+        profile: ModelProfile,
+        runtime_id: str,
+        download_id: str,
+        exclusive: bool = False,
+        description: str | None = None,
+        link: RecommendationLink | None = None,
+    ) -> ModelProfileRecord:
+        """Persist a disabled profile whose model is still downloading.
+
+        Arguments are validated now; the model files are checked again when the
+        download completes and :meth:`enable_ready` switches the profile on.
+        """
+        with self._sessions() as session:
+            self._check_pending(session, profile, runtime_id)
+            record = ModelProfileRecord(
+                id=str(uuid4()),
+                alias=profile.alias,
+                runtime_id=runtime_id,
+                model_path=str(profile.model_path.resolve()),
+                configuration=stored_configuration(profile, self._catalog),
+                preset=render_preset_unchecked(profile, self._catalog),
+                enabled=False,
+                enable_on_download=download_id,
+                exclusive=exclusive,
+                description=description,
+                **_version_fields(1, link),
+            )
+            session.add(record)
+            session.commit()
+            return record
+
+    def check_pending(self, *, profile: ModelProfile, runtime_id: str) -> None:
+        """Raise exactly as :meth:`create_pending` would, without saving anything."""
+        with self._sessions() as session:
+            self._check_pending(session, profile, runtime_id)
+
+    def _check_pending(self, session: Session, profile: ModelProfile, runtime_id: str) -> None:
+        runtime = session.get(RuntimeRecord, runtime_id)
+        if runtime is None:
+            raise RuntimeNotFoundError(f"runtime not found: {runtime_id}")
+        if session.scalar(
+            select(ModelProfileRecord.id).where(ModelProfileRecord.alias == profile.alias)
+        ) is not None:
+            raise ProfileAliasExistsError(f"model alias is already registered: {profile.alias}")
+        issues = validate_profile(profile, self._catalog, runtime_capabilities(runtime))
+        errors = tuple(
+            issue.message
+            for issue in issues
+            if issue.level == "error" and issue.code not in _MODEL_FILE_CODES
+        )
+        if errors:
+            raise ProfileValidationError(errors)
+
+    def refresh_presets(self) -> tuple[str, ...]:
+        """Rebuild saved presets that no longer match the current catalog.
+
+        The router launches the stored preset text, so without this a catalog correction
+        (such as a flag llama-server spells differently) only applied after a manual save.
+        Presets that cannot be rebuilt, for example while model files are missing, are
+        left untouched. Returns the aliases whose presets changed.
+        """
+        refreshed: list[str] = []
+        with self._sessions() as session:
+            for record in session.scalars(select(ModelProfileRecord)):
+                # Legacy rows keep their launched preset until edited (see the migration).
+                if not record.model_path or "legacy_configuration" in record.configuration:
+                    continue
+                runtime = session.get(RuntimeRecord, record.runtime_id)
+                if runtime is None:
+                    continue
+                try:
+                    preset = render_preset(
+                        profile_from_record(record, self._catalog),
+                        self._catalog,
+                        runtime_capabilities(runtime),
+                    )
+                except (ProfileValidationError, ValueError):
+                    continue
+                if preset != record.preset:
+                    record.preset = preset
+                    refreshed.append(record.alias)
+            session.commit()
+        for alias in refreshed:
+            LOGGER.info(
+                "profile_preset_refreshed",
+                extra={"component": "profiles", "event": "preset_refreshed", "alias": alias},
+            )
+        return tuple(refreshed)
+
+    def awaiting_downloads(self) -> tuple[str, ...]:
+        """Download ids that still have a profile waiting to be enabled."""
+        with self._sessions() as session:
+            statement = select(ModelProfileRecord.enable_on_download).where(
+                ModelProfileRecord.enable_on_download.is_not(None)
+            )
+            return tuple(sorted({value for value in session.scalars(statement) if value}))
+
+    def enable_ready(self, download_id: str) -> tuple[ModelProfileRecord, ...]:
+        """Enable profiles waiting on a completed download once their files validate."""
+        enabled: list[ModelProfileRecord] = []
+        with self._sessions() as session:
+            records = session.scalars(
+                select(ModelProfileRecord).where(
+                    ModelProfileRecord.enable_on_download == download_id
+                )
+            )
+            for record in records:
+                record.enable_on_download = None
+                runtime = session.get(RuntimeRecord, record.runtime_id)
+                if runtime is None:
+                    continue
+                try:
+                    record.preset = render_preset(
+                        profile_from_record(record, self._catalog),
+                        self._catalog,
+                        runtime_capabilities(runtime),
+                    )
+                except ProfileValidationError as error:
+                    LOGGER.warning(
+                        "profile_auto_enable_failed",
+                        extra={
+                            "component": "profiles",
+                            "event": "auto_enable_failed",
+                            "alias": record.alias,
+                            "error": str(error),
+                        },
+                    )
+                    continue
+                record.enabled = True
+                enabled.append(record)
+            session.commit()
+        return tuple(enabled)
 
     def remove(self, profile_id: str) -> None:
         with self._sessions() as session:
@@ -115,8 +356,18 @@ class ProfileRegistry:
             session.commit()
 
     def update(
-        self, profile_id: str, *, profile: ModelProfile, runtime_id: str, enabled: bool
+        self,
+        profile_id: str,
+        *,
+        profile: ModelProfile,
+        runtime_id: str,
+        enabled: bool,
+        exclusive: bool = False,
+        description: str | None = None,
+        version: int | None = None,
+        link: RecommendationLink | None = None,
     ) -> ModelProfileRecord:
+        """Save new settings. ``link`` re-bases a recommended profile after an upgrade."""
         with self._sessions() as session:
             record = session.get(ModelProfileRecord, profile_id)
             if record is None:
@@ -132,15 +383,34 @@ class ProfileRegistry:
             )
             if duplicate is not None:
                 raise ProfileAliasExistsError(f"model alias is already registered: {profile.alias}")
-            capabilities = RuntimeCapabilities(options=frozenset(runtime.options), raw_help="")
+            record.preset = render_preset(profile, self._catalog, runtime_capabilities(runtime))
             record.alias = profile.alias
             record.runtime_id = runtime_id
             record.model_path = str(profile.model_path.resolve())
-            record.configuration = asdict(profile)
-            record.configuration["model_path"] = record.model_path
-            record.configuration["advanced"] = [asdict(option) for option in profile.advanced]
-            record.preset = render_preset(profile, capabilities)
+            record.configuration = stored_configuration(profile, self._catalog)
             record.enabled = enabled
+            record.exclusive = exclusive
+            record.description = description
+            if version is not None:
+                record.version = version
+            if link is not None:
+                for field, value in _version_fields(link.version, link).items():
+                    setattr(record, field, value)
+            record.enable_on_download = None
+            session.commit()
+            return record
+
+    def set_enabled(self, profile_id: str, enabled: bool) -> ModelProfileRecord:
+        """Switch a profile on or off; it is published the next time the router starts."""
+        with self._sessions() as session:
+            record = session.get(ModelProfileRecord, profile_id)
+            if record is None:
+                raise ProfileNotFoundError(f"model profile not found: {profile_id}")
+            if enabled and not (record.model_path and Path(record.model_path).is_file()):
+                raise ValueError("the profile's model file is missing")
+            record.enabled = enabled
+            # An explicit choice replaces switching on when a download completes.
+            record.enable_on_download = None
             session.commit()
             return record
 
@@ -152,21 +422,13 @@ class ProfileRegistry:
             runtime = session.get(RuntimeRecord, record.runtime_id)
             if runtime is None:
                 raise RuntimeNotFoundError(f"runtime not found: {record.runtime_id}")
-            configuration = dict(record.configuration)
-            defaults = {
-                key: configuration[key]
-                for key in ("alias", "model_path")
-                if key in configuration
-            }
-            reset_profile = ModelProfile(
-                alias=record.alias,
-                model_path=Path(record.model_path),
+            reset_profile = ModelProfile(alias=record.alias, model_path=Path(record.model_path))
+            record.preset = render_preset(
+                reset_profile, self._catalog, runtime_capabilities(runtime)
             )
-            capabilities = RuntimeCapabilities(options=frozenset(runtime.options), raw_help="")
-            record.configuration = asdict(reset_profile) | defaults
-            record.configuration["model_path"] = record.model_path
-            record.configuration["advanced"] = []
-            record.preset = render_preset(reset_profile, capabilities)
+            record.configuration = stored_configuration(
+                reset_profile, self._catalog, model_path=record.model_path
+            )
             session.commit()
             return record
 
@@ -189,7 +451,58 @@ class ProfileRegistry:
                 configuration=dict(source.configuration),
                 preset=source.preset,
                 enabled=False,
+                exclusive=source.exclusive,
+                description=source.description,
+                version=source.version,
             )
             session.add(clone)
             session.commit()
             return clone
+
+    def link_recommendation(self, profile_id: str, link: RecommendationLink) -> None:
+        """Record that a profile matches a recommendation exactly, so it can be upgraded."""
+        with self._sessions() as session:
+            record = session.get(ModelProfileRecord, profile_id)
+            if record is None:
+                raise ProfileNotFoundError(f"model profile not found: {profile_id}")
+            for field, value in _version_fields(link.version, link).items():
+                setattr(record, field, value)
+            session.commit()
+
+    def migrate_legacy_configurations(self) -> LegacyMigrationReport:
+        """Rewrite legacy flat configurations in the structured format, keeping every key.
+
+        The stored preset, which is what the router launches, is never changed here. The
+        original document is retained under ``legacy_configuration`` until the next edit.
+        """
+        migrated = 0
+        mismatches: list[str] = []
+        with self._sessions() as session:
+            for record in session.scalars(select(ModelProfileRecord)):
+                original: Mapping[str, object] = record.configuration
+                if is_structured(original):
+                    continue
+                configuration = migrate_legacy_configuration(original, self._catalog)
+                stored = {key: value for key, value in original.items() if key not in LEGACY_FIELDS}
+                stored.update(configuration.to_payload(self._catalog))
+                stored["legacy_configuration"] = dict(original)
+                if record.model_path:
+                    rendered = render_preset_unchecked(
+                        ModelProfile(
+                            alias=record.alias,
+                            model_path=Path(record.model_path),
+                            arguments=configuration.arguments,
+                        ),
+                        self._catalog,
+                    )
+                    if rendered != record.preset:
+                        mismatches.append(record.alias)
+                record.configuration = stored
+                migrated += 1
+            session.commit()
+        for alias in mismatches:
+            LOGGER.warning(
+                "profile_migration_preset_mismatch",
+                extra={"component": "profiles", "event": "migration_mismatch", "alias": alias},
+            )
+        return LegacyMigrationReport(migrated=migrated, preset_mismatches=tuple(mismatches))

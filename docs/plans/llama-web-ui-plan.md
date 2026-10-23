@@ -124,7 +124,7 @@ Every registered runtime is probed with:
 
 Store the executable path, reported version/build/commit, backend asset, devices, raw help text hash, parsed option catalog, and probe result. Re-probe whenever the executable changes.
 
-The parsed option catalog drives the profile editor. Known options receive typed controls and help text. Newly introduced options remain usable through an advanced argument editor. Before launch, reject only options that the selected executable does not advertise; provide a clear compatibility error and preserve the profile.
+The parsed option catalog drives the profile editor. Known options receive typed controls and help text. Newly introduced options remain usable through an advanced argument editor. Options the selected executable does not advertise are reported as compatibility warnings and still passed through, because `--help` output can be incomplete; the profile is always preserved. See [`plans/active/dynamic-cli-argument-ui-plan.md`](active/dynamic-cli-argument-ui-plan.md) for the catalog-driven editor and the definite faults that do block launch.
 
 ### 4.3 Upgrade and rollback
 
@@ -216,6 +216,8 @@ A profile binds:
 
 Provide a Windows/POSIX command importer specifically to ease migration from scripts. It should tokenize without executing, recognize the selected runtime's aliases, populate typed fields, and retain unrecognized arguments in the advanced list. Export produces a readable command for debugging, but process launch always uses the structured argument vector.
 
+Implementation: the profile editor's "Paste llama-server command" box (also opened by Profiles → Import command) calls `POST /api/profiles/parse-command`, which saves nothing. It accepts multi-line commands with POSIX (`\`), cmd (`^`) or PowerShell (`` ` ``) continuations and a leading PowerShell `&`. The model reference (`--model`, or `--hf-repo`/`--hf-file`) is resolved against the local library: an existing path is used as-is, otherwise the primary-shard filename is matched against completed downloads and files under the model root, then the repository and quantization against downloads. When nothing matches, the editor warns and offers Discover, opened on a repository guessed from `--hf-repo` or from LM Studio / Hugging Face cache folder layouts, or searched by model name. `POST /api/profiles/import-command` uses the same resolution.
+
 ### 7.3 Generated llama.cpp preset
 
 Generate a versioned INI file from enabled profiles and start router mode with `--models-preset <generated-file>`. Write to a temporary file, parse/validate, then atomically replace the active preset.
@@ -243,6 +245,10 @@ batch-size = 1024
 ubatch-size = 1024
 ```
 
+```
+llama-server.exe -m C:\Users\nickp\.lmstudio\models\unsloth\Qwen3.8-Flash-Next-GGUF\Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --no-reasoning-preserve --n-gpu-layers 60 --ctx-size 262144 --flash-attn on --load-mode none --lazy-mode on --cache-ram 0 --fit off --override-tensor per_layer_token_embd=CPU --cache-type-k q4_0 --cache-type-v q4_0 --threads 8 --batch-size 1024 --ubatch-size 1024
+```
+
 Host, port, API-key file, model limit, and other router-owned settings belong to the server configuration, not individual model sections. The UI must explain this distinction.
 
 ### 7.4 Validation before start/load
@@ -253,6 +259,16 @@ Host, port, API-key file, model limit, and other router-owned settings belong to
 - Check port availability and warn about `0.0.0.0` without authentication.
 - Run a short-lived preset validation/startup probe where the runtime supports no-load validation; otherwise capture an immediate startup failure and retain full logs.
 - Display the exact sanitized argument vector and generated preset before applying advanced changes.
+
+### 7.5 Recommended profiles
+
+The application bundles profiles tuned on known hardware, one JSON file per recommendation in `backend/src/llamawebui/recommendations/` (format `llamawebui.recommendation.v1`). Each file names the model by repository and quantization (optionally a pinned revision; otherwise `main` is resolved and pinned when applied), describes the machine it was tested on (`tested_on`, with optional `cpu_pattern` and `gpu_pattern` regular expressions; a host matches only when every declared pattern matches and any `vram_gb` requirement is met, so a recommendation can target a GPU family and size rather than one model), states its `requirements` (`memory_gb` is system memory plus discrete VRAM, `vram_gb` optionally the GPU share and the runtime backends it was tested with; these are preferred, not enforced, so any usable runtime can be chosen with a note that it is untested), and carries the profile alias and catalog arguments. A malformed file, or two recommendations sharing an id or profile alias, stops startup, because it is a packaging bug. The UI lists recommendations that match the host first.
+
+- `GET /api/profiles/recommendations` returns the detected host (processor, memory, graphics adapters, discrete NVIDIA VRAM) and, per recommendation, a fit grade (`fits` at 92% of the required memory or more, `tight` from 75%, otherwise `insufficient`), whether the processor matches the tested machine, the usable runtimes on a tested backend (offered first in the UI), and the id of an existing profile with the same alias.
+- `POST /api/profiles/recommendations/{id}/apply` needs profile write and download write access. It validates the profile's arguments before queuing anything, selects the single complete group for the quantization (projector files excluded), reuses a queued, paused, downloading or completed download of that exact revision and group, and otherwise starts one. When the files are already valid the profile is created enabled; otherwise it is created disabled with `enable_on_download` set to the job id.
+- A profile whose matching download is queued, downloading or paused reports `validation_state: "pending"` with download progress, not `broken`. The router's availability check is unchanged, so a pending profile can never be launched.
+- When that download completes, the coordinator's completion hook re-validates the profile against its files, enables it and clears `enable_on_download`; failures leave it disabled and are logged. Startup repeats this for downloads that completed while the app was not running. Editing the profile clears the flag, so a manual choice is never overridden.
+- Unified-memory machines (Strix Halo, Apple Silicon) report graphics memory as system memory, so the fit check compares system memory plus discrete VRAM against the requirement. Recommendations may later be fetched from a remote location (for example an S3 bucket) using the same format.
 
 ## 8. Server Lifecycle and Monitoring
 

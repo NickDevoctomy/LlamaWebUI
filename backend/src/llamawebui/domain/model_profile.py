@@ -1,4 +1,4 @@
-"""Model profile validation and llama.cpp preset serialization."""
+"""Model profile validation, llama.cpp preset serialization, and command import/export."""
 
 from __future__ import annotations
 
@@ -11,6 +11,20 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from llamawebui.domain.argument_catalog import ArgumentCatalog, ArgumentDefinition
+from llamawebui.domain.profile_arguments import (
+    REDACTED,
+    ArgumentIssue,
+    ArgumentValue,
+    ArgumentValueError,
+    EmittedOption,
+    ProfileArgument,
+    ProfileConfiguration,
+    coerce_catalog_value,
+    emit_arguments,
+    errors_of,
+    validate_arguments,
+)
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities
 
 _ALIAS_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -18,6 +32,9 @@ _SHARD_PATTERN = re.compile(
     r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<count>\d{5})\.gguf$", re.IGNORECASE
 )
 _RESERVED_ALIASES = frozenset({"health", "models", "props", "slots"})
+_NEGATIVE_NUMBER = re.compile(r"^-\d+(?:\.\d+)?$")
+# Line continuations from POSIX shells (" \"), cmd.exe ("^") and PowerShell ("`").
+_LINE_CONTINUATION = re.compile(r"(?:[ \t]+\\|[ \t]*[\^`])[ \t]*\r?\n")
 
 
 class ProfileValidationError(ValueError):
@@ -26,190 +43,59 @@ class ProfileValidationError(ValueError):
         super().__init__("; ".join(errors))
 
 
-def parse_command(command: str, *, platform: str | None = None) -> dict[str, object]:
-    """Parse a llama-server command without executing it."""
-    if not command.strip():
-        raise ValueError("command must not be empty")
-    selected_platform = platform or os.name
-    tokens = (
-        _split_windows_command_line(command)
-        if selected_platform == "nt"
-        else shlex.split(command, posix=True)
-    )
-    if not tokens:
-        raise ValueError("command must not be empty")
-    configuration: dict[str, object] = {"advanced": []}
-    executable_present = not tokens[0].startswith("-")
-    known: dict[str, tuple[str, type]] = {
-        "m": ("model_path", str),
-        "model": ("model_path", str),
-        "ctx-size": ("ctx_size", int),
-        "c": ("ctx_size", int),
-        "n-gpu-layers": ("n_gpu_layers", int),
-        "ngl": ("n_gpu_layers", int),
-        "threads": ("threads", int),
-        "t": ("threads", int),
-        "batch-size": ("batch_size", int),
-        "b": ("batch_size", int),
-        "ubatch-size": ("ubatch_size", int),
-        "ub": ("ubatch_size", int),
-        "flash-attn": ("flash_attn", str),
-        "fa": ("flash_attn", str),
-        "load-mode": ("load_mode", str),
-        "lazy-mode": ("lazy_mode", str),
-        "lzm": ("lazy_mode", str),
-        "cache-ram": ("cache_ram", int),
-        "fit": ("fit", str),
-        "cache-type-k": ("cache_type_k", str),
-        "ctk": ("cache_type_k", str),
-        "cache-type-v": ("cache_type_v", str),
-        "ctv": ("cache_type_v", str),
-        "override-tensor": ("override_tensor", str),
-        "ot": ("override_tensor", str),
-    }
-    booleans = {"no-reasoning-preserve"}
-    index = 1 if executable_present else 0
-    option_only_model_seen = False
-    while index < len(tokens):
-        token = tokens[index]
-        if not token.startswith("-"):
-            raise ValueError(f"unexpected command argument: {token}")
-        name = token.lstrip("-")
-        inline_value: str | None = None
-        if "=" in name:
-            name, inline_value = name.split("=", 1)
-        if executable_present and name == "models-preset":
-            if inline_value is None:
-                index += 1
-                if index >= len(tokens):
-                    raise ValueError("--models-preset requires a value")
-                index += 1
-            continue
-        if name in booleans:
-            if inline_value is not None:
-                raise ValueError(f"--{name} does not accept a value")
-            configuration["no_reasoning_preserve"] = True
-        elif name in known:
-            field, value_type = known[name]
-            if inline_value is None:
-                index += 1
-                if index >= len(tokens):
-                    raise ValueError(f"--{name} requires a value")
-                inline_value = tokens[index]
-            if inline_value.startswith("-") and value_type is not str:
-                raise ValueError(f"--{name} has an invalid value")
-            try:
-                parsed_value = value_type(inline_value)
-            except ValueError as error:
-                raise ValueError(f"--{name} has an invalid value") from error
-            if field == "override_tensor":
-                configuration.setdefault(field, [])
-                cast_list = configuration[field]
-                assert isinstance(cast_list, list)
-                cast_list.append(parsed_value)
-            else:
-                if field == "model_path" and not executable_present and option_only_model_seen:
-                    raise ValueError("command must include --model only once")
-                configuration[field] = parsed_value
-                if field == "model_path" and not executable_present:
-                    option_only_model_seen = True
-        else:
-            value: str | bool = True if inline_value is None else inline_value
-            if (
-                inline_value is None
-                and index + 1 < len(tokens)
-                and not tokens[index + 1].startswith("-")
-            ):
-                index += 1
-                value = tokens[index]
-            advanced = configuration["advanced"]
-            assert isinstance(advanced, list)
-            advanced.append({"name": name, "value": value})
-        index += 1
-    if "model_path" not in configuration:
-        raise ValueError("command must include --model")
-    return configuration
-
-
-@dataclass(frozen=True, slots=True)
-class AdvancedOption:
-    name: str
-    value: str | int | bool = True
-
-
 @dataclass(frozen=True, slots=True)
 class ModelProfile:
     alias: str
     model_path: Path
-    no_reasoning_preserve: bool = False
-    n_gpu_layers: int | None = None
-    ctx_size: int | None = None
-    flash_attn: str | None = None
-    load_mode: str | None = None
-    lazy_mode: str | None = None
-    cache_ram: int | None = None
-    fit: str | None = None
-    override_tensor: tuple[str, ...] = ()
-    cache_type_k: str | None = None
-    cache_type_v: str | None = None
-    threads: int | None = None
-    batch_size: int | None = None
-    ubatch_size: int | None = None
-    advanced: tuple[AdvancedOption, ...] = ()
+    arguments: tuple[ProfileArgument, ...] = ()
+    acknowledged: frozenset[str] = frozenset()
 
-    def options(self) -> tuple[AdvancedOption, ...]:
-        values: list[AdvancedOption] = [AdvancedOption("model", str(self.model_path.resolve()))]
-        if self.no_reasoning_preserve:
-            values.append(AdvancedOption("no-reasoning-preserve"))
-        before_overrides: tuple[tuple[str, str | int | None], ...] = (
-            ("n-gpu-layers", self.n_gpu_layers),
-            ("ctx-size", self.ctx_size),
-            ("flash-attn", self.flash_attn),
-            ("load-mode", self.load_mode),
-            ("lazy-mode", self.lazy_mode),
-            ("cache-ram", self.cache_ram),
-            ("fit", self.fit),
-        )
-        after_overrides: tuple[tuple[str, str | int | None], ...] = (
-            ("cache-type-k", self.cache_type_k),
-            ("cache-type-v", self.cache_type_v),
-            ("threads", self.threads),
-            ("batch-size", self.batch_size),
-            ("ubatch-size", self.ubatch_size),
-        )
-        values.extend(
-            AdvancedOption(name, value) for name, value in before_overrides if value is not None
-        )
-        values.extend(AdvancedOption("override-tensor", value) for value in self.override_tensor)
-        values.extend(
-            AdvancedOption(name, value) for name, value in after_overrides if value is not None
-        )
-        values.extend(self.advanced)
-        return tuple(values)
+    @property
+    def configuration(self) -> ProfileConfiguration:
+        return ProfileConfiguration(self.arguments, self.acknowledged)
+
+    def options(self, catalog: ArgumentCatalog) -> tuple[EmittedOption, ...]:
+        """The ordered launch options: the managed model path, then stored arguments."""
+        model = EmittedOption("--model", str(self.model_path.resolve()))
+        return (model, *emit_arguments(self.arguments, catalog))
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedCommand:
+    """A tokenized llama-server command mapped onto catalog and custom arguments."""
+
+    model_path: str | None
+    arguments: tuple[ProfileArgument, ...]
+    ignored: tuple[str, ...] = ()
+    hf_repo: str | None = None
+    hf_file: str | None = None
 
 
 def validate_profile(
-    profile: ModelProfile, capabilities: RuntimeCapabilities
-) -> tuple[str, ...]:
-    errors: list[str] = []
+    profile: ModelProfile, catalog: ArgumentCatalog, capabilities: RuntimeCapabilities
+) -> tuple[ArgumentIssue, ...]:
+    """Return blocking errors and advisory warnings for a whole profile."""
+    issues: list[ArgumentIssue] = []
     if not _ALIAS_PATTERN.fullmatch(profile.alias) or profile.alias in _RESERVED_ALIASES:
-        errors.append(f"unsafe or reserved model alias: {profile.alias}")
-
+        issues.append(
+            ArgumentIssue(
+                "error", "unsafe-alias", f"unsafe or reserved model alias: {profile.alias}"
+            )
+        )
     model_path = profile.model_path.resolve()
     if not model_path.is_file():
-        errors.append(f"model file not found: {model_path}")
+        issues.append(
+            ArgumentIssue("error", "model-missing", f"model file not found: {model_path}")
+        )
     else:
-        errors.extend(_validate_shards(model_path))
-
-    for option in profile.options():
-        normalized_name = option.name.removeprefix("--").strip().lower()
-        if not normalized_name or "\n" in normalized_name or "=" in normalized_name:
-            errors.append(f"unsafe option name: {option.name}")
-        elif not capabilities.supports(normalized_name):
-            errors.append(f"runtime does not support --{normalized_name}")
-        if "\n" in str(option.value) or "\r" in str(option.value):
-            errors.append(f"option --{normalized_name} contains a newline")
-    return tuple(errors)
+        issues.extend(
+            ArgumentIssue("error", "model-shards", message)
+            for message in _validate_shards(model_path)
+        )
+    issues.extend(
+        validate_arguments(profile.arguments, catalog, capabilities, profile.acknowledged)
+    )
+    return tuple(issues)
 
 
 def _validate_shards(model_path: Path) -> tuple[str, ...]:
@@ -232,39 +118,231 @@ def _validate_shards(model_path: Path) -> tuple[str, ...]:
     return ("missing model shards: " + ", ".join(path.name for path in missing),)
 
 
-def render_preset(profile: ModelProfile, capabilities: RuntimeCapabilities) -> str:
-    errors = validate_profile(profile, capabilities)
+def launch_vector(
+    profile: ModelProfile,
+    catalog: ArgumentCatalog,
+    executable: Path,
+    *,
+    redact: bool = True,
+) -> tuple[str, ...]:
+    """The preset-equivalent argument vector for one model, as llama-server receives it."""
+    arguments: list[str] = [str(executable)]
+    for option in profile.options(catalog):
+        arguments.extend(option.argv(redact=redact))
+    return tuple(arguments)
+
+
+def render_preset(
+    profile: ModelProfile,
+    catalog: ArgumentCatalog,
+    capabilities: RuntimeCapabilities,
+) -> str:
+    errors = errors_of(validate_profile(profile, catalog, capabilities))
     if errors:
         raise ProfileValidationError(errors)
+    return render_preset_unchecked(profile, catalog)
 
+
+def render_preset_unchecked(
+    profile: ModelProfile, catalog: ArgumentCatalog, *, redact: bool = False
+) -> str:
     lines = ["version = 1", "", f"[{profile.alias}]"]
-    for option in profile.options():
-        value = str(option.value).lower() if isinstance(option.value, bool) else str(option.value)
-        lines.append(f"{option.name.removeprefix('--')} = {value}")
+    for option in profile.options(catalog):
+        value = REDACTED if redact and option.sensitive else option.preset_value()
+        lines.append(f"{option.key} = {value}")
     return "\n".join(lines) + "\n"
+
+
+def redact_preset(preset: str, catalog: ArgumentCatalog) -> str:
+    """Mask sensitive option values in stored preset text before it is displayed."""
+    sensitive = {
+        flag.removeprefix("--")
+        for definition in catalog.arguments
+        if definition.safety is not None and definition.safety.sensitive
+        for flag in definition.flags
+        if flag.startswith("--")
+    }
+    lines = []
+    for line in preset.splitlines():
+        key, separator, _ = line.partition(" = ")
+        lines.append(f"{key} = {REDACTED}" if separator and key in sensitive else line)
+    return "\n".join(lines) + ("\n" if preset.endswith("\n") else "")
 
 
 def render_command(
     profile: ModelProfile,
+    catalog: ArgumentCatalog,
     executable: Path,
     *,
     platform: str | None = None,
+    redact: bool = True,
 ) -> str:
     """Render a readable, non-executed command from the structured profile."""
     selected_platform = platform or os.name
-    arguments: list[str] = [str(executable)]
-    for option in profile.options():
-        arguments.append(f"--{option.name.removeprefix('--')}")
-        if option.value is not True:
-            value = (
-                str(option.value).lower()
-                if isinstance(option.value, bool)
-                else str(option.value)
-            )
-            arguments.append(value)
+    arguments = launch_vector(profile, catalog, executable, redact=redact)
     if selected_platform == "nt":
         return subprocess.list2cmdline(arguments)
     return " ".join(shlex.quote(argument) for argument in arguments)
+
+
+def parse_command(
+    command: str,
+    catalog: ArgumentCatalog,
+    *,
+    platform: str | None = None,
+    capabilities: RuntimeCapabilities | None = None,
+) -> ParsedCommand:
+    """Parse a llama-server command without executing it.
+
+    Catalogued options become typed arguments, options advertised only by the runtime become
+    uncatalogued runtime options, and anything else is kept as a custom parameter marked
+    ``catalog-mismatch``. Options that LlamaWebUI manages itself are skipped and reported.
+    Multi-line commands using shell line continuations are accepted. A command may name its
+    model with ``--hf-repo``/``--hf-file`` instead of ``--model``; those are reported so the
+    caller can find the model locally.
+    """
+    if not command.strip():
+        raise ValueError("command must not be empty")
+    selected_platform = platform or os.name
+    command = _LINE_CONTINUATION.sub(" ", command)
+    tokens = (
+        _split_windows_command_line(command)
+        if selected_platform == "nt"
+        else shlex.split(command, posix=True)
+    )
+    if tokens[:1] == ["&"]:
+        # PowerShell call operator: & "C:\path\llama-server.exe" ...
+        tokens = tokens[1:]
+    if not tokens:
+        raise ValueError("command must not be empty")
+    executable_present = not tokens[0].startswith("-")
+    runtime_flags = _runtime_flag_index(capabilities)
+    model_path: str | None = None
+    hf_sources: dict[str, str] = {}
+    arguments: list[ProfileArgument] = []
+    positions: dict[str, int] = {}
+    ignored: list[str] = []
+    index = 1 if executable_present else 0
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith("-") or token == "-":
+            raise ValueError(f"unexpected command argument: {token}")
+        spelling, has_inline, inline_value = token.partition("=")
+        inline = inline_value if has_inline else None
+        match = catalog.resolve(spelling) or catalog.resolve(spelling.lower())
+        if match is None:
+            index, raw = _parse_raw_option(tokens, index, spelling, inline, runtime_flags)
+            arguments.append(raw)
+            continue
+        definition = match.definition
+        value: object
+        if definition.value.type == "boolean":
+            enabled = True if inline is None else _import_value(definition, spelling, inline)
+            value = enabled != match.negated
+            index += 1
+        else:
+            index, values = _take_values(tokens, index, spelling, inline, definition)
+            value = " ".join(values)
+        if definition.id == "model":
+            if model_path is not None:
+                raise ValueError("command must include --model only once")
+            model_path = str(value)
+            continue
+        if definition.id in {"hf-repo", "hf-file"}:
+            hf_sources[definition.id] = str(value)
+        if not definition.editable:
+            sensitive = definition.safety is not None and definition.safety.sensitive
+            shown = REDACTED if sensitive else str(value)
+            boolean = definition.value.type == "boolean"
+            ignored.append(spelling if boolean else f"{spelling} {shown}")
+            continue
+        existing = positions.get(definition.id)
+        if existing is not None and definition.value.repeat:
+            previous = arguments[existing].value
+            assert isinstance(previous, tuple)
+            merged = _import_value(definition, spelling, [*previous, value])
+            arguments[existing] = ProfileArgument(definition.flag, merged, catalog_id=definition.id)
+            continue
+        if existing is not None:
+            raise ValueError(f"{definition.flag} is specified more than once")
+        positions[definition.id] = len(arguments)
+        coerced = _import_value(
+            definition, spelling, [value] if definition.value.repeat else value
+        )
+        arguments.append(ProfileArgument(definition.flag, coerced, catalog_id=definition.id))
+    if model_path is None and "hf-repo" not in hf_sources:
+        raise ValueError("command must include --model or --hf-repo")
+    return ParsedCommand(
+        model_path=model_path,
+        arguments=tuple(arguments),
+        ignored=tuple(ignored),
+        hf_repo=hf_sources.get("hf-repo"),
+        hf_file=hf_sources.get("hf-file"),
+    )
+
+
+def _import_value(definition: ArgumentDefinition, spelling: str, value: object) -> ArgumentValue:
+    try:
+        return coerce_catalog_value(definition, value)
+    except ArgumentValueError as error:
+        raise ValueError(f"{spelling} has an invalid value: {error}") from error
+
+
+def _take_values(
+    tokens: Sequence[str],
+    index: int,
+    spelling: str,
+    inline: str | None,
+    definition: ArgumentDefinition,
+) -> tuple[int, list[str]]:
+    arity = definition.value.arity
+    if inline is not None:
+        if arity > 1:
+            raise ValueError(f"{spelling} requires {arity} separate values")
+        return index + 1, [inline]
+    values = list(tokens[index + 1 : index + 1 + arity])
+    if len(values) < arity:
+        raise ValueError(f"{spelling} requires a value")
+    return index + 1 + arity, values
+
+
+def _parse_raw_option(
+    tokens: Sequence[str],
+    index: int,
+    spelling: str,
+    inline: str | None,
+    runtime_flags: dict[str, str],
+) -> tuple[int, ProfileArgument]:
+    canonical = runtime_flags.get(spelling) or runtime_flags.get(spelling.lower())
+    origin = "runtime"
+    if canonical is None:
+        if not spelling.startswith("--"):
+            raise ValueError(
+                f"unknown short option {spelling}; use its long form so it can be preserved"
+            )
+        canonical = spelling.lower()
+        origin = "catalog-mismatch"
+    value: str | bool = True if inline is None else inline
+    index += 1
+    if inline is None and index < len(tokens) and (
+        not tokens[index].startswith("-") or _NEGATIVE_NUMBER.fullmatch(tokens[index])
+    ):
+        value = tokens[index]
+        index += 1
+    return index, ProfileArgument(canonical, value, origin=origin)
+
+
+def _runtime_flag_index(capabilities: RuntimeCapabilities | None) -> dict[str, str]:
+    """Map every advertised spelling to the long flag LlamaWebUI should store."""
+    if capabilities is None:
+        return {}
+    index: dict[str, str] = {f"--{option}": f"--{option}" for option in capabilities.options}
+    for option in capabilities.details:
+        if not option.flag.startswith("--"):
+            continue
+        for spelling in option.flags:
+            index.setdefault(spelling, option.flag)
+    return index
 
 
 def _split_windows_command_line(command: str) -> list[str]:
@@ -303,9 +381,12 @@ def _split_windows_command_line(command: str) -> list[str]:
 
 
 def write_preset_atomic(
-    destination: Path, profile: ModelProfile, capabilities: RuntimeCapabilities
+    destination: Path,
+    profile: ModelProfile,
+    catalog: ArgumentCatalog,
+    capabilities: RuntimeCapabilities,
 ) -> None:
-    content = render_preset(profile, capabilities)
+    content = render_preset(profile, catalog, capabilities)
     _write_text_atomic(destination, content)
 
 

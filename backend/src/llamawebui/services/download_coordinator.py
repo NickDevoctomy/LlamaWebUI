@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 from llamawebui.domain.download_job import DownloadState
 from llamawebui.models import DownloadJobRecord
@@ -21,10 +22,12 @@ class DownloadCoordinator:
         worker: DownloadWorker,
         *,
         event_broker: EventBroker | None = None,
+        on_completed: Callable[[str], object] | None = None,
     ) -> None:
         self._registry = registry
         self._worker = worker
         self._event_broker = event_broker
+        self._on_completed = on_completed
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
     def start_pending(self) -> None:
@@ -52,6 +55,14 @@ class DownloadCoordinator:
         self._worker.discard_partial(job_id)
         self._publish(job_id, "cancelled")
         return record
+
+    def clear_finished(self) -> int:
+        cleared = self._registry.clear_terminal()
+        for record in cleared:
+            # Failed jobs keep their staging directory for retry; clearing gives that up.
+            if DownloadState(record.state) is DownloadState.FAILED:
+                self._worker.discard_partial(record.id)
+        return len(cleared)
 
     def _publish(self, job_id: str, action: str) -> None:
         if self._event_broker is not None:
@@ -99,9 +110,22 @@ class DownloadCoordinator:
                     },
                 )
             return
+        state = DownloadState(self._registry.get(job_id).state)
+        if state is DownloadState.COMPLETED and self._on_completed is not None:
+            try:
+                self._on_completed(job_id)
+            except Exception as failure:
+                LOGGER.error(
+                    "download_completion_hook_failed",
+                    extra={
+                        "component": "download",
+                        "event": "completion_hook_failed",
+                        "job_id": job_id,
+                        "error": str(failure),
+                    },
+                )
         if self._event_broker is None:
             return
-        state = DownloadState(self._registry.get(job_id).state)
         if state in {DownloadState.COMPLETED, DownloadState.FAILED}:
             self._publish(job_id, state.value)
 

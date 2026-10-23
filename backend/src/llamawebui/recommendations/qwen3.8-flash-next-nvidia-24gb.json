@@ -1,0 +1,43 @@
+{
+  "format": "llamawebui.recommendation.v1",
+  "version": 1,
+  "id": "qwen3.8-flash-next-ud-iq4-xs-nvidia-24gb",
+  "title": "Qwen3.8 Flash Next, 192K context on a 24 GB NVIDIA GPU",
+  "summary": "Starting point for a 24 GB NVIDIA card with 128 GB of system memory. Still being tuned for this hardware.",
+  "model": {
+    "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+    "quantization": "UD-IQ4_XS",
+    "revision": null
+  },
+  "tested_on": {
+    "label": "NVIDIA GPU with 24 GB VRAM (tested on an RTX 4090), 128 GB system memory",
+    "gpu_pattern": "NVIDIA",
+    "memory_gb": 128,
+    "unified_memory": false,
+    "backend": "cuda",
+    "notes": null
+  },
+  "requirements": {
+    "memory_gb": 152,
+    "vram_gb": 24,
+    "backends": ["cuda"]
+  },
+  "profile": {
+    "alias": "qwen3.8-flash-next-24gb",
+    "description": "Qwen3.8 Flash Next for a 24 GB NVIDIA GPU with 128 GB of RAM. Dense layers and the KV cache sit on the GPU, most MoE experts in system memory. 192K context with a q8_0 cache. Uses nearly all VRAM and RAM, so it runs on its own.",
+    "exclusive": true,
+    "arguments": [
+      { "id": "flash-attn", "value": "on" },
+      { "id": "n-cpu-moe", "value": 38 },
+      { "id": "n-gpu-layers", "value": 999 },
+      { "id": "ctx-size", "value": 196608 },
+      { "id": "ubatch-size", "value": 512 },
+      { "id": "cache-type-k", "value": "q8_0" },
+      { "id": "cache-type-v", "value": "q8_0" },
+      { "id": "parallel", "value": 1 },
+      { "id": "threads-batch", "value": 32 },
+      { "id": "threads", "value": 24 },
+      { "id": "load-mode", "value": "none" }
+    ]
+  }
+}

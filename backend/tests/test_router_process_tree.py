@@ -112,6 +112,80 @@ async def test_windows_router_termination_stops_child_process(tmp_path: Path) ->
             await force_cleanup(child_pid)
 
 
+async def _child_outlives_router(router_code: str) -> tuple[RouterProcess, int]:
+    """Launch a stand-in router that spawns a child and report the child's pid."""
+    process = await launch_router((sys.executable, "-u", "-c", router_code))
+    assert process.stdout is not None
+    child_pid = int((await asyncio.wait_for(process.stdout.readline(), 5)).decode().strip())
+    return process, child_pid
+
+
+# The child stands in for a per-model llama-server: it ignores Ctrl-Break, so only
+# its parent's cleanup can end it.
+_WINDOWS_CHILD = (
+    "child = subprocess.Popen([sys.executable, '-c', "
+    "'import signal, time; signal.signal(signal.SIGBREAK, signal.SIG_IGN); "
+    "time.sleep(120)']); "
+    "print(child.pid, flush=True); "
+)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process-tree verification")
+async def test_windows_graceful_router_stop_ends_model_processes(tmp_path: Path) -> None:
+    # The router honours Ctrl-Break and exits at once, before any forced tree kill.
+    process, child_pid = await _child_outlives_router(
+        "import subprocess, sys, time; " + _WINDOWS_CHILD + "time.sleep(120)"
+    )
+    try:
+        preset = tmp_path / "models.ini"
+        preset.touch()
+
+        async def existing_process(arguments: Sequence[str]) -> RouterProcess:
+            return process
+
+        supervisor = RouterSupervisor(existing_process)
+        await supervisor.start(RouterLaunch(Path(sys.executable), preset))
+        supervisor.mark_ready()
+        await supervisor.stop(timeout_seconds=10)
+        async with asyncio.timeout(5):
+            while await windows_process_exists(child_pid):
+                await asyncio.sleep(0.05)
+
+        assert not await windows_process_exists(process.pid)
+    finally:
+        if await windows_process_exists(child_pid):
+            await force_cleanup(child_pid)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process-tree verification")
+async def test_windows_router_crash_ends_model_processes() -> None:
+    process, child_pid = await _child_outlives_router(
+        "import subprocess, sys; " + _WINDOWS_CHILD + "sys.exit(3)"
+    )
+    try:
+        assert await asyncio.wait_for(process.wait(), 5) == 3
+        async with asyncio.timeout(5):
+            while await windows_process_exists(child_pid):
+                await asyncio.sleep(0.05)
+    finally:
+        if await windows_process_exists(child_pid):
+            await force_cleanup(child_pid)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux process-tree verification")
+async def test_linux_router_crash_ends_model_processes() -> None:
+    process, child_pid = await _child_outlives_router(
+        "import subprocess, sys; "
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
+        "print(child.pid, flush=True); sys.exit(3)"
+    )
+    try:
+        assert await asyncio.wait_for(process.wait(), 5) == 3
+        await wait_for_linux_process_exit(child_pid)
+    finally:
+        await force_linux_cleanup(child_pid)
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux process-tree verification")
 async def test_linux_router_termination_stops_child_process(tmp_path: Path) -> None:
     parent_code = (

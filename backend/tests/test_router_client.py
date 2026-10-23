@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import AsyncIterator
 
 import httpx
@@ -8,6 +9,7 @@ from llamawebui.services import router_client
 from llamawebui.services.router_client import (
     HttpRouterClient,
     RouterAPIError,
+    RouterUnavailableError,
     collect_model_events,
 )
 
@@ -265,3 +267,88 @@ async def test_router_client_rejects_non_event_stream_response(
 
     with pytest.raises(RouterAPIError, match="invalid model event stream"):
         _ = [event async for event in HttpRouterClient("127.0.0.1", 1234).model_events()]
+
+async def test_router_client_streams_a_chat_with_tools_and_extra_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/chat/completions"
+        sent.append(json.loads(request.content))
+        body = (
+            b'data: {"choices": [{"delta": {"content": "Hi"}}]}\n\n'
+            b": keep-alive\n\n"
+            b'data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}\n\n'
+            b"data: [DONE]\n\n"
+            b'data: {"never": "read"}\n\n'
+        )
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=ChunkedStream((body,))
+        )
+
+    install_transport(monkeypatch, httpx.MockTransport(handler))
+    client = HttpRouterClient("127.0.0.1", 1234)
+
+    chunks = [
+        chunk
+        async for chunk in client.chat_stream(
+            "qwen",
+            [{"role": "user", "content": "hello"}],
+            max_tokens=64,
+            tools=[{"type": "function", "function": {"name": "list_files"}}],
+            options={"reasoning_effort": "low", "model": "other", "stream": False},
+        )
+    ]
+
+    assert [chunk["choices"] for chunk in chunks] == [
+        [{"delta": {"content": "Hi"}}],
+        [{"delta": {}, "finish_reason": "stop"}],
+    ]
+    # Options add fields but never replace the model, the messages or streaming.
+    assert sent[0]["reasoning_effort"] == "low"
+    assert sent[0]["model"] == "qwen"
+    assert sent[0]["stream"] is True
+    assert sent[0]["max_tokens"] == 64
+    assert sent[0]["tools"] == [{"type": "function", "function": {"name": "list_files"}}]
+    assert sent[0]["timings_per_token"] is True
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (
+            httpx.Response(400, json={"error": {"message": "Unexpected reasoning effort"}}),
+            "Unexpected reasoning effort",
+        ),
+        (
+            httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, text="data: {bad\n\n"
+            ),
+            "invalid completion chunk",
+        ),
+    ],
+)
+async def test_router_client_reports_chat_stream_failures(
+    monkeypatch: pytest.MonkeyPatch, response: httpx.Response, message: str
+) -> None:
+    install_transport(monkeypatch, httpx.MockTransport(lambda request: response))
+    client = HttpRouterClient("127.0.0.1", 1234)
+
+    with pytest.raises(RouterAPIError, match=message):
+        async for _ in client.chat_stream("qwen", [], max_tokens=1):
+            pass
+
+
+async def test_router_client_reports_an_unreachable_chat_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    install_transport(monkeypatch, httpx.MockTransport(refuse))
+    client = HttpRouterClient("127.0.0.1", 1234)
+
+    with pytest.raises(RouterUnavailableError, match=r"completion stream failed \(ConnectError\)"):
+        async for _ in client.chat_stream("qwen", [], max_tokens=1):
+            pass

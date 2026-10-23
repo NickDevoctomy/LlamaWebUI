@@ -275,8 +275,8 @@ This document is a categorized reference for the `llama-server` command-line arg
 | `--spec-draft-ngl N` | `-ngld` | Draft-model GPU layers. | Controls draft VRAM and speed. | `vram`, `decodespeed` | |
 | `--spec-draft-threads N` | `-td` | Draft generation CPU threads. | Changes draft CPU work and latency. | `cpu`, `decodespeed` | |
 | `--spec-draft-threads-batch N` | `-tbd` | Draft batch CPU threads. | Changes draft prefill work. | `cpu`, `prefillspeed` | |
-| `--spec-draft-cache-type-k TYPE` | `-ctkd` | Draft KV K-cache type. | Trades draft memory, speed, and quality. | `vram`, `ram`, `quality`, `decodespeed` | |
-| `--spec-draft-cache-type-v TYPE` | `-ctvd` | Draft KV V-cache type. | Trades draft memory, speed, and quality. | `vram`, `ram`, `quality`, `decodespeed` | |
+| `--spec-draft-type-k TYPE` | `-ctkd`, `--cache-type-k-draft` | Draft KV K-cache type. | Trades draft memory, speed, and quality. | `vram`, `ram`, `quality`, `decodespeed` | |
+| `--spec-draft-type-v TYPE` | `-ctvd`, `--cache-type-v-draft` | Draft KV V-cache type. | Trades draft memory, speed, and quality. | `vram`, `ram`, `quality`, `decodespeed` | |
 | `--spec-draft-cpu-moe` | `-cmoed` | Keep draft MoE weights on CPU. | Reduces draft VRAM at speed cost. | `vram`, `ram`, `cpu`, `decodespeed` | |
 | `--spec-draft-n-cpu-moe N` | `-ncmoed` | Keep first N draft MoE layers on CPU. | Partial draft VRAM reduction at speed cost. | `vram`, `ram`, `cpu`, `decodespeed` | |
 | `--spec-draft-backend-sampling` | `--no-spec-draft-backend-sampling` | Offload draft sampling to backend. | May improve speculative speed; backend-dependent. | `backend`, `decodespeed` | |
@@ -298,12 +298,14 @@ This document is a categorized reference for the `llama-server` command-line arg
 
 LlamaWebUI currently provides first-class support for the model path (`--model`), router preset (`--models-preset`), host/port, API-key file, runtime version/device probing, model alias through preset sections, and the profile controls represented by `--n-gpu-layers`, `--ctx-size`, `--flash-attn`, `--load-mode`, `--lazy-mode`, `--cache-ram`, `--fit`, `--override-tensor`, `--cache-type-k`, `--cache-type-v`, `--threads`, `--batch-size`, `--ubatch-size`, and `--no-reasoning-preserve`.
 
-The app also exposes a generic advanced-option field, validated against the selected executable's probed `--help` output. That mechanism is intentionally not marked as first-class support in the tables above. This distinction makes it possible to identify the next explicit UI/API work without confusing pass-through compatibility with a designed workflow.
+Since the dynamic argument catalog (`backend/src/llamawebui/catalogs/llama-server-v0.4.1.json`), every process argument in the tables above, plus `--cache-type-k`/`--cache-type-v`, is modelled with a typed control, help text and effect tags. The `X` markers still record what predates the catalog. Arguments LlamaWebUI manages itself (`--model`, `--models-preset`, `--host`, `--port`, `--api-key`, `--api-key-file`, `--alias`, `--models-*` and the runtime model-download options) and the print-and-exit options (`--help`, `--version`, `--cache-list`, `--completion-bash`, `--list-devices`) are catalogued but cannot be set in a profile. Flags missing from a runtime's `--help` produce warnings, not errors.
+
+Known inconsistencies in this reference: `--draft-min` is listed both as a current alias of `--spec-draft-n-min` and as a removed argument, and `--draft-max` both as an alias of `--spec-draft-n-max` and of the removed `--draft`. The catalog treats them as current aliases and models the removed entries as `--draft` and `--draft-n-min`. Build b11053 also advertises about 40 options this reference omits (for example `--escape`, `--special`, `--reverse-prompt`, `--override-kv` and the `--spec-ngram-*` family); the editor offers them as uncatalogued runtime options.
 
 ## Sources and update procedure
 
 - Upstream argument reference: [`ggml-org/llama.cpp/tools/server/README.md`](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md), retrieved 2026-09-21.
 - Latest stable release page: [`ggml-org/llama.cpp v0.4.1`](https://github.com/ggml-org/llama.cpp/releases/tag/v0.4.1).
-- LlamaWebUI support inventory: `backend/src/llamawebui/domain/model_profile.py`, `backend/src/llamawebui/domain/router_lifecycle.py`, `backend/src/llamawebui/services/runtime_probe.py`, and `backend/src/llamawebui/domain/runtime_capabilities.py`.
+- LlamaWebUI support inventory: `backend/src/llamawebui/catalogs/llama-server-v0.4.1.json`, `backend/src/llamawebui/domain/model_profile.py`, `backend/src/llamawebui/domain/router_lifecycle.py`, `backend/src/llamawebui/services/runtime_probe.py`, and `backend/src/llamawebui/domain/runtime_capabilities.py`.
 
-For a future update, copy this document, change the version in the filename and heading, refresh the upstream argument list, then re-check every `X` against the current app's launch construction, profile model, API request models, and runtime capability probing.
+For a future update, copy this document, change the version in the filename and heading, refresh the upstream argument list, then re-check every `X` against the current app's launch construction, profile model, API request models, and runtime capability probing. Then add a matching versioned catalog file next to the existing one (it must validate against `argument-catalog.schema.json`; `backend/tests/test_argument_catalog.py` checks that every reference row is modelled).

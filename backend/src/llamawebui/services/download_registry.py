@@ -38,19 +38,19 @@ class DownloadRegistry:
                 statement = statement.where(DownloadJobRecord.hidden.is_(False))
             return list(session.scalars(statement))
 
-    def clear_terminal(self) -> int:
+    def clear_terminal(self) -> tuple[DownloadJobRecord, ...]:
         with self._sessions() as session:
             statement = select(DownloadJobRecord).where(
                 DownloadJobRecord.hidden.is_(False),
                 DownloadJobRecord.state.in_(
-                    (DownloadState.COMPLETED, DownloadState.CANCELLED)
+                    (DownloadState.COMPLETED, DownloadState.CANCELLED, DownloadState.FAILED)
                 ),
             )
             records = tuple(session.scalars(statement))
             for record in records:
                 record.hidden = True
             session.commit()
-            return len(records)
+            return records
 
     def get(self, job_id: str) -> DownloadJobRecord:
         with self._sessions() as session:
