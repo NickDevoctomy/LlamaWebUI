@@ -1,0 +1,105 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { api, type ArgumentCatalog, type Profile, type Runtime } from './api'
+import { ProfileCompare } from './ProfileCompare'
+
+const catalog = {
+  catalogId: 'test',
+  catalogVersion: '1',
+  source: { url: '', retrieved: '' },
+  categories: [{ id: 'context', label: 'Context and KV cache', sortOrder: 1 }, { id: 'cpu', label: 'Process and CPU', sortOrder: 2 }],
+  effectTags: {},
+  arguments: [
+    { id: 'ctx-size', flag: '--ctx-size', label: 'Context size', category: 'context', value: { type: 'integer' } },
+    { id: 'threads', flag: '--threads', label: 'CPU threads', category: 'cpu', value: { type: 'integer' } },
+    { id: 'flash-attn', flag: '--flash-attn', label: 'Flash attention', category: 'context', value: { type: 'enum' } },
+  ],
+} as unknown as ArgumentCatalog
+
+const runtimes = [{ id: 'runtime-1', name: 'latest cuda' }] as Runtime[]
+
+function profile(id: string, overrides: Partial<Profile>): Profile {
+  return {
+    id,
+    alias: id,
+    runtime_id: 'runtime-1',
+    model_path: 'E:\\models\\qwen-00001-of-00003.gguf',
+    configuration: { arguments: [] },
+    enabled: true,
+    exclusive: true,
+    version: 1,
+    validation_state: 'available',
+    ...overrides,
+  } as Profile
+}
+
+const profiles = [
+  profile('qwen-mtp', { configuration: { arguments: [{ id: 'ctx-size', value: 196608 }, { id: 'threads', value: 24 }, { id: 'flash-attn', value: 'on' }, { flag: '--spec-type', value: 'draft-mtp', origin: 'custom' }] }, version: 3 }),
+  profile('qwen-nomtp', { configuration: { arguments: [{ id: 'ctx-size', value: 131072 }, { id: 'threads', value: 24 }, { id: 'flash-attn', value: 'on' }] } }),
+  profile('qwen-copy', { configuration: { arguments: [{ id: 'ctx-size', value: 196608 }, { id: 'threads', value: 24 }, { id: 'flash-attn', value: 'on' }, { flag: '--spec-type', value: 'draft-mtp', origin: 'custom' }] }, version: 3 }),
+]
+
+function renderCompare(items = profiles) {
+  vi.spyOn(api, 'argumentCatalog').mockResolvedValue(catalog)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(<QueryClientProvider client={client}><ProfileCompare profiles={items} runtimes={runtimes} /></QueryClientProvider>)
+}
+
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
+
+describe('ProfileCompare', () => {
+  it('shows only the settings that differ, labelled from the catalog', async () => {
+    renderCompare()
+
+    const table = await screen.findByRole('table', { name: 'qwen-mtp compared with qwen-nomtp' })
+    const context = await within(table).findByRole('row', { name: /Context size/ })
+    expect(context).toHaveAttribute('data-state', 'changed')
+    expect(context).toHaveTextContent('196,608')
+    expect(context).toHaveTextContent('131,072')
+    expect(within(table).getByRole('row', { name: /--spec-type/ })).toHaveAttribute('data-state', 'left-only')
+    expect(within(table).getByRole('row', { name: /Version/ })).toHaveTextContent('v3v1')
+    expect(within(table).queryByRole('row', { name: /CPU threads/ })).not.toBeInTheDocument()
+    expect(within(table).queryByRole('row', { name: /Model file/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('3 differences across')
+  })
+
+  it('lists every setting when asked, and swaps sides', async () => {
+    renderCompare()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Only differences' }))
+
+    expect(await screen.findByRole('row', { name: /CPU threads/ })).toHaveAttribute('data-state', 'same')
+    fireEvent.click(screen.getByRole('button', { name: 'Swap sides' }))
+    expect(screen.getByRole('table', { name: 'qwen-nomtp compared with qwen-mtp' })).toBeInTheDocument()
+    expect(screen.getByRole('row', { name: /--spec-type/ })).toHaveAttribute('data-state', 'right-only')
+  })
+
+  it('reports identical profiles and the same profile on both sides', async () => {
+    renderCompare()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Right profile' }), { target: { value: 'qwen-copy' } })
+    expect(screen.getByRole('status')).toHaveTextContent('These profiles have identical settings.')
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Right profile' }), { target: { value: 'qwen-mtp' } })
+    expect(screen.getByRole('status')).toHaveTextContent('The same profile is selected on both sides.')
+  })
+
+  it('compares files by full path but shows their names', async () => {
+    renderCompare([
+      profile('here', { model_path: 'E:\\models\\a\\qwen.gguf' }),
+      profile('there', { model_path: 'D:\\backup\\qwen.gguf' }),
+    ])
+
+    const row = await screen.findByRole('row', { name: /Model file/ })
+    expect(row).toHaveAttribute('data-state', 'changed')
+    expect(within(row).getAllByText('qwen.gguf').map((cell) => cell.getAttribute('title'))).toEqual(['E:\\models\\a\\qwen.gguf', 'D:\\backup\\qwen.gguf'])
+  })
+
+  it('stays hidden until there are two profiles to compare', () => {
+    const { container } = renderCompare(profiles.slice(0, 1))
+    expect(container).toBeEmptyDOMElement()
+  })
+})
