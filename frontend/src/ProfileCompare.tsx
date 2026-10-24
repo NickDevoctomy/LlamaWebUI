@@ -1,7 +1,7 @@
-import { useQuery } from '@tanstack/react-query'
-import { ArrowLeftRight, GitCompareArrows } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, GitCompareArrows, LoaderCircle } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { api, type ArgumentCatalog, type BenchmarkResult, type Profile, type Runtime, type StoredArgument } from './api'
+import { api, type ArgumentCatalog, type BenchmarkResult, type Profile, type ProfileCreate, type Runtime, type StoredArgument } from './api'
 import { formatRate, formatSeconds, reasoningLabel } from './benchmarkFormat'
 
 type Side = string | null
@@ -11,6 +11,8 @@ interface CompareRow {
   group: string
   label: string
   flag?: string
+  /** One profile's value can be copied onto the other; false for version and benchmark figures. */
+  takeable?: boolean
   left: Side
   right: Side
   /** Shortened values to show, when they differ from the compared ones. */
@@ -42,12 +44,12 @@ function generalRows(left: Profile, right: Profile, runtimes: Runtime[]): Compar
   const runtime = (profile: Profile) => runtimes.find((item) => item.id === profile.runtime_id)?.name ?? 'Missing runtime'
   const version = (profile: Profile) => profile.recommendation ? `v${profile.version ?? 1} (recommended)` : `v${profile.version ?? 1}`
   const rows: Omit<CompareRow, 'group'>[] = [
-    { key: 'runtime', label: 'Runtime', left: runtime(left), right: runtime(right) },
-    { key: 'model', label: 'Model file', left: left.model_path || null, right: right.model_path || null, leftDisplay: left.model_path ? fileName(left.model_path) : null, rightDisplay: right.model_path ? fileName(right.model_path) : null, leftTitle: left.model_path, rightTitle: right.model_path },
+    { key: 'runtime', label: 'Runtime', takeable: true, left: runtime(left), right: runtime(right) },
+    { key: 'model', label: 'Model file', takeable: true, left: left.model_path || null, right: right.model_path || null, leftDisplay: left.model_path ? fileName(left.model_path) : null, rightDisplay: right.model_path ? fileName(right.model_path) : null, leftTitle: left.model_path, rightTitle: right.model_path },
     { key: 'version', label: 'Version', left: version(left), right: version(right) },
-    { key: 'exclusive', label: 'Exclusive', left: left.exclusive ? 'yes' : 'no', right: right.exclusive ? 'yes' : 'no' },
-    { key: 'enabled', label: 'Enabled', left: left.enabled ? 'yes' : 'no', right: right.enabled ? 'yes' : 'no' },
-    { key: 'description', label: 'Description', left: left.description ?? null, right: right.description ?? null },
+    { key: 'exclusive', label: 'Exclusive', takeable: true, left: left.exclusive ? 'yes' : 'no', right: right.exclusive ? 'yes' : 'no' },
+    { key: 'enabled', label: 'Enabled', takeable: true, left: left.enabled ? 'yes' : 'no', right: right.enabled ? 'yes' : 'no' },
+    { key: 'description', label: 'Description', takeable: true, left: left.description ?? null, right: right.description ?? null },
   ]
   return rows.map((row) => ({ ...row, group: GENERAL }))
 }
@@ -79,6 +81,7 @@ function argumentRows(left: Profile, right: Profile, catalog?: ArgumentCatalog):
       label: definition?.label ?? ('id' in argument ? argument.id : argument.flag),
       // A raw flag is already its own label.
       flag: definition?.flag,
+      takeable: true,
       left: leftValue,
       right: rightValue,
       leftDisplay: shown(leftValue),
@@ -118,12 +121,49 @@ function SideValue({ value, title }: { value: Side; title?: string }) {
   return value === null ? <span className="compare-missing">Not set</span> : <span title={title ?? value}>{value}</span>
 }
 
-/** Pick two profiles and see where their settings differ. */
-export function ProfileCompare({ profiles, runtimes }: { profiles: Profile[]; runtimes: Runtime[] }) {
+const argumentKey = (argument: StoredArgument) => 'id' in argument ? `id:${argument.id}` : `flag:${argument.flag}`
+
+/**
+ * The save that gives `target` the value `source` has for one row: a field copied across,
+ * or an argument added, replaced in place, or removed when `source` does not set it.
+ */
+function takeValue(target: Profile, source: Profile, key: string): ProfileCreate {
+  const acknowledged = target.configuration.acknowledged
+  const body: ProfileCreate = {
+    alias: target.alias,
+    runtime_id: target.runtime_id,
+    model_path: target.model_path,
+    enabled: target.enabled,
+    exclusive: Boolean(target.exclusive),
+    description: target.description ?? null,
+    arguments: storedArguments(target),
+    acknowledged: Array.isArray(acknowledged) ? acknowledged as string[] : [],
+  }
+  if (key === 'runtime') return { ...body, runtime_id: source.runtime_id }
+  if (key === 'model') return { ...body, model_path: source.model_path }
+  if (key === 'exclusive') return { ...body, exclusive: Boolean(source.exclusive) }
+  if (key === 'enabled') return { ...body, enabled: source.enabled }
+  if (key === 'description') return { ...body, description: source.description ?? null }
+  const taken = storedArguments(source).find((argument) => argumentKey(argument) === key)
+  const current = body.arguments ?? []
+  const index = current.findIndex((argument) => argumentKey(argument) === key)
+  const updated = !taken ? current.filter((_, position) => position !== index)
+    : index < 0 ? [...current, taken]
+      : current.map((argument, position) => position === index ? taken : argument)
+  return { ...body, arguments: updated }
+}
+
+/** Pick two profiles and see where their settings differ, and copy values across. */
+export function ProfileCompare({ profiles, runtimes, running = false }: { profiles: Profile[]; runtimes: Runtime[]; running?: boolean }) {
   const [leftId, setLeftId] = useState(profiles[0]?.id ?? '')
   const [rightId, setRightId] = useState(profiles[1]?.id ?? '')
   const [differencesOnly, setDifferencesOnly] = useState(true)
   const catalog = useQuery({ queryKey: ['argument-catalog', 'base'], queryFn: api.argumentCatalog, refetchInterval: false, staleTime: Infinity })
+  const queryClient = useQueryClient()
+  const take = useMutation({
+    mutationFn: ({ target, source, key }: { target: Profile; source: Profile; key: string }) => api.updateProfile(target.id, takeValue(target, source, key)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+  })
   const left = profiles.find((profile) => profile.id === leftId) ?? profiles[0]
   const right = profiles.find((profile) => profile.id === rightId) ?? profiles.find((profile) => profile.id !== left?.id)
 
@@ -133,6 +173,19 @@ export function ProfileCompare({ profiles, runtimes }: { profiles: Profile[]; ru
   if (profiles.length < 2 || !left || !right) return null
 
   const differing = rows.filter((row) => row.left !== row.right)
+  // A button on one side takes the other side's value; it is offered only where they differ.
+  const takeButton = (row: CompareRow, target: Profile, source: Profile, Icon: typeof ArrowLeft) => {
+    if (!row.takeable || row.left === row.right || target.id === source.id) return null
+    const pending = take.isPending && take.variables?.key === row.key && take.variables.target.id === target.id
+    return <button
+      aria-label={`Take ${row.label} from ${source.alias}`}
+      className="icon-button small compare-take"
+      disabled={running || take.isPending}
+      onClick={() => take.mutate({ target, source, key: row.key })}
+      title={running ? 'Stop the router to change a profile' : `Take value from ${source.alias}`}
+      type="button"
+    >{pending ? <LoaderCircle className="spin" size={14} /> : <Icon size={14} />}</button>
+  }
   const shown = differencesOnly ? differing : rows
   const groups = [...new Set(shown.map((row) => row.group))]
   const select = (label: string, value: string, onChange: (id: string) => void) => (
@@ -159,6 +212,7 @@ export function ProfileCompare({ profiles, runtimes }: { profiles: Profile[]; ru
       <p className="compare-summary" role="status">
         {left.id === right.id ? 'The same profile is selected on both sides.' : differing.length ? `${differing.length} ${differing.length === 1 ? 'difference' : 'differences'} across ${rows.length} settings.` : 'These profiles have identical settings.'}
       </p>
+      {take.error && <div className="form-error compare-error" role="alert"><AlertCircle size={15} /> {take.error.message}</div>}
       {shown.length > 0 && <div className="compare-table" role="table" aria-label={`${left.alias} compared with ${right.alias}`}>
         <div className="compare-row compare-head" role="row">
           <span role="columnheader">Setting</span>
@@ -171,8 +225,8 @@ export function ProfileCompare({ profiles, runtimes }: { profiles: Profile[]; ru
             const state = row.left === row.right ? 'same' : row.left === null ? 'right-only' : row.right === null ? 'left-only' : 'changed'
             return <div className="compare-row" data-state={state} key={row.key} role="row">
               <span className="compare-setting" role="rowheader">{row.label}{row.flag && <small>{row.flag}</small>}</span>
-              <span className="compare-value" data-side="left" role="cell"><SideValue title={row.leftTitle} value={row.leftDisplay !== undefined ? row.leftDisplay : row.left} /></span>
-              <span className="compare-value" data-side="right" role="cell"><SideValue title={row.rightTitle} value={row.rightDisplay !== undefined ? row.rightDisplay : row.right} /></span>
+              <span className="compare-value" data-side="left" role="cell">{takeButton(row, left, right, ArrowLeft)}<SideValue title={row.leftTitle} value={row.leftDisplay !== undefined ? row.leftDisplay : row.left} /></span>
+              <span className="compare-value" data-side="right" role="cell">{takeButton(row, right, left, ArrowRight)}<SideValue title={row.rightTitle} value={row.rightDisplay !== undefined ? row.rightDisplay : row.right} /></span>
             </div>
           })}
         </div>)}

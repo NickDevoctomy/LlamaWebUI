@@ -1,0 +1,120 @@
+Build a Tetris clone as a single self-contained HTML file (HTML, CSS and JS in one file, no external libraries, assets or network requests). Follow the spec below closely.
+
+=== THEME ===
+Neon synthwave: dark, glowing, slightly retro-futuristic. Every element should feel like it's lit from within.
+
+=== COLOUR PALETTE ===
+Background: deep navy-black #0a0a1a, with a subtle radial gradient to #1a0b2e toward the centre
+Playfield background: #0d0d22 at ~90% opacity
+Grid lines: #1f1f3d, 1px, very faint
+Panel backgrounds: #12122a with a 1px border in #2a2a55
+Primary text: #e8e8ff
+Secondary/label text: #8a8ac0
+Accent (titles, highlights, buttons): hot pink #ff2e88
+Secondary accent: cyan #00f0ff
+
+Piece colours (standard guideline mapping, neon-shifted):
+I: #00f0ff (cyan)
+O: #ffe600 (yellow)
+T: #b14dff (purple)
+S: #39ff6a (green)
+Z: #ff3b5c (red)
+J: #3d7bff (blue)
+L: #ff9a1f (orange)
+
+Each block: filled with its colour, a lighter inner highlight on the top-left edge, a darker shade on the bottom-right edge, and an outer glow (soft shadow in the same colour, ~8px blur).
+Ghost piece: same colour as the active piece, outline only at ~35% opacity, no glow.
+Locked pieces: same colour but glow reduced by half so the active piece stands out.
+
+=== TYPOGRAPHY ===
+Use a monospace system font stack (e.g. "Courier New", monospace) for numbers and a bold sans-serif stack for headings. Headings in uppercase with wide letter-spacing (~0.2em). Title text gets a pink-to-cyan gradient and a glow.
+
+=== LAYOUT (desktop) ===
+Everything centred horizontally and vertically in the viewport, as a three-column layout:
+
+Left column (~160px wide):
+  - HOLD panel: label "HOLD" at top, a 4x4 preview area below showing the held piece centred. Greyed out at 40% opacity when hold is unavailable (already used this turn).
+  - Below it, a STATS panel: SCORE, LEVEL, LINES, each with a small uppercase label and a large number beneath. Score uses thousand separators.
+
+Centre column:
+  - The playfield: 10 columns x 20 visible rows (plus 2 hidden spawn rows above). Cell size scales with viewport height so the whole board fits with comfortable margin (target ~32px cells on a 1080p screen).
+  - A thin glowing border around the playfield in cyan, with a soft outer glow.
+
+Right column (~160px wide):
+  - NEXT panel: label "NEXT", showing the next 5 pieces stacked vertically. The first one larger, the following four progressively smaller (~70% size).
+  - Below it, a CONTROLS panel listing key bindings in small secondary text.
+
+A faint animated background behind everything: a perspective grid receding to a horizon line (classic synthwave floor), scrolling slowly toward the viewer. Keep it subtle so it doesn't distract.
+
+=== LAYOUT (mobile / narrow screens, under ~700px wide) ===
+Playfield on top, filling most of the width. Hold and Next collapse into a compact row above the board (hold on the left, next 3 pieces on the right). Stats in a single row beneath them. Controls panel hidden; on-screen touch buttons appear below the board instead.
+
+=== SCREENS ===
+Start screen: overlay on the board with a dimmed backdrop. Large title "NEON TETRIS" with gradient and glow, a pulsing "PRESS ENTER / TAP TO START" prompt, and the current high score shown below.
+Pause screen: overlay with "PAUSED" and "Press P / Esc to resume". The board behind it should be blurred or hidden so players can't plan while paused.
+Game over screen: the stack greys out row by row from the bottom up (quick animation, ~0.6s total), then an overlay shows "GAME OVER", final score, level, lines, and "NEW HIGH SCORE!" in pink if beaten. "Press Enter / Tap to play again."
+
+=== CORE MECHANICS ===
+Randomiser: 7-bag system. Shuffle all seven pieces, deal them out, refill and reshuffle when empty. No pure random.
+Spawn: pieces spawn centred horizontally in the hidden rows, in their standard spawn orientation (flat side down for T, J, L). If a new piece overlaps existing blocks on spawn, the game ends.
+Rotation: Super Rotation System (SRS) with standard wall kick tables, including the separate kick table for the I piece. Both clockwise and counter-clockwise rotation. O piece doesn't rotate.
+Gravity: piece falls one row per gravity interval. Starting interval at level 1 is ~1 second, speeding up each level following the guideline curve (roughly: interval = (0.8 - (level-1) * 0.007) ^ (level-1) seconds), capped so it never goes below ~1 frame.
+Soft drop: holding down makes the piece fall ~20x faster than current gravity.
+Hard drop: piece instantly drops to the ghost position and locks immediately.
+Lock delay: when a piece touches the ground, it has 0.5 seconds before locking. Any successful move or rotation resets this timer, up to a maximum of 15 resets per piece (to prevent infinite stalling). Moving off a ledge and falling again also resets.
+Hold: swap the active piece with the held piece (or with the next piece if hold is empty). The swapped-in piece spawns fresh at the top. Hold can only be used once per piece; it unlocks again after the next piece locks.
+Line clears: any full row clears, rows above shift down. Multiple simultaneous clears count together.
+Levelling: start at level 1. Level up every 10 lines cleared.
+
+=== INPUT HANDLING ===
+Delayed Auto Shift (DAS): holding left/right moves once, waits ~170ms, then repeats.
+Auto Repeat Rate (ARR): once repeating, move every ~50ms.
+Inputs should feel instant with no dropped keypresses. Prevent the browser from scrolling on arrow keys and space.
+
+Key bindings:
+  Left / Right arrow: move
+  Down arrow: soft drop
+  Space: hard drop
+  Up arrow or X: rotate clockwise
+  Z or Ctrl: rotate counter-clockwise
+  C or Shift: hold
+  P or Esc: pause
+  M: mute
+  Enter: start / restart
+
+Touch controls (mobile): on-screen buttons for left, right, rotate CW, rotate CCW, soft drop, hard drop, hold. Buttons are rounded, semi-transparent with a neon border, and support press-and-hold with the same DAS/ARR behaviour. Also support swipe gestures on the board: swipe left/right to move, swipe down quickly for hard drop, tap to rotate.
+
+=== SCORING ===
+Single: 100 x level
+Double: 300 x level
+Triple: 500 x level
+Tetris (4 lines): 800 x level
+T-Spin (no lines): 400 x level
+T-Spin Single: 800 x level
+T-Spin Double: 1200 x level
+T-Spin Triple: 1600 x level
+Back-to-back bonus: consecutive "difficult" clears (Tetris or any T-Spin line clear) get a 1.5x multiplier.
+Combo: each consecutive piece that clears at least one line adds 50 x combo count x level.
+Soft drop: 1 point per cell. Hard drop: 2 points per cell.
+T-Spin detection: use the standard 3-corner rule (last move was a rotation, and at least 3 of the 4 diagonal corners around the T's centre are occupied).
+
+=== VISUAL EFFECTS & ANIMATION ===
+Line clear: cleared rows flash white for ~100ms, then dissolve outward from the centre with a burst of small particles in the colours of the blocks that were in that row. Total ~300ms before rows collapse.
+Tetris clear: bigger effect: brief screen shake (small, ~4px, 200ms), a full-board flash in cyan, and large "TETRIS!" text that scales up and fades out over the board.
+T-Spin: "T-SPIN" text pops up in purple. Add "SINGLE / DOUBLE / TRIPLE" beneath as appropriate.
+Back-to-back: small "BACK-TO-BACK" label above the clear text.
+Combo: "COMBO x3" etc. text appears beside the board, growing slightly with each combo step.
+Hard drop: a short vertical light trail from where the piece was to where it landed, plus a tiny downward board bump (~2px).
+Level up: "LEVEL X" text sweeps across the board, and the background grid briefly speeds up and pulses brighter.
+Score counter: animates up quickly to its new value rather than jumping.
+Piece lock: a quick brightness flash on the locked blocks (~80ms).
+All animations should run at 60fps and never block input. Respect "prefers-reduced-motion" by disabling shake and particles.
+
+=== AUDIO ===
+Generate all sound with the Web Audio API (no audio files). Short synthy sound effects for: move (very quiet tick), rotate, soft land/lock, hard drop (punchy thud), line clear (rising tone, higher for more lines), Tetris (bright chord), level up (arpeggio), game over (descending tone). Optional: a simple looping synthwave bassline that speeds up slightly with level. Mute toggle with M key and an on-screen speaker icon; remember mute state.
+
+=== PERSISTENCE ===
+Save the high score and mute preference in localStorage, wrapped safely so the game still works if storage is unavailable.
+
+=== CODE QUALITY ===
+Keep logic, rendering and input clearly separated. Use requestAnimationFrame for the game loop with delta-time based timing so speed is consistent across refresh rates. Render the board to a canvas; UI panels can be HTML/CSS. Use named constants for all tunables (DAS, ARR, lock delay, colours, scoring values) at the top of the script so they're easy to tweak.

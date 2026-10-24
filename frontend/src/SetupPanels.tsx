@@ -700,7 +700,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
           </article>
         ))}</div> : <div className="empty"><FileCog size={28} /><strong>No profiles configured</strong><span>{runtimes.length ? 'Create a profile for a local GGUF model.' : 'Register a runtime before creating a model profile.'}</span>{runtimes.length > 0 && <button className="button primary" onClick={() => openCreate()} type="button"><Plus size={15} /> Create profile</button>}</div>}
       </section>
-      <ProfileCompare profiles={profiles} runtimes={runtimes} />
+      <ProfileCompare profiles={profiles} running={running} runtimes={runtimes} />
       {open && <Dialog title={editing ? 'Edit model profile' : 'Create model profile'} description="Identity, catalog-driven llama.cpp arguments, and a launch preview." onClose={closeEditor} wide>
         <form onSubmit={submit}>
           <div className="segmented" role="tablist" aria-label="Profile settings">

@@ -793,13 +793,23 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .compare-group-label { padding: 7px 12px; border-top: 1px solid var(--line); background: var(--surface-sunk); color: var(--faint); font: 500 9.5px var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }
 .compare-setting { display: grid; gap: 2px; color: var(--fg-2); }
 .compare-setting small { color: var(--faint); font: 10.5px var(--font-mono); }
-.compare-value { font-family: var(--font-mono); }
+.compare-value { display: flex; align-items: flex-start; gap: 8px; font-family: var(--font-mono); }
+.compare-value > span { min-width: 0; flex: 1 1 auto; padding-top: 2px; }
+.compare-row > .compare-value { padding-top: 6px; padding-bottom: 6px; }
+/* First in the cell so it can float on phones; shown last, at the right, otherwise. */
+.compare-take { width: 24px; height: 24px; order: 1; margin-left: auto; color: var(--muted); }
+.compare-take:hover:not(:disabled) { border-color: var(--line); color: var(--fg); background: var(--surface); }
+.compare-error { margin: 0 18px 12px; }
 .compare-row[data-state='changed'] .compare-value, .compare-row[data-state='left-only'] [data-side='left'], .compare-row[data-state='right-only'] [data-side='right'] { color: var(--fg); background: color-mix(in srgb, var(--warn-solid) 12%, transparent); }
 .compare-missing { color: var(--faint); font-family: var(--font-sans); font-style: italic; }
 @container (max-width: 560px) {
   /* The setting name gets its own line; the two values sit side by side beneath it. */
   .compare-row:not(.compare-head) { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .compare-row:not(.compare-head) .compare-setting { grid-column: 1 / -1; padding-bottom: 0; }
+  /* Long values wrap under the button instead of beside it, using the column's full width. */
+  .compare-value { display: block; }
+  .compare-value > span { display: inline; }
+  .compare-take { float: right; margin: -2px 0 2px 6px; }
   .compare-head { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .compare-head > span:first-child { display: none; }
   .compare-controls > .icon-button { order: 1; }
