@@ -93,6 +93,9 @@ class BenchmarkRunRecord(Base):
     # Whether the model could read and write files in the run's own folder, and each
     # call it made, in order.
     tools: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # The tools it was given, by name; None for runs from before they could be chosen,
+    # which had every tool.
+    tool_names: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     # The system prompt the run was sent with, if any, and its text at the time.
     system_prompt_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)

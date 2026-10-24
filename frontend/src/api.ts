@@ -131,7 +131,14 @@ export interface BenchmarkCatalog {
   reasoning_levels: string[]
   /** Null: no limit, so a run may use the profile's whole context. */
   default_max_tokens: number | null
+  /** The file tools a run can be given, in the order they are offered. */
+  tools: BenchmarkTool[]
   active_run_id: string | null
+}
+
+export interface BenchmarkTool {
+  name: string
+  summary: string
 }
 
 /** Timings in seconds and speeds in tokens per second; any may be missing for a run that stopped early. */
@@ -185,6 +192,8 @@ export interface BenchmarkRun {
   max_tokens: number | null
   /** Whether the model could read and write files in the run's own folder. */
   tools: boolean
+  /** The tools it was given; null for runs from before they could be chosen, which had them all. */
+  tool_names?: string[] | null
   system_prompt_id: string | null
   /** 'off', an effort level, or null for the model's own default. */
   reasoning_level: string | null
@@ -702,7 +711,7 @@ export const api = {
   benchmarkRun: (runId: string) => request<BenchmarkRunDetail>(`/api/benchmarks/runs/${runId}`),
   benchmarkArtifact: (runId: string, path: string) =>
     request<{ path: string; content: string }>(`/api/benchmarks/runs/${runId}/artifacts/${path.split('/').map(encodeURIComponent).join('/')}`),
-  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number | null; tools: boolean; system_prompt_id: string | null; reasoning_level: string | null }) =>
+  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number | null; tools: boolean; tool_names: string[]; system_prompt_id: string | null; reasoning_level: string | null }) =>
     request<BenchmarkRunDetail>('/api/benchmarks/runs', { method: 'POST', body: JSON.stringify(body) }),
   cancelBenchmark: (runId: string) =>
     request<BenchmarkRun>(`/api/benchmarks/runs/${runId}/cancel`, { method: 'POST' }),

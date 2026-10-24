@@ -452,6 +452,10 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
             "/api/benchmarks/runs",
             json={"profile_id": profile_id, "benchmark_id": "tetris", "reasoning_level": "huge"},
         )
+        unknown_tool = client.post(
+            "/api/benchmarks/runs",
+            json={"profile_id": profile_id, "benchmark_id": "tetris", "tool_names": ["nope"]},
+        )
         started = client.post(
             "/api/benchmarks/runs",
             json={
@@ -459,6 +463,7 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
                 "benchmark_id": "tetris",
                 "max_tokens": 128,
                 "system_prompt_id": "coding-agent",
+                "tool_names": ["write_file", "task_complete"],
             },
         )
         run_id = started.json()["id"]
@@ -498,6 +503,16 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
     assert run["system_prompt_id"] == "coding-agent"
     assert str(run["system_prompt"]).startswith("You are an AI coding agent")
     assert run["tools"] is True
+    assert run["tool_names"] == ["write_file", "task_complete"]
+    assert unknown_tool.status_code == 422
+    assert unknown_tool.json()["detail"] == "unknown tools: nope"
+    assert [item["name"] for item in listed["tools"]] == [
+        "write_file", "edit_file", "read_file", "delete_file", "list_files", "task_complete"
+    ]
+    assert listed["tools"][0] == {
+        "name": "write_file",
+        "summary": "Create or replace a whole file.",
+    }
     assert detail["artifacts"] == [{"path": "game/index.html", "size": 25}]
     # Files come back as text inside JSON, never as a page the browser would run.
     assert artifact.headers["content-type"].startswith("application/json")

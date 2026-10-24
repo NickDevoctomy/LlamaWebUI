@@ -13,9 +13,11 @@ from llamawebui.domain.argument_catalog import default_catalog
 from llamawebui.domain.benchmark import BenchmarkError, SystemPrompt, load_system_prompts
 from llamawebui.services import benchmark_runner
 from llamawebui.services.benchmark_runner import (
-    TOOL_SYSTEM_PROMPT,
+    TOOL_NAMES,
     BenchmarkRunRegistry,
     _call_tool,
+    choose_tools,
+    tool_system_prompt,
 )
 from llamawebui.services.benchmark_workspace import (
     BenchmarkWorkspace,
@@ -413,6 +415,122 @@ async def test_tool_calls_stop_when_the_token_budget_is_spent(tmp_path: Path) ->
     assert len(client.requests) == 1
 
 
+def test_failure_reasons_drop_echoed_input_and_stay_short() -> None:
+    echoed = (
+        "Failed to parse tool call arguments as JSON: [json.exception.parse_error.101] parse "
+        "error at line 1, column 35440: syntax error while parsing value - invalid string: "
+        "missing closing quote; last read: '\"<!DOCTYPE html>" + "x" * 35000
+    )
+    assert benchmark_runner._short_error(echoed) == (
+        "Failed to parse tool call arguments as JSON: [json.exception.parse_error.101] parse "
+        "error at line 1, column 35440: syntax error while parsing value - invalid string: "
+        "missing closing quote"
+    )
+    long = benchmark_runner._short_error("y" * 1000)
+    assert len(long) == benchmark_runner.MAX_ERROR_LENGTH
+    assert long.endswith("…")
+    assert benchmark_runner._short_error("model not found") == "model not found"
+
+
+def _raw_tool_call(index: int, name: str, arguments: str) -> dict[str, object]:
+    call = _tool_call(index, name, {})
+    choice = cast(list[dict[str, dict[str, list[dict[str, dict[str, str]]]]]], call["choices"])[0]
+    choice["delta"]["tool_calls"][0]["function"]["arguments"] = arguments
+    return call
+
+
+@pytest.mark.asyncio
+async def test_a_call_cut_off_by_a_full_context_is_not_run(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    client.replies = [
+        _round(
+            [_raw_tool_call(0, "write_file", '{"path": "index.html", "content": "<html>\n<he')],
+            finish="length",
+            generated=11727,
+            milliseconds=1000.0,
+        ),
+        # Never requested: there is no room left for the model to act on anything.
+        _round([], finish="stop", generated=1, milliseconds=1.0),
+    ]
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, None, tools=True)
+    await runner.wait()
+
+    finished = runs.get(record.id)
+    assert finished.state == "completed", finished.error
+    assert len(client.requests) == 1
+    assert (finished.stats["finish_reason"], finished.stats["outcome"]) == ("context", "unfinished")
+    assert finished.tool_calls == [
+        {
+            "round": 1,
+            "name": "write_file",
+            "path": None,
+            "ok": False,
+            "result": "Not run: generation was cut off before the call was finished.",
+        }
+    ]
+    assert runs.workspace(record.id).files() == []
+
+
+@pytest.mark.asyncio
+async def test_a_spent_token_limit_cutting_off_a_call_reports_length(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    client.replies = [
+        _round(
+            [_raw_tool_call(0, "write_file", '{"path": "a')],
+            finish="length",
+            generated=10,
+            milliseconds=10.0,
+        )
+    ]
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, 1000, tools=True)
+    await runner.wait()
+
+    assert runs.get(record.id).stats["finish_reason"] == "length"
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_call_is_refused_and_the_model_can_retry(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    client.replies = [
+        _round(
+            [_raw_tool_call(0, "write_file", '{"path": "index.html", "content": "<html>')],
+            finish="tool_calls",
+            generated=20,
+            milliseconds=100.0,
+        ),
+        _round(
+            [_tool_call(0, "write_file", {"path": "index.html", "content": "<html>"})],
+            finish="tool_calls",
+            generated=20,
+            milliseconds=100.0,
+        ),
+        _round([], finish="stop", generated=1, milliseconds=1.0),
+    ]
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, None, tools=True)
+    await runner.wait()
+
+    finished = runs.get(record.id)
+    assert finished.state == "completed", finished.error
+    assert [call["ok"] for call in finished.tool_calls] == [False, True]
+    # The server rejects a history holding arguments that are not JSON, so the broken
+    # call goes back as an empty object, with its error as the result.
+    retry_messages, _ = client.requests[1]
+    assistant = retry_messages[-2]
+    assert cast(list[dict[str, dict[str, str]]], assistant["tool_calls"])[0]["function"][
+        "arguments"
+    ] == "{}"
+    assert retry_messages[-1]["content"] == "Error: the tool arguments were not a JSON object."
+
+
 @pytest.mark.asyncio
 async def test_calling_task_complete_ends_the_run_as_completed(tmp_path: Path) -> None:
     engine, profile = _database(tmp_path)
@@ -443,6 +561,91 @@ async def test_calling_task_complete_ends_the_run_as_completed(tmp_path: Path) -
     assert finished.tool_calls[-1]["result"] == "Task marked complete. Wrote the game."
     results = cast(dict[str, dict[str, object]], profile_results(engine, profile.id))
     assert results["tetris"]["outcome"] == "completed"
+
+
+def test_the_workspace_note_names_only_the_tools_a_run_was_given() -> None:
+    every = tool_system_prompt()
+    assert "Use write_file to save files you create, edit_file to change part" in every
+    assert "list_files to see what is there." in every
+    assert "call task_complete" in every
+
+    assert tool_system_prompt(["read_file"]) == (
+        "You have a workspace folder for this task. Use read_file to read a file back. "
+        "Paths are relative to the workspace, like 'tetris/index.html'. You cannot read or "
+        "write anything outside it."
+    )
+    only_done = tool_system_prompt(["task_complete"])
+    assert "Use " not in only_done
+    assert only_done.endswith("counts as unfinished.")
+
+
+def test_tools_are_chosen_by_name_in_offer_order() -> None:
+    assert choose_tools(None) == list(TOOL_NAMES)
+    assert choose_tools(["list_files", "write_file", "write_file"]) == ["write_file", "list_files"]
+    assert choose_tools([]) == []
+    with pytest.raises(ValueError, match="unknown tools: run_shell"):
+        choose_tools(["write_file", "run_shell"])
+
+
+@pytest.mark.asyncio
+async def test_a_run_offers_only_its_chosen_tools_and_refuses_the_rest(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    client.replies = [
+        _round(
+            [
+                _tool_call(0, "write_file", {"path": "index.html", "content": "<html>"}),
+                _tool_call(1, "delete_file", {"path": "index.html"}),
+                _tool_call(2, "task_complete", {}),
+            ],
+            finish="tool_calls",
+            generated=20,
+            milliseconds=100.0,
+        ),
+        _round(
+            [{"choices": [{"delta": {"content": "Done."}}]}],
+            finish="stop",
+            generated=5,
+            milliseconds=50.0,
+        ),
+    ]
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, None, tools=True, tool_names=["write_file"])
+    await runner.wait()
+
+    finished = runs.get(record.id)
+    assert finished.state == "completed", finished.error
+    assert finished.tool_names == ["write_file"]
+    messages, offered = client.requests[0]
+    assert offered == ["write_file"]
+    assert "task_complete" not in str(messages[0]["content"])
+    assert [(call["name"], call["ok"]) for call in finished.tool_calls] == [
+        ("write_file", True),
+        ("delete_file", False),
+        ("task_complete", False),
+    ]
+    assert finished.tool_calls[1]["result"] == "Error: there is no tool called 'delete_file'"
+    assert (runs.workspace_root / record.id / "index.html").exists()
+    # Without task_complete the agent cannot say it is done, so no outcome is kept.
+    assert "outcome" not in finished.stats
+    assert finished.stats["finish_reason"] == "stop"
+
+
+@pytest.mark.asyncio
+async def test_a_run_given_no_tools_runs_without_them(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, 256, tools=True, tool_names=[])
+    await runner.wait()
+
+    finished = runs.get(record.id)
+    assert (finished.tools, finished.tool_names) == (False, None)
+    assert client.requests[0][1] == []
+    with pytest.raises(ValueError, match="unknown tools"):
+        runner.start(profile, BENCHMARK, 256, tools=True, tool_names=["nope"])
 
 
 @pytest.mark.asyncio
@@ -662,9 +865,9 @@ def test_system_prompts_are_bundled_files(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("system", "tools", "expected"),
     [
-        (True, True, ["agent framing", TOOL_SYSTEM_PROMPT]),
+        (True, True, ["agent framing", tool_system_prompt()]),
         (True, False, ["agent framing"]),
-        (False, True, [TOOL_SYSTEM_PROMPT]),
+        (False, True, [tool_system_prompt()]),
         (False, False, None),
     ],
 )

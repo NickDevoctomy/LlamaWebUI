@@ -53,15 +53,6 @@ def reasoning_options(level: str | None) -> dict[str, object]:
 
 # Rounds of tool calls a single run may make before it is stopped.
 MAX_TOOL_ROUNDS = 24
-TOOL_SYSTEM_PROMPT = (
-    "You have a workspace folder for this task. Use the write_file tool to save files "
-    "you create, edit_file to change part of a file without writing it all again, "
-    "read_file to read them back, delete_file to remove one, and list_files to see "
-    "what is there. "
-    "Paths are relative to the workspace, like 'tetris/index.html'. You cannot read "
-    "or write anything outside it. When the task is finished, call task_complete; a run "
-    "that ends without it counts as unfinished."
-)
 # The tool an agent calls to say it is done. Only a run that calls it counts as completed.
 COMPLETE_TOOL = "task_complete"
 _PATH = {"type": "string", "description": "Relative path inside the workspace."}
@@ -164,6 +155,93 @@ FILE_TOOLS: tuple[dict[str, object], ...] = (
 )
 
 
+# Every tool by name, in the order they are offered.
+TOOL_NAMES: tuple[str, ...] = tuple(
+    cast(str, cast(Mapping[str, object], tool["function"])["name"]) for tool in FILE_TOOLS
+)
+# What each tool is for, as the workspace note puts it and the run form shows it.
+TOOL_PURPOSES: dict[str, str] = {
+    "write_file": "write_file to save files you create",
+    "edit_file": "edit_file to change part of a file without writing it all again",
+    "read_file": "read_file to read a file back",
+    "delete_file": "delete_file to remove a file",
+    "list_files": "list_files to see what is there",
+}
+# What each tool does, for the person choosing a run's tools.
+TOOL_SUMMARIES: dict[str, str] = {
+    "write_file": "Create or replace a whole file.",
+    "edit_file": "Replace part of a file by finding its text.",
+    "read_file": "Read a file back, with line numbers.",
+    "delete_file": "Delete a file; never a folder.",
+    "list_files": "List the files and their sizes.",
+    COMPLETE_TOOL: (
+        "Say the task is finished. Without it, a run is not marked completed or unfinished."
+    ),
+}
+
+
+def tool_system_prompt(names: Sequence[str] = TOOL_NAMES) -> str:
+    """The workspace note for a run, naming only the tools it was given."""
+    purposes = [
+        TOOL_PURPOSES[name] for name in TOOL_NAMES if name in names and name in TOOL_PURPOSES
+    ]
+    parts = ["You have a workspace folder for this task."]
+    if purposes:
+        listed = ", ".join(purposes[:-1]) + " and " if len(purposes) > 1 else ""
+        parts.append(f"Use {listed}{purposes[-1]}.")
+    parts.append(
+        "Paths are relative to the workspace, like 'tetris/index.html'. You cannot read "
+        "or write anything outside it."
+    )
+    if COMPLETE_TOOL in names:
+        parts.append(
+            f"When the task is finished, call {COMPLETE_TOOL}; a run that ends without it "
+            "counts as unfinished."
+        )
+    return " ".join(parts)
+
+
+def choose_tools(names: Sequence[str] | None) -> list[str]:
+    """The tools a run is given, in offer order; None gives every tool."""
+    if names is None:
+        return list(TOOL_NAMES)
+    unknown = sorted(set(names) - set(TOOL_NAMES))
+    if unknown:
+        raise ValueError(f"unknown tools: {', '.join(unknown)}")
+    return [name for name in TOOL_NAMES if name in names]
+
+
+# The longest failure reason a run keeps; the rest is echoed input, not the reason.
+MAX_ERROR_LENGTH = 300
+
+
+def _short_error(message: str) -> str:
+    """Why a run failed, without the input llama.cpp echoes after its parse errors."""
+    reason = message.split("; last read:", 1)[0].strip()
+    return reason if len(reason) <= MAX_ERROR_LENGTH else reason[: MAX_ERROR_LENGTH - 1] + "…"
+
+
+def _history_arguments(arguments: str) -> str:
+    """A call's arguments as sent back to the server, which rejects any that are not JSON.
+
+    A malformed call still gets its error as the tool result, so the model can retry it.
+    """
+    try:
+        valid = isinstance(json.loads(arguments or "{}"), dict)
+    except json.JSONDecodeError:
+        valid = False
+    return arguments if valid else "{}"
+
+
+def _given_tools(record: BenchmarkRunRecord) -> list[str]:
+    """The tools a run was given; runs from before tools could be chosen had them all."""
+    return list(record.tool_names) if record.tool_names is not None else list(TOOL_NAMES)
+
+
+def _offered(names: Sequence[str]) -> tuple[dict[str, object], ...]:
+    return tuple(tool for tool, name in zip(FILE_TOOLS, TOOL_NAMES, strict=True) if name in names)
+
+
 class BenchmarkClient(Protocol):
     async def list_models(self, *, reload: bool = False) -> tuple[RouterModel, ...]: ...
 
@@ -181,7 +259,10 @@ class BenchmarkClient(Protocol):
 
 
 def _call_tool(
-    workspace: BenchmarkWorkspace, name: str, arguments: str
+    workspace: BenchmarkWorkspace,
+    name: str,
+    arguments: str,
+    allowed: Sequence[str] = TOOL_NAMES,
 ) -> tuple[str, dict[str, object]]:
     """Run one file tool; return the reply for the model and a log entry."""
     entry: dict[str, object] = {"name": name, "path": None, "ok": False}
@@ -196,6 +277,9 @@ def _call_tool(
     path = parsed.get("path")
     entry["path"] = path if isinstance(path, str) else None
     try:
+        if name not in allowed:
+            # A tool left out of this run is refused as if it did not exist.
+            raise WorkspaceError(f"there is no tool called '{name}'")
         if name == "write_file":
             result = workspace.write(path, parsed.get("content"))
         elif name == "read_file":
@@ -366,6 +450,7 @@ class BenchmarkRunRegistry:
         max_tokens: int | None,
         *,
         tools: bool = False,
+        tool_names: Sequence[str] | None = None,
         system_prompt: SystemPrompt | None = None,
         reasoning_level: str | None = None,
     ) -> BenchmarkRunRecord:
@@ -381,6 +466,7 @@ class BenchmarkRunRegistry:
                 prompt=benchmark.prompt,
                 max_tokens=max_tokens,
                 tools=tools,
+                tool_names=list(tool_names) if tools and tool_names is not None else None,
                 tool_calls=[],
                 system_prompt_id=system_prompt.id if system_prompt else None,
                 system_prompt=system_prompt.text if system_prompt else None,
@@ -519,11 +605,15 @@ class BenchmarkRunner:
         max_tokens: int | None,
         *,
         tools: bool = False,
+        tool_names: Sequence[str] | None = None,
         system_prompt: SystemPrompt | None = None,
         reasoning_level: str | None = None,
     ) -> BenchmarkRunRecord:
         if reasoning_level is not None and reasoning_level not in REASONING_LEVELS:
             raise ValueError(f"unknown reasoning level: {reasoning_level}")
+        chosen = choose_tools(tool_names)
+        # A run given no tools at all runs without a workspace, as if tools were off.
+        tools = tools and bool(chosen)
         if self._task is not None and not self._task.done():
             raise BenchmarkBusyError("a benchmark is already running")
         if not self._router_stopped():
@@ -535,6 +625,7 @@ class BenchmarkRunner:
             benchmark,
             max_tokens,
             tools=tools,
+            tool_names=chosen,
             system_prompt=system_prompt,
             reasoning_level=reasoning_level,
         )
@@ -605,7 +696,9 @@ class BenchmarkRunner:
             state, error = "cancelled", "cancelled"
         except Exception as caught:
             state = "failed"
-            error = str(getattr(caught, "detail", None) or caught) or type(caught).__name__
+            error = _short_error(
+                str(getattr(caught, "detail", None) or caught) or type(caught).__name__
+            )
             LOGGER.warning(
                 "benchmark_failed",
                 extra={"component": "benchmarks", "event": "failed", "error": error},
@@ -622,7 +715,7 @@ class BenchmarkRunner:
                     extra={"component": "benchmarks", "event": "stop_failed", "error": str(caught)},
                 )
             stats["total_seconds"] = round(self._clock() - started, 2)
-            if record.tools:
+            if record.tools and COMPLETE_TOOL in _given_tools(record):
                 # A run that failed or was cancelled never got to say it was done.
                 stats.setdefault("outcome", "unfinished")
             self._runs.update(
@@ -682,12 +775,13 @@ class BenchmarkRunner:
             if record.tools
             else None
         )
+        given = _given_tools(record)
         messages: list[dict[str, object]] = [{"role": "user", "content": prompt}]
         # The chosen system prompt comes first; the workspace note follows it whenever the
         # model has file tools, since it needs to know paths are relative either way.
         instructions = [
             text
-            for text in (record.system_prompt, TOOL_SYSTEM_PROMPT if workspace else None)
+            for text in (record.system_prompt, tool_system_prompt(given) if workspace else None)
             if text
         ]
         if instructions:
@@ -738,13 +832,14 @@ class BenchmarkRunner:
             sizes: dict[int, int] = {}
             round_chunks = 0
             exhausted = False
+            finish: str | None = None
             reading = timeline.switch("reading", round_number)
             async for chunk in _until_context_full(
                 self._client.chat_stream(
                     record.profile_alias,
                     messages,
                     max_tokens=max(budget, 1) if budget is not None else None,
-                    tools=FILE_TOOLS if workspace is not None else (),
+                    tools=_offered(given) if workspace is not None else (),
                     options=reasoning_options(record.reasoning_level),
                 )
             ):
@@ -806,7 +901,7 @@ class BenchmarkRunner:
                     else:
                         sample("decode", self._clock() - sent, chunks)
                 if isinstance(choice.get("finish_reason"), str):
-                    stats["finish_reason"] = choice["finish_reason"]
+                    finish = stats["finish_reason"] = choice["finish_reason"]
 
             # The last token's counters arrive with the closing chunk.
             generated = _number(timings.get("predicted_n"))
@@ -836,6 +931,23 @@ class BenchmarkRunner:
                     entry["names"] = [call["name"] for call in ordered]
                     entry["bytes"] = sum(sizes.values())
                     break
+            if finish == "length":
+                # Generation was cut off mid-call, so the arguments are half written. Running
+                # the call would only hand back an error the model has no room left to act on.
+                calls_made.extend(
+                    {
+                        "round": round_number,
+                        "name": call["name"],
+                        "path": None,
+                        "ok": False,
+                        "result": "Not run: generation was cut off before the call was finished.",
+                    }
+                    for call in ordered
+                )
+                stats["tool_calls"] = len(calls_made)
+                # Without a token limit, only a full context stops generation this way.
+                stats["finish_reason"] = "length" if budget is not None else "context"
+                break
             messages.append(
                 {
                     "role": "assistant",
@@ -844,7 +956,10 @@ class BenchmarkRunner:
                         {
                             "id": call["id"],
                             "type": "function",
-                            "function": {"name": call["name"], "arguments": call["arguments"]},
+                            "function": {
+                                "name": call["name"],
+                                "arguments": _history_arguments(call["arguments"]),
+                            },
                         }
                         for call in ordered
                     ],
@@ -852,7 +967,7 @@ class BenchmarkRunner:
             )
             for call in ordered:
                 timeline.switch("tool", round_number, name=call["name"], call=len(calls_made))
-                result, entry = _call_tool(workspace, call["name"], call["arguments"])
+                result, entry = _call_tool(workspace, call["name"], call["arguments"], given)
                 timeline.close(path=entry["path"], ok=entry["ok"])
                 calls_made.append({"round": round_number, **entry})
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
@@ -866,7 +981,7 @@ class BenchmarkRunner:
                 break
         else:
             stats["finish_reason"] = "tool_round_limit"
-        if workspace is not None:
+        if workspace is not None and COMPLETE_TOOL in given:
             # Only an agent that said it was done finished the task; any other end did not.
             stats["outcome"] = "completed" if completed else "unfinished"
 

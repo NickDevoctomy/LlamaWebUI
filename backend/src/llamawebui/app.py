@@ -84,6 +84,8 @@ from llamawebui.services.authorization import privilege_for_request
 from llamawebui.services.benchmark_runner import (
     DEFAULT_MAX_TOKENS,
     REASONING_LEVELS,
+    TOOL_NAMES,
+    TOOL_SUMMARIES,
     BenchmarkBusyError,
     BenchmarkClient,
     BenchmarkRunner,
@@ -340,6 +342,8 @@ class BenchmarkRunRequest(BaseModel):
     max_tokens: int | None = Field(default=DEFAULT_MAX_TOKENS, ge=16, le=1048576)
     # Let the model read and write files, confined to the run's own folder.
     tools: bool = True
+    # Which tools it gets, by name; None gives every tool.
+    tool_names: list[str] | None = Field(default=None, max_length=32)
     # A bundled system prompt to send first, by id; none sends the prompt on its own.
     system_prompt_id: str | None = Field(default=None, max_length=64)
     # "off" or an effort level for the chat template; none keeps the model's own default.
@@ -1788,6 +1792,7 @@ def create_app(
             "benchmark_title": record.benchmark_title,
             "max_tokens": record.max_tokens,
             "tools": record.tools,
+            "tool_names": record.tool_names,
             "system_prompt_id": record.system_prompt_id,
             "reasoning_level": record.reasoning_level,
             "state": record.state,
@@ -1841,6 +1846,9 @@ def create_app(
             ),
             "default_max_tokens": DEFAULT_MAX_TOKENS,
             "reasoning_levels": list(REASONING_LEVELS),
+            "tools": [
+                {"name": name, "summary": TOOL_SUMMARIES[name]} for name in TOOL_NAMES
+            ],
             "active_run_id": runner.active_run_id,
         }
 
@@ -1896,11 +1904,16 @@ def create_app(
                 benchmark,
                 run_request.max_tokens,
                 tools=run_request.tools,
+                tool_names=run_request.tool_names,
                 system_prompt=system_prompt,
                 reasoning_level=run_request.reasoning_level,
             )
         except BenchmarkBusyError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
         return benchmark_run_payload(runner, record, detail=True)
 
     @app.get("/api/benchmarks/runs/{run_id}")

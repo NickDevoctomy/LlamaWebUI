@@ -38,8 +38,11 @@ const running: BenchmarkRun = {
   finished_at: null,
 }
 
+const TOOLS = ['write_file', 'edit_file', 'read_file', 'delete_file', 'list_files', 'task_complete'].map((name) => ({ name, summary: `What ${name} does.` }))
+const ALL_TOOLS = TOOLS.map((tool) => tool.name)
+
 function mockApi(runs: BenchmarkRun[]) {
-  vi.spyOn(api, 'benchmarks').mockResolvedValue({ benchmarks: [{ id: 'tetris', title: 'Tetris', prompt: 'make tetris' }], system_prompts: [{ id: 'coding-agent', title: 'Coding agent', text: 'You are an AI agent running in a coding agent harness.' }], default_system_prompt_id: 'coding-agent', reasoning_levels: ['off', 'low', 'medium', 'high', 'xhigh'], default_max_tokens: null, active_run_id: null })
+  vi.spyOn(api, 'benchmarks').mockResolvedValue({ benchmarks: [{ id: 'tetris', title: 'Tetris', prompt: 'make tetris' }], system_prompts: [{ id: 'coding-agent', title: 'Coding agent', text: 'You are an AI agent running in a coding agent harness.' }], default_system_prompt_id: 'coding-agent', reasoning_levels: ['off', 'low', 'medium', 'high', 'xhigh'], default_max_tokens: null, tools: TOOLS, active_run_id: null })
   vi.spyOn(api, 'benchmarkRuns').mockResolvedValue(runs)
 }
 
@@ -65,7 +68,39 @@ describe('BenchmarksPanel', () => {
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Max tokens' }), { target: { value: '2048' } })
     fireEvent.click(run)
 
-    await waitFor(() => expect(start).toHaveBeenCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: 2048, tools: true, system_prompt_id: 'coding-agent', reasoning_level: null }))
+    await waitFor(() => expect(start).toHaveBeenCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: 2048, tools: true, tool_names: ALL_TOOLS, system_prompt_id: 'coding-agent', reasoning_level: null }))
+  })
+
+  it('turns every file tool on or off at once, or chooses them one by one', async () => {
+    mockApi([])
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [] })
+    renderPanel()
+
+    const all = await screen.findByRole('checkbox', { name: 'File tools' })
+    expect(all).toBeChecked()
+    const expand = screen.getByRole('button', { name: 'Choose tools' })
+    expect(expand).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('checkbox', { name: /delete_file/ })).not.toBeInTheDocument()
+    fireEvent.click(expand)
+    expect(expand).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /delete_file/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /edit_file/ }))
+    expect(all).not.toBeChecked()
+    expect((all as HTMLInputElement).indeterminate).toBe(true)
+    expect(screen.getByText(/^4 of 6 tools: write_file, read_file, list_files, task_complete\./)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ tools: true, tool_names: ['write_file', 'read_file', 'list_files', 'task_complete'] })))
+
+    // Ticking the partly chosen box turns them all on; clicking again turns them all off.
+    fireEvent.click(all)
+    expect(all).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /delete_file/ })).toBeChecked()
+    fireEvent.click(all)
+    expect(screen.getAllByRole('checkbox', { name: /_/ }).every((box) => !(box as HTMLInputElement).checked)).toBe(true)
+    expect(screen.getByText('Off: the model can only answer in text.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ tools: false, tool_names: [] })))
   })
 
   it('sends the coding agent system prompt by default, or none when chosen', async () => {
@@ -187,7 +222,7 @@ describe('BenchmarksPanel', () => {
   })
 
   it('lists the files a run wrote and opens one in a read-only editor', async () => {
-    const withTools: BenchmarkRun = { ...finished, tools: true, stats: { ...finished.stats, rounds: 3, tool_calls: 2, files_written: 1 } }
+    const withTools: BenchmarkRun = { ...finished, tools: true, tool_names: ['write_file', 'read_file'], stats: { ...finished.stats, rounds: 3, tool_calls: 2, files_written: 1 } }
     mockApi([withTools])
     const detail: BenchmarkRunDetail = {
       ...withTools,
@@ -212,6 +247,7 @@ describe('BenchmarksPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'View run Tetris on qwen-24gb' }))
     const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
     expect(await within(dialog).findByText('2 in 3 requests')).toBeInTheDocument()
+    expect(within(dialog).getByText('write_file, read_file')).toBeInTheDocument()
     expect(within(dialog).getByText('Tool calls (2, 1 refused)')).toBeInTheDocument()
     expect(within(dialog).getByText('C:/test.py').closest('li')).toHaveAttribute('data-ok', 'false')
 

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Check, ChevronDown, ChevronRight, Code, Copy, Download, Eye, FileText, LoaderCircle, Maximize2, Play, RotateCcw, Square, Timer, Trash2, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { api, type BenchmarkRun, type BenchmarkRunDetail, type BenchmarkStage, type Profile, type RouterState, type TimelineEntry } from './api'
+import { api, type BenchmarkRun, type BenchmarkRunDetail, type BenchmarkStage, type BenchmarkTool, type Profile, type RouterState, type TimelineEntry } from './api'
 import { formatRate, formatSeconds, formatWhen, reasoningLabel } from './benchmarkFormat'
 import { Sparkline } from './Dashboard'
 import { Dialog } from './SetupPanels'
@@ -314,7 +314,29 @@ function ArtifactViewer({ runId, path, files, onClose }: { runId: string; path: 
   </Dialog>
 }
 
+/** File tools for a run: all on or off at once, or chosen one by one when expanded. */
+function ToolPicker({ tools, chosen, onChange }: { tools: BenchmarkTool[]; chosen: string[]; onChange: (names: string[]) => void }) {
+  const [open, setOpen] = useState(false)
+  const all = useRef<HTMLInputElement>(null)
+  const some = chosen.length > 0 && chosen.length < tools.length
+  useEffect(() => { if (all.current) all.current.indeterminate = some }, [some])
+  const toggle = (name: string, on: boolean) => onChange(tools.map((tool) => tool.name).filter((item) => item === name ? on : chosen.includes(item)))
+  const summary = !chosen.length ? 'Off: the model can only answer in text.'
+    : some ? `${chosen.length} of ${tools.length} tools: ${chosen.join(', ')}. Files stay inside this run's own folder.`
+      : "The model can write, edit, read, delete and list files, only inside this run's own folder. They appear as artifacts on the run."
+  return <div className="benchmark-tools">
+    <div className="benchmark-tools-head">
+      <label className="benchmark-option"><input aria-label="File tools" checked={chosen.length > 0 && !some} onChange={(event) => onChange(event.target.checked ? tools.map((tool) => tool.name) : [])} ref={all} type="checkbox" /><span><strong>File tools</strong><small>{summary}</small></span></label>
+      <button aria-controls="benchmark-tool-list" aria-expanded={open} className="button secondary compact" onClick={() => setOpen(!open)} type="button">Choose tools<ChevronDown aria-hidden="true" className="benchmark-tools-chevron" size={14} /></button>
+    </div>
+    {open && <ul className="benchmark-tool-list" id="benchmark-tool-list">
+      {tools.map((tool) => <li key={tool.name}><label className="benchmark-option"><input checked={chosen.includes(tool.name)} onChange={(event) => toggle(tool.name, event.target.checked)} type="checkbox" /><span><code>{tool.name}</code><small>{tool.summary}</small></span></label></li>)}
+    </ul>}
+  </div>
+}
+
 function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpenArtifact: (path: string) => void }) {
+  const offered = useQuery({ queryKey: ['benchmarks'], queryFn: api.benchmarks }).data?.tools
   const { stats } = run
   const decode = run.samples.filter((sample) => sample.phase === 'decode').map((sample) => sample.rate)
   const prefill = run.samples.filter((sample) => sample.phase === 'prefill').map((sample) => sample.rate)
@@ -330,6 +352,7 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
     ['Decode at end (3 s)', formatRate(stats.decode_final_tokens_per_second)],
     ['Reasoning', reasoningLabel(run.reasoning_level)],
     ['Total', formatSeconds(stats.total_seconds)],
+    ...(run.tools && run.tool_names ? [['Tools', offered && run.tool_names.length === offered.length ? 'All' : run.tool_names.join(', ')] as [string, string]] : []),
     ...(run.tools ? [['Tool calls', `${stats.tool_calls ?? run.tool_calls.length} in ${stats.rounds ?? 1} ${stats.rounds === 1 ? 'request' : 'requests'}`] as [string, string]] : []),
   ]
   const refused = run.tool_calls.filter((call) => !call.ok).length
@@ -376,7 +399,8 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   const [profileId, setProfileId] = useState('')
   const [benchmarkId, setBenchmarkId] = useState('')
   const [maxTokens, setMaxTokens] = useState('')
-  const [tools, setTools] = useState(true)
+  // Undefined until chosen, so every tool the catalog offers is on.
+  const [toolNames, setToolNames] = useState<string[]>()
   // Undefined until chosen, so the catalog's default applies; '' means no system prompt.
   const [systemPromptId, setSystemPromptId] = useState<string>()
   // '' sends no level, so the model's chat template picks its own default.
@@ -388,6 +412,8 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   const benchmarks = catalog.data?.benchmarks ?? []
   const benchmark = benchmarks.find((item) => item.id === benchmarkId) ?? benchmarks[0]
   const systemPrompts = catalog.data?.system_prompts ?? []
+  const allTools = catalog.data?.tools ?? []
+  const chosenTools = toolNames ?? allTools.map((tool) => tool.name)
   const chosenSystemPrompt = systemPromptId ?? catalog.data?.default_system_prompt_id ?? ''
   const systemPrompt = systemPrompts.find((item) => item.id === chosenSystemPrompt)
   // Blank means no limit: generation may use the profile's whole context.
@@ -415,7 +441,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   }, [activeId, queryClient, watched])
 
   const start = useMutation({
-    mutationFn: () => api.startBenchmark({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools, system_prompt_id: systemPrompt?.id ?? null, reasoning_level: reasoningLevel || null }),
+    mutationFn: () => api.startBenchmark({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools: chosenTools.length > 0, tool_names: chosenTools, system_prompt_id: systemPrompt?.id ?? null, reasoning_level: reasoningLevel || null }),
     onSettled: async () => {
       await Promise.all([queryClient.invalidateQueries({ queryKey: ['benchmark-runs'] }), queryClient.invalidateQueries({ queryKey: ['benchmarks'] })])
     },
@@ -453,7 +479,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
         <label className="compare-pick benchmark-tokens"><span>Max tokens</span><input aria-label="Max tokens" max={1048576} min={16} onChange={(event) => setMaxTokens(event.target.value)} placeholder={catalog.data?.default_max_tokens != null ? String(catalog.data.default_max_tokens) : 'Full context'} title="Leave blank to let the run use the profile's whole context" type="number" value={maxTokens} /></label>
         <button className="button primary" disabled={Boolean(blocker) || !tokensValid || start.isPending || !profile || !benchmark} type="submit">{start.isPending ? <LoaderCircle className="spin" size={15} /> : <Play size={14} fill="currentColor" />} Run benchmark</button>
       </form>
-      <label className="benchmark-option"><input checked={tools} onChange={(event) => setTools(event.target.checked)} type="checkbox" /><span><strong>File tools</strong><small>The model can write, read and list files, only inside this run&apos;s own folder. They appear as artifacts on the run.</small></span></label>
+      {allTools.length > 0 && <ToolPicker chosen={chosenTools} onChange={setToolNames} tools={allTools} />}
       <div className="benchmark-choices">
         {systemPrompts.length > 0 && <label className="compare-pick"><span>System prompt</span><select aria-label="System prompt" onChange={(event) => setSystemPromptId(event.target.value)} value={chosenSystemPrompt}>
           <option value="">None: the prompt on its own</option>

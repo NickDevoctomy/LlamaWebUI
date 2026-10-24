@@ -747,6 +747,15 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .benchmark-option span { display: grid; gap: 2px; }
 .benchmark-option strong { font-size: 13px; }
 .benchmark-option small { color: var(--muted); font-size: 12px; }
+.benchmark-tools { margin: 12px 18px 0; display: grid; gap: 10px; }
+.benchmark-tools-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px 14px; }
+.benchmark-tools .benchmark-option { margin: 0; }
+.benchmark-tools-head > .benchmark-option { flex: 1 1 280px; }
+.benchmark-tools-head > .button { flex: none; }
+.benchmark-tools-chevron { transition: transform 120ms ease; }
+.benchmark-tools-head > .button[aria-expanded="true"] .benchmark-tools-chevron { transform: rotate(180deg); }
+.benchmark-tool-list { margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 10px 16px; list-style: none; background: var(--surface-2); }
+.benchmark-tool-list code { font: 12.5px var(--font-mono); }
 .benchmark-empty { margin: 0; color: var(--muted); font-size: 12.5px; }
 .artifact-list { margin: 0; padding: 0; display: grid; gap: 4px; list-style: none; }
 .artifact-link { width: 100%; min-height: 34px; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; color: var(--fg); background: var(--surface-2); font: 12.5px var(--font-mono); text-align: left; cursor: pointer; }
