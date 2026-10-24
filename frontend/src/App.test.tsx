@@ -17,6 +17,7 @@ const responses: Record<string, unknown> = {
     logs: [],
   },
   '/api/runtimes': [],
+  '/api/settings/benchmark-tools': { eslint: { state: 'missing', versions: null, installed_at: null, size: null, progress: null, error: null, pinned: { node: '24.22.1', eslint: '10.13.0', 'eslint-plugin-html': '8.2.1' } } },
   '/api/profiles': [],
   '/api/tokens': [],
   '/api/downloads': [],
@@ -198,11 +199,14 @@ describe('App', () => {
     expect(screen.queryByText('Passwords do not match.')).not.toBeInTheDocument()
   })
 
-  it('renders Settings as an empty full-width section for users with settings access', async () => {
+  it('renders Settings with its benchmark tools for users with settings access', async () => {
     renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
     expect(screen.getByRole('heading', { name: 'Settings', level: 2 })).toBeInTheDocument()
-    expect(screen.getByText('Application settings will be available here in a future release.')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Benchmark' })).toHaveAttribute('aria-selected', 'true')
+    // Without settings.write the download is shown but cannot be started.
+    expect(await screen.findByRole('button', { name: 'Download' })).toBeDisabled()
+    expect(screen.getByText(/Fetches Node.js 24.22.1 · eslint 10.13.0/)).toBeInTheDocument()
   })
 
   it('renders live operational state and navigates to server details', async () => {

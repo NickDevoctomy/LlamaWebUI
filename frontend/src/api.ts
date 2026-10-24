@@ -139,6 +139,20 @@ export interface BenchmarkCatalog {
 export interface BenchmarkTool {
   name: string
   summary: string
+  /** False until what the tool needs is installed (check_file needs ESLint). */
+  available: boolean
+}
+
+export interface LinterStatus {
+  state: 'missing' | 'installing' | 'installed' | 'failed'
+  /** Installed versions of Node.js and each package. */
+  versions: Record<string, string> | null
+  installed_at: string | null
+  size: number | null
+  progress: { stage: 'downloading' | 'verifying' | 'extracting' | 'packages'; received?: number; total?: number | null } | null
+  error: string | null
+  /** What an install fetches. */
+  pinned: Record<string, string>
 }
 
 /** Timings in seconds and speeds in tokens per second; any may be missing for a run that stopped early. */
@@ -715,6 +729,9 @@ export const api = {
     request<BenchmarkRunDetail>('/api/benchmarks/runs', { method: 'POST', body: JSON.stringify(body) }),
   cancelBenchmark: (runId: string) =>
     request<BenchmarkRun>(`/api/benchmarks/runs/${runId}/cancel`, { method: 'POST' }),
+  benchmarkTools: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools'),
+  installEslint: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools/eslint', { method: 'POST' }),
+  removeEslint: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools/eslint', { method: 'DELETE' }),
   deleteBenchmarkRun: (runId: string) =>
     request<void>(`/api/benchmarks/runs/${runId}`, { method: 'DELETE' }),
   upgradeProfile: (profileId: string) =>

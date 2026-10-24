@@ -507,11 +507,18 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
     assert unknown_tool.status_code == 422
     assert unknown_tool.json()["detail"] == "unknown tools: nope"
     assert [item["name"] for item in listed["tools"]] == [
-        "write_file", "edit_file", "read_file", "delete_file", "list_files", "task_complete"
+        "write_file",
+        "edit_file",
+        "read_file",
+        "delete_file",
+        "list_files",
+        "check_file",
+        "task_complete",
     ]
     assert listed["tools"][0] == {
         "name": "write_file",
         "summary": "Create or replace a whole file.",
+        "available": True,
     }
     assert detail["artifacts"] == [{"path": "game/index.html", "size": 25}]
     # Files come back as text inside JSON, never as a page the browser would run.

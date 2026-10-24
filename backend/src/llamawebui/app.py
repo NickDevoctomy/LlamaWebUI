@@ -81,6 +81,7 @@ from llamawebui.services.auth_service import (
     UserAlreadyExistsError,
 )
 from llamawebui.services.authorization import privilege_for_request
+from llamawebui.services.benchmark_linter import BenchmarkLinter, LinterError
 from llamawebui.services.benchmark_runner import (
     DEFAULT_MAX_TOKENS,
     REASONING_LEVELS,
@@ -894,6 +895,7 @@ def create_app(
     recommendations: tuple[Recommendation, ...] | None = None,
     benchmarks: tuple[Benchmark, ...] | None = None,
     system_prompts: tuple[SystemPrompt, ...] | None = None,
+    benchmark_linter: BenchmarkLinter | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
     packaged_static_dir = static_dir or Path(__file__).parent / "static"
@@ -1044,6 +1046,7 @@ def create_app(
                 await app.state.router_supervisor.stop()
                 app.state.token_registry.remove_materialized_tokens()
 
+        app.state.benchmark_linter = benchmark_linter or BenchmarkLinter(app_settings.data_dir)
         app.state.benchmark_runner = BenchmarkRunner(
             app.state.benchmark_runs,
             cast(BenchmarkClient, app.state.router_client),
@@ -1051,6 +1054,7 @@ def create_app(
             stop_router=stop_router_after_benchmark,
             router_stopped=lambda: app.state.router_supervisor.state
             in {RouterState.STOPPED, RouterState.CRASHED},
+            linter=app.state.benchmark_linter,
         )
 
         def record_router_state(
@@ -1831,11 +1835,41 @@ def create_app(
             payload["artifacts"] = runs.workspace(record.id).files()
         return payload
 
+    @app.get("/api/settings/benchmark-tools")
+    async def benchmark_tools(request: Request) -> dict[str, object]:
+        linter = cast(BenchmarkLinter, request.app.state.benchmark_linter)
+        return {"eslint": linter.status()}
+
+    @app.post("/api/settings/benchmark-tools/eslint", status_code=status.HTTP_202_ACCEPTED)
+    async def install_eslint(request: Request) -> dict[str, object]:
+        linter = cast(BenchmarkLinter, request.app.state.benchmark_linter)
+        try:
+            linter.start_install()
+        except LinterError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return {"eslint": linter.status()}
+
+    @app.delete("/api/settings/benchmark-tools/eslint")
+    async def remove_eslint(request: Request) -> dict[str, object]:
+        linter = cast(BenchmarkLinter, request.app.state.benchmark_linter)
+        runner = cast(BenchmarkRunner, request.app.state.benchmark_runner)
+        if runner.active_run_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="wait for the running benchmark to finish before removing ESLint",
+            )
+        try:
+            linter.remove()
+        except LinterError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return {"eslint": linter.status()}
+
     @app.get("/api/benchmarks")
     async def list_benchmarks(request: Request) -> dict[str, object]:
         runner = cast(BenchmarkRunner, request.app.state.benchmark_runner)
         benchmarks = cast(tuple[Benchmark, ...], request.app.state.benchmarks)
         system_prompts = cast(tuple[SystemPrompt, ...], request.app.state.system_prompts)
+        available = runner.available_tools()
         return {
             "benchmarks": [item.to_payload() for item in benchmarks],
             "system_prompts": [item.to_payload() for item in system_prompts],
@@ -1847,7 +1881,12 @@ def create_app(
             "default_max_tokens": DEFAULT_MAX_TOKENS,
             "reasoning_levels": list(REASONING_LEVELS),
             "tools": [
-                {"name": name, "summary": TOOL_SUMMARIES[name]} for name in TOOL_NAMES
+                {
+                    "name": name,
+                    "summary": TOOL_SUMMARIES[name],
+                    "available": name in available,
+                }
+                for name in TOOL_NAMES
             ],
             "active_run_id": runner.active_run_id,
         }

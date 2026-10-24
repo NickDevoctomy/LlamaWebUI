@@ -330,19 +330,21 @@ function RetryButton({ run, profile, blocker, pending, onRetry }: { run: Benchma
 function ToolPicker({ tools, chosen, onChange }: { tools: BenchmarkTool[]; chosen: string[]; onChange: (names: string[]) => void }) {
   const [open, setOpen] = useState(false)
   const all = useRef<HTMLInputElement>(null)
-  const some = chosen.length > 0 && chosen.length < tools.length
+  // Tools whose requirements are not installed can't be chosen, so "all" means all usable.
+  const usable = tools.filter((tool) => tool.available).map((tool) => tool.name)
+  const some = chosen.length > 0 && chosen.length < usable.length
   useEffect(() => { if (all.current) all.current.indeterminate = some }, [some])
-  const toggle = (name: string, on: boolean) => onChange(tools.map((tool) => tool.name).filter((item) => item === name ? on : chosen.includes(item)))
+  const toggle = (name: string, on: boolean) => onChange(usable.filter((item) => item === name ? on : chosen.includes(item)))
   const summary = !chosen.length ? 'Off: the model can only answer in text.'
-    : some ? `${chosen.length} of ${tools.length} tools: ${chosen.join(', ')}. Files stay inside this run's own folder.`
-      : "The model can write, edit, read, delete and list files, only inside this run's own folder. They appear as artifacts on the run."
+    : some ? `${chosen.length} of ${usable.length} tools: ${chosen.join(', ')}. Files stay inside this run's own folder.`
+      : `All ${usable.length} tools. The model works on files only inside this run's own folder, and they appear as artifacts on the run.`
   return <div className="benchmark-tools">
     <div className="benchmark-tools-head">
-      <label className="benchmark-option"><input aria-label="File tools" checked={chosen.length > 0 && !some} onChange={(event) => onChange(event.target.checked ? tools.map((tool) => tool.name) : [])} ref={all} type="checkbox" /><span><strong>File tools</strong><small>{summary}</small></span></label>
+      <label className="benchmark-option"><input aria-label="File tools" checked={chosen.length > 0 && !some} onChange={(event) => onChange(event.target.checked ? usable : [])} ref={all} type="checkbox" /><span><strong>File tools</strong><small>{summary}</small></span></label>
       <button aria-controls="benchmark-tool-list" aria-expanded={open} className="button secondary compact" onClick={() => setOpen(!open)} type="button">Choose tools<ChevronDown aria-hidden="true" className="benchmark-tools-chevron" size={14} /></button>
     </div>
     {open && <ul className="benchmark-tool-list" id="benchmark-tool-list">
-      {tools.map((tool) => <li key={tool.name}><label className="benchmark-option"><input checked={chosen.includes(tool.name)} onChange={(event) => toggle(tool.name, event.target.checked)} type="checkbox" /><span><code>{tool.name}</code><small>{tool.summary}</small></span></label></li>)}
+      {tools.map((tool) => <li key={tool.name}><label className="benchmark-option" data-disabled={!tool.available || undefined}><input checked={tool.available && chosen.includes(tool.name)} disabled={!tool.available} onChange={(event) => toggle(tool.name, event.target.checked)} type="checkbox" /><span><code>{tool.name}</code><small>{tool.summary}{!tool.available && ' Needs ESLint: download it in Settings, under Benchmark.'}</small></span></label></li>)}
     </ul>}
   </div>
 }
@@ -426,7 +428,9 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   const benchmark = benchmarks.find((item) => item.id === benchmarkId) ?? benchmarks[0]
   const systemPrompts = catalog.data?.system_prompts ?? []
   const allTools = catalog.data?.tools ?? []
-  const chosenTools = toolNames ?? allTools.map((tool) => tool.name)
+  const usableTools = allTools.filter((tool) => tool.available).map((tool) => tool.name)
+  // A tool chosen earlier drops out if what it needs is removed in the meantime.
+  const chosenTools = (toolNames ?? usableTools).filter((name) => usableTools.includes(name))
   const chosenSystemPrompt = systemPromptId ?? catalog.data?.default_system_prompt_id ?? ''
   const systemPrompt = systemPrompts.find((item) => item.id === chosenSystemPrompt)
   // Blank means no limit: generation may use the profile's whole context.

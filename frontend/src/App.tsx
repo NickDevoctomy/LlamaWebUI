@@ -40,6 +40,7 @@ import { api, type LibraryModel, type LogicalModel, type Profile, type RouterMod
 import { DashboardPanel, formatBytes, useStatusHistory } from './Dashboard'
 import { DiscoverPanel, DownloadsPanel } from './DiscoveryPanels'
 import { ErrorBoundary } from './ErrorBoundary'
+import { SettingsPanel } from './SettingsPanel'
 import { RecommendationsPanel } from './Recommendations'
 import { Dialog, ProfilePanel, RuntimePanel } from './SetupPanels'
 import { ThemeSwitch } from './theme'
@@ -403,7 +404,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
           ) : section === 'Account' ? (
             <AccountPanel user={user} />
           ) : section === 'Settings' ? (
-            <SettingsPanel />
+            <SettingsPanel canManage={canRead('settings.write')} />
           ) : section === 'Users' ? (
             <UsersPanel users={users.data ?? []} roles={roles.data ?? []} canManage={user.privileges?.includes('auth.write') ?? true} />
           ) : section === 'Roles' ? (
@@ -620,12 +621,6 @@ function CollectionPanel({ section, runtimes, profiles, tokens }: {
         ? tokens.map((item) => ({ title: item.name, meta: `Key ending ${item.last_four}`, state: item.enabled ? 'Active' : 'Revoked' }))
         : []
   return <section className="data-panel"><div className="panel-heading"><div><h2>{section}</h2><p>Local control-plane records and configuration.</p></div></div>{items.length ? <div className="collection">{items.map((item) => <div className="collection-row" key={`${item.title}-${item.meta}`}><div><strong>{item.title}</strong><span>{item.meta}</span></div><span className="profile-tag">{item.state}</span></div>)}</div> : <div className="empty"><Database size={28} /><strong>No {section.toLowerCase()} to show</strong><span>This workspace will populate as items are configured.</span></div>}</section>
-}
-
-function SettingsPanel() {
-  return <section className="data-panel settings-panel">
-    <div className="panel-heading"><div><h2>Settings</h2><p>Application settings will be available here in a future release.</p></div><Settings size={20} /></div>
-  </section>
 }
 
 function AccountPanel({ user }: { user: Awaited<ReturnType<typeof api.currentUser>> }) {

@@ -7,11 +7,13 @@ from typing import cast
 
 import pytest
 from sqlalchemy import Engine
+from test_benchmark_linter import WIN_ZIP, FakeCommands, FakeDownloads, _node_zip
 from test_benchmarks import BENCHMARK, FakeBenchmarkClient, _database, _runner
 
 from llamawebui.domain.argument_catalog import default_catalog
 from llamawebui.domain.benchmark import BenchmarkError, SystemPrompt, load_system_prompts
 from llamawebui.services import benchmark_runner
+from llamawebui.services.benchmark_linter import BenchmarkLinter, CommandResult
 from llamawebui.services.benchmark_runner import (
     TOOL_NAMES,
     BenchmarkRunRegistry,
@@ -563,10 +565,14 @@ async def test_calling_task_complete_ends_the_run_as_completed(tmp_path: Path) -
     assert results["tetris"]["outcome"] == "completed"
 
 
+# Every tool a run gets by default while ESLint is not installed.
+UNLINTED = [name for name in TOOL_NAMES if name != "check_file"]
+
+
 def test_the_workspace_note_names_only_the_tools_a_run_was_given() -> None:
     every = tool_system_prompt()
     assert "Use write_file to save files you create, edit_file to change part" in every
-    assert "list_files to see what is there." in every
+    assert "list_files to see what is there and check_file to lint" in every
     assert "call task_complete" in every
 
     assert tool_system_prompt(["read_file"]) == (
@@ -630,6 +636,69 @@ async def test_a_run_offers_only_its_chosen_tools_and_refuses_the_rest(tmp_path:
     # Without task_complete the agent cannot say it is done, so no outcome is kept.
     assert "outcome" not in finished.stats
     assert finished.stats["finish_reason"] == "stop"
+
+
+PAGE = "<script>a=</script>"
+
+
+@pytest.mark.asyncio
+async def test_an_agent_lints_its_page_once_eslint_is_installed(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    client.replies = [
+        _round(
+            [
+                _tool_call(0, "write_file", {"path": "index.html", "content": PAGE}),
+                _tool_call(1, "check_file", {"path": "index.html"}),
+                _tool_call(2, "check_file", {"path": "missing.js"}),
+            ],
+            finish="tool_calls",
+            generated=20,
+            milliseconds=100.0,
+        ),
+        _round([], finish="stop", generated=1, milliseconds=1.0),
+    ]
+    runner, runs, _ = _runner(engine, client)
+    with pytest.raises(ValueError, match="check_file needs ESLint"):
+        runner.start(profile, BENCHMARK, None, tools=True, tool_names=["check_file"])
+    assert "check_file" not in runner.available_tools()
+
+    messages = [{"line": 1, "column": 11, "severity": 2, "message": "Parsing error"}]
+    commands = FakeCommands(eslint=CommandResult(1, json.dumps([{"messages": messages}]), ""))
+    linter = BenchmarkLinter(
+        tmp_path / "data",
+        downloader=FakeDownloads({WIN_ZIP: _node_zip()}),
+        runner=commands,
+        platform="win32",
+        machine="AMD64",
+    )
+    linter.start_install()
+    await linter.wait()
+    runner._linter = linter
+    assert "check_file" in runner.available_tools()
+
+    record = runner.start(profile, BENCHMARK, None, tools=True)
+    await runner.wait()
+
+    finished = runs.get(record.id)
+    assert finished.state == "completed", finished.error
+    assert "check_file" in cast(list[str], finished.tool_names)
+    assert "check_file to lint" in str(client.requests[0][0][0]["content"])
+    assert [(call["name"], call["ok"]) for call in finished.tool_calls] == [
+        ("write_file", True),
+        ("check_file", True),
+        ("check_file", False),
+    ]
+    assert finished.tool_calls[1]["result"] == "index.html: 1 error\n1:11 error Parsing error"
+    assert commands.calls[-1][3] == PAGE
+    assert "does not exist" in str(finished.tool_calls[2]["result"])
+
+
+def test_check_file_without_a_linter_is_refused(tmp_path: Path) -> None:
+    workspace = BenchmarkWorkspace(tmp_path)
+    workspace.write("a.js", "x")
+    result, entry = _call_tool(workspace, "check_file", json.dumps({"path": "a.js"}))
+    assert (result, entry["ok"]) == ("Error: the linter is not installed", False)
 
 
 @pytest.mark.asyncio
@@ -865,9 +934,9 @@ def test_system_prompts_are_bundled_files(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("system", "tools", "expected"),
     [
-        (True, True, ["agent framing", tool_system_prompt()]),
+        (True, True, ["agent framing", tool_system_prompt(UNLINTED)]),
         (True, False, ["agent framing"]),
-        (False, True, [tool_system_prompt()]),
+        (False, True, [tool_system_prompt(UNLINTED)]),
         (False, False, None),
     ],
 )

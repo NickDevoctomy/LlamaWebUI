@@ -22,6 +22,7 @@ from sqlalchemy.orm import sessionmaker
 
 from llamawebui.domain.benchmark import Benchmark, SystemPrompt
 from llamawebui.models import BenchmarkRunRecord, ModelProfileRecord
+from llamawebui.services.benchmark_linter import BenchmarkLinter, LinterError
 from llamawebui.services.benchmark_workspace import (
     BenchmarkWorkspace,
     WorkspaceError,
@@ -55,6 +56,8 @@ def reasoning_options(level: str | None) -> dict[str, object]:
 MAX_TOOL_ROUNDS = 24
 # The tool an agent calls to say it is done. Only a run that calls it counts as completed.
 COMPLETE_TOOL = "task_complete"
+# The tool that lints a file; offered only once ESLint is installed.
+CHECK_TOOL = "check_file"
 _PATH = {"type": "string", "description": "Relative path inside the workspace."}
 FILE_TOOLS: tuple[dict[str, object], ...] = (
     {
@@ -142,12 +145,31 @@ FILE_TOOLS: tuple[dict[str, object], ...] = (
     {
         "type": "function",
         "function": {
+            "name": CHECK_TOOL,
+            "description": (
+                "Lint a JavaScript or HTML file in the workspace with ESLint, including the "
+                "scripts inside an HTML page. Lists the problems found, each with the line and "
+                "column it is on, matching read_file's line numbers."
+            ),
+            "parameters": {"type": "object", "properties": {"path": _PATH}, "required": ["path"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": COMPLETE_TOOL,
-            "description": "Say the task is finished. Call it once, after the last file is saved.",
+            "description": (
+                "Say the task is finished. Call it once, after the last file is saved, with a "
+                "summary of what you built. Ending with a text reply instead leaves the task "
+                "unfinished."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "summary": {"type": "string", "description": "What was done, briefly."}
+                    "summary": {
+                        "type": "string",
+                        "description": "What you built and the files you created, briefly.",
+                    }
                 },
             },
         },
@@ -166,6 +188,7 @@ TOOL_PURPOSES: dict[str, str] = {
     "read_file": "read_file to read a file back",
     "delete_file": "delete_file to remove a file",
     "list_files": "list_files to see what is there",
+    CHECK_TOOL: "check_file to lint a JavaScript or HTML file for mistakes",
 }
 # What each tool does, for the person choosing a run's tools.
 TOOL_SUMMARIES: dict[str, str] = {
@@ -174,6 +197,7 @@ TOOL_SUMMARIES: dict[str, str] = {
     "read_file": "Read a file back, with line numbers.",
     "delete_file": "Delete a file; never a folder.",
     "list_files": "List the files and their sizes.",
+    CHECK_TOOL: "Lint a .js or .html file with ESLint and list the problems.",
     COMPLETE_TOOL: (
         "Say the task is finished. Without it, a run is not marked completed or unfinished."
     ),
@@ -195,19 +219,23 @@ def tool_system_prompt(names: Sequence[str] = TOOL_NAMES) -> str:
     )
     if COMPLETE_TOOL in names:
         parts.append(
-            f"When the task is finished, call {COMPLETE_TOOL}; a run that ends without it "
-            "counts as unfinished."
+            f"When the task is finished, call {COMPLETE_TOOL} with a summary. A reply without a "
+            "tool call ends the run, and a run that ends without it counts as unfinished."
         )
     return " ".join(parts)
 
 
-def choose_tools(names: Sequence[str] | None) -> list[str]:
-    """The tools a run is given, in offer order; None gives every tool."""
+def choose_tools(
+    names: Sequence[str] | None, available: Sequence[str] = TOOL_NAMES
+) -> list[str]:
+    """The tools a run is given, in offer order; None gives every available tool."""
     if names is None:
-        return list(TOOL_NAMES)
+        return [name for name in TOOL_NAMES if name in available]
     unknown = sorted(set(names) - set(TOOL_NAMES))
     if unknown:
         raise ValueError(f"unknown tools: {', '.join(unknown)}")
+    if CHECK_TOOL in names and CHECK_TOOL not in available:
+        raise ValueError("check_file needs ESLint: install it in Settings, under Benchmark")
     return [name for name in TOOL_NAMES if name in names]
 
 
@@ -263,6 +291,7 @@ def _call_tool(
     name: str,
     arguments: str,
     allowed: Sequence[str] = TOOL_NAMES,
+    linter: BenchmarkLinter | None = None,
 ) -> tuple[str, dict[str, object]]:
     """Run one file tool; return the reply for the model and a log entry."""
     entry: dict[str, object] = {"name": name, "path": None, "ok": False}
@@ -296,6 +325,10 @@ def _call_tool(
             result = workspace.delete(path)
         elif name == "list_files":
             result = workspace.listing()
+        elif name == CHECK_TOOL:
+            if linter is None:
+                raise WorkspaceError("the linter is not installed")
+            result = linter.check(workspace.read(path), cast(str, path))
         elif name == COMPLETE_TOOL:
             summary = parsed.get("summary")
             result = "Task marked complete."
@@ -304,7 +337,7 @@ def _call_tool(
         else:
             raise WorkspaceError(f"there is no tool called '{name}'")
         entry["ok"] = True
-    except WorkspaceError as error:
+    except (WorkspaceError, LinterError) as error:
         result = f"Error: {error}"
     # File contents read back would bloat the log, so it keeps a short excerpt.
     entry["result"] = result if len(result) <= 300 else result[:300] + "…"
@@ -571,8 +604,10 @@ class BenchmarkRunner:
         clock: Callable[[], float] = monotonic,
         sample_seconds: float = 0.5,
         load_timeout_seconds: float = 900.0,
+        linter: BenchmarkLinter | None = None,
     ) -> None:
         self._runs = runs
+        self._linter = linter
         self._workspace_root = runs.workspace_root
         self._client = client
         self._start_router = start_router
@@ -589,6 +624,11 @@ class BenchmarkRunner:
     @property
     def active_run_id(self) -> str | None:
         return self._active
+
+    def available_tools(self) -> list[str]:
+        """Every tool a run can be given now; check_file waits for ESLint to be installed."""
+        linted = self._linter is not None and self._linter.installed
+        return [name for name in TOOL_NAMES if name != CHECK_TOOL or linted]
 
     def generation_elapsed(self, run_id: str) -> float | None:
         """Seconds since the running benchmark sent its prompt, on the timeline's clock."""
@@ -611,7 +651,7 @@ class BenchmarkRunner:
     ) -> BenchmarkRunRecord:
         if reasoning_level is not None and reasoning_level not in REASONING_LEVELS:
             raise ValueError(f"unknown reasoning level: {reasoning_level}")
-        chosen = choose_tools(tool_names)
+        chosen = choose_tools(tool_names, self.available_tools())
         # A run given no tools at all runs without a workspace, as if tools were off.
         tools = tools and bool(chosen)
         if self._task is not None and not self._task.done():
@@ -967,7 +1007,10 @@ class BenchmarkRunner:
             )
             for call in ordered:
                 timeline.switch("tool", round_number, name=call["name"], call=len(calls_made))
-                result, entry = _call_tool(workspace, call["name"], call["arguments"], given)
+                # Off the event loop: linting starts Node.js, which takes a moment.
+                result, entry = await asyncio.to_thread(
+                    _call_tool, workspace, call["name"], call["arguments"], given, self._linter
+                )
                 timeline.close(path=entry["path"], ok=entry["ok"])
                 calls_made.append({"round": round_number, **entry})
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})

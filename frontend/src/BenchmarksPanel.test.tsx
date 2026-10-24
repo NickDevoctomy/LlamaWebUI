@@ -38,8 +38,9 @@ const running: BenchmarkRun = {
   finished_at: null,
 }
 
-const TOOLS = ['write_file', 'edit_file', 'read_file', 'delete_file', 'list_files', 'task_complete'].map((name) => ({ name, summary: `What ${name} does.` }))
-const ALL_TOOLS = TOOLS.map((tool) => tool.name)
+// check_file waits for ESLint, which these tests have not installed.
+const TOOLS = ['write_file', 'edit_file', 'read_file', 'delete_file', 'list_files', 'check_file', 'task_complete'].map((name) => ({ name, summary: `What ${name} does.`, available: name !== 'check_file' }))
+const ALL_TOOLS = TOOLS.filter((tool) => tool.available).map((tool) => tool.name)
 
 function mockApi(runs: BenchmarkRun[]) {
   vi.spyOn(api, 'benchmarks').mockResolvedValue({ benchmarks: [{ id: 'tetris', title: 'Tetris', prompt: 'make tetris' }], system_prompts: [{ id: 'coding-agent', title: 'Coding agent', text: 'You are an AI agent running in a coding agent harness.' }], default_system_prompt_id: 'coding-agent', reasoning_levels: ['off', 'low', 'medium', 'high', 'xhigh'], default_max_tokens: null, tools: TOOLS, active_run_id: null })
@@ -114,6 +115,10 @@ describe('BenchmarksPanel', () => {
     expect(screen.queryByRole('checkbox', { name: /delete_file/ })).not.toBeInTheDocument()
     fireEvent.click(expand)
     expect(expand).toHaveAttribute('aria-expanded', 'true')
+    const lint = screen.getByRole('checkbox', { name: /check_file/ })
+    expect(lint).toBeDisabled()
+    expect(lint).not.toBeChecked()
+    expect(screen.getByText(/Needs ESLint: download it in Settings, under Benchmark\./)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('checkbox', { name: /delete_file/ }))
     fireEvent.click(screen.getByRole('checkbox', { name: /edit_file/ }))
@@ -129,6 +134,9 @@ describe('BenchmarksPanel', () => {
     expect(screen.getByRole('checkbox', { name: /delete_file/ })).toBeChecked()
     fireEvent.click(all)
     expect(screen.getAllByRole('checkbox', { name: /_/ }).every((box) => !(box as HTMLInputElement).checked)).toBe(true)
+    fireEvent.click(all)
+    expect(lint).not.toBeChecked()
+    fireEvent.click(all)
     expect(screen.getByText('Off: the model can only answer in text.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
     await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ tools: false, tool_names: [] })))
