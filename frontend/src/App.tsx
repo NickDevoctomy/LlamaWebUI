@@ -389,9 +389,11 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
           ) : section === 'Recommended' ? (
             <RecommendationsPanel
               canApply={canRead('profiles.write') && canRead('downloads.write')}
+              downloads={downloads.data ?? []}
               onOpenProfiles={() => navigate('Profiles')}
               onOpenRuntimes={() => navigate('Runtimes')}
               profiles={profiles.data ?? []}
+              running={running}
               runtimes={runtimes.data ?? []}
             />
           ) : section === 'Discover' ? (

@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import sys
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -137,9 +137,17 @@ from llamawebui.services.profile_registry import (
 )
 from llamawebui.services.recommendations import (
     ProfileUpgradeError,
+    RecommendationAlreadyAddedError,
     apply_recommendation,
+    find_download,
+    find_draft_download,
+    identical_profiles,
     link_unchanged_profiles,
+    next_free_alias,
+    profile_files,
+    profile_hash,
     recommendation_status,
+    recommended_profile,
     upgrade_recommended_profile,
 )
 from llamawebui.services.router_client import (
@@ -364,6 +372,10 @@ class RoleCreateRequest(BaseModel):
 
 class RecommendationApplyRequest(BaseModel):
     runtime_id: str = Field(min_length=1, max_length=36)
+    # A name for another copy when the recommendation's own alias is taken.
+    alias: str | None = Field(default=None, min_length=1, max_length=64)
+    # False downloads the model without adding a profile.
+    add_profile: bool = True
 
 
 class UserUpdateRequest(BaseModel):
@@ -465,6 +477,48 @@ def _locate_command_model(request: Request, parsed: ParsedCommand) -> ModelLocat
     )
 
 
+def _primary_path(artifacts: ModelArtifactRegistry, job: DownloadJobRecord | None) -> Path | None:
+    if job is None:
+        return None
+    with suppress(ModelArtifactError):
+        return artifacts.primary_path(job)
+    return None
+
+
+def _download_progress(job: DownloadJobRecord | None) -> dict[str, object] | None:
+    if job is None:
+        return None
+    return {
+        "id": job.id,
+        "state": job.state,
+        "completed_bytes": job.completed_bytes,
+        "total_bytes": job.total_bytes,
+    }
+
+
+def _unfinished_download(
+    record: ModelProfileRecord,
+    catalog: ArgumentCatalog,
+    downloads: DownloadRegistry,
+    artifacts: ModelArtifactRegistry,
+) -> str | None:
+    """A download still under way for one of the profile's files, such as its draft model."""
+    files = {path.resolve() for path in profile_files(record, catalog)}
+    for job in downloads.list(include_hidden=True):
+        if DownloadState(job.state) not in _ACTIVE_DOWNLOAD_STATES:
+            continue
+        with suppress(ModelArtifactError):
+            if artifacts.primary_path(job) in files:
+                return job.id
+    return None
+
+
+def _runtime_executables(request: Request) -> dict[str, Path]:
+    """Each registered runtime's llama-server executable, by runtime id."""
+    registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+    return {runtime.id: Path(runtime.executable_path) for runtime in registry.list()}
+
+
 def _saved_profile_payload(
     request: Request, record: ModelProfileRecord, profile: ModelProfile
 ) -> dict[str, object]:
@@ -472,7 +526,11 @@ def _saved_profile_payload(
     catalog = _argument_catalog(request)
     artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
     payload = _profile_payload(
-        record, artifacts, catalog=catalog, recommendations=request.app.state.recommendations
+        record,
+        artifacts,
+        catalog=catalog,
+        recommendations=request.app.state.recommendations,
+        executables=_runtime_executables(request),
     )
     registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
     runtime = registry.get(record.runtime_id)
@@ -487,8 +545,10 @@ def _profile_payload(
     *,
     catalog: ArgumentCatalog,
     recommendations: Sequence[Recommendation] = (),
+    executables: Mapping[str, Path] | None = None,
 ) -> dict[str, object]:
     source = artifacts.source_for_profile(profile) if artifacts is not None else None
+    executable = (executables or {}).get(profile.runtime_id)
     validation_state = "available"
     download: dict[str, object] | None = None
     if artifacts is not None:
@@ -526,6 +586,8 @@ def _profile_payload(
         "exclusive": profile.exclusive,
         "description": profile.description,
         "version": profile.version,
+        # Equal for profiles that launch the same llama-server command under any alias.
+        "hash": profile_hash(profile, catalog, executable) if executable is not None else None,
         "recommendation": recommendation_status(profile, recommendations, catalog),
         "benchmark_results": profile.benchmark_results or {},
         "validation_state": validation_state,
@@ -894,6 +956,18 @@ def create_app(
         token = app_settings.hf_token.get_secret_value() if app_settings.hf_token else None
         app.state.huggingface_catalog = catalog or HuggingFaceCatalog(token)
         transfer = file_transfer or HuggingFaceFileTransfer(token)
+
+        def enable_ready(download_id: str) -> object:
+            return app.state.profile_registry.enable_ready(
+                download_id,
+                lambda record: _unfinished_download(
+                    record,
+                    app.state.argument_catalog,
+                    app.state.download_registry,
+                    app.state.model_artifact_registry,
+                ),
+            )
+
         app.state.download_coordinator = DownloadCoordinator(
             app.state.download_registry,
             DownloadWorker(
@@ -902,7 +976,7 @@ def create_app(
                 stall_timeout_seconds=app_settings.download_stall_timeout_seconds,
             ),
             event_broker=app.state.event_broker,
-            on_completed=app.state.profile_registry.enable_ready,
+            on_completed=enable_ready,
         )
         app.state.download_coordinator.start_pending()
         # Catch up on profiles whose download finished while the app was not watching.
@@ -910,7 +984,7 @@ def create_app(
             with suppress(DownloadJobNotFoundError):
                 job = app.state.download_registry.get(download_id)
                 if DownloadState(job.state) is DownloadState.COMPLETED:
-                    app.state.profile_registry.enable_ready(download_id)
+                    enable_ready(download_id)
         app.state.hardware_detector = hardware_detector
         app.state.recommendations = (
             recommendations if recommendations is not None else load_recommendations()
@@ -2085,13 +2159,10 @@ def create_app(
             if _runtime_payload(runtime)["usable"]
         ]
         profiles = cast(ProfileRegistry, request.app.state.profile_registry).list()
-        aliases = {profile.alias: profile.id for profile in profiles}
-        # A profile linked to a recommendation stays its profile even after a rename.
-        linked = {
-            profile.recommendation_id: profile.id
-            for profile in profiles
-            if profile.recommendation_id is not None
-        }
+        jobs = cast(DownloadRegistry, request.app.state.download_registry).list(include_hidden=True)
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        catalog = _argument_catalog(request)
+        executables = _runtime_executables(request)
         items: list[dict[str, object]] = []
         for recommendation in cast(
             tuple[Recommendation, ...], request.app.state.recommendations
@@ -2103,6 +2174,22 @@ def create_app(
                 discrete_vram_bytes=hardware.discrete_vram_bytes,
                 gpus=hardware.gpus,
             )
+            job = find_download(recommendation, jobs)
+            draft_job = find_draft_download(
+                recommendation, jobs, job.revision if job is not None else None
+            )
+            primary = _primary_path(artifacts, job)
+            draft = _primary_path(artifacts, draft_job)
+            # Per runtime, the profiles that launch exactly what this recommendation would.
+            matches: dict[str, list[str]] = {}
+            if primary is not None and (recommendation.model.draft_group is None or draft):
+                wanted = recommended_profile(recommendation, catalog, primary, draft_path=draft)
+                for runtime in runtimes:
+                    same = identical_profiles(
+                        wanted, Path(runtime.executable_path), profiles, catalog, executables
+                    )
+                    if same:
+                        matches[runtime.id] = [profile.id for profile in same]
             items.append(
                 {
                     **recommendation.to_payload(),
@@ -2116,8 +2203,18 @@ def create_app(
                         for runtime in runtimes
                         if (runtime.backend or "").lower() in recommendation.backends
                     ],
-                    "profile_id": linked.get(recommendation.id)
-                    or aliases.get(recommendation.alias),
+                    "download": _download_progress(job),
+                    "draft_download": _download_progress(draft_job),
+                    "matches": matches,
+                    # Profiles added from this recommendation, under any alias.
+                    "profile_ids": [
+                        profile.id
+                        for profile in profiles
+                        if profile.recommendation_id == recommendation.id
+                    ],
+                    "suggested_alias": next_free_alias(
+                        recommendation.alias, (profile.alias for profile in profiles)
+                    ),
                 }
             )
         return {"host": hardware.to_payload(), "recommendations": items}
@@ -2156,10 +2253,13 @@ def create_app(
                 downloads=cast(DownloadRegistry, request.app.state.download_registry),
                 artifacts=artifacts,
                 coordinator=cast(DownloadCoordinator, request.app.state.download_coordinator),
+                executables=_runtime_executables(request),
+                alias=apply_request.alias,
+                add_profile=apply_request.add_profile,
             )
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        except ProfileAliasExistsError as error:
+        except (ProfileAliasExistsError, RecommendationAlreadyAddedError) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except ProfileValidationError as error:
             raise HTTPException(
@@ -2176,11 +2276,16 @@ def create_app(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
             ) from error
         return {
-            "profile": _profile_payload(
-                applied.profile,
-                artifacts,
-                catalog=catalog,
-                recommendations=request.app.state.recommendations,
+            "profile": (
+                _profile_payload(
+                    applied.profile,
+                    artifacts,
+                    catalog=catalog,
+                    recommendations=request.app.state.recommendations,
+                    executables=_runtime_executables(request),
+                )
+                if applied.profile is not None
+                else None
             ),
             "download": _download_payload(applied.download),
             "ready": applied.ready,
@@ -2191,12 +2296,14 @@ def create_app(
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
         catalog = _argument_catalog(request)
+        executables = _runtime_executables(request)
         return [
             _profile_payload(
                 profile,
                 artifacts,
                 catalog=catalog,
                 recommendations=request.app.state.recommendations,
+                executables=executables,
             )
             for profile in registry.list()
         ]
@@ -2316,6 +2423,7 @@ def create_app(
             artifacts,
             catalog=_argument_catalog(request),
             recommendations=request.app.state.recommendations,
+            executables=_runtime_executables(request),
         )
 
     @app.post("/api/profiles/{profile_id}/upgrade")
@@ -2359,7 +2467,12 @@ def create_app(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
             ) from error
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-        return _profile_payload(profile, artifacts, catalog=_argument_catalog(request))
+        return _profile_payload(
+            profile,
+            artifacts,
+            catalog=_argument_catalog(request),
+            executables=_runtime_executables(request),
+        )
 
     @app.delete("/api/profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def remove_profile(profile_id: str, request: Request) -> None:
@@ -2412,7 +2525,12 @@ def create_app(
         except ProfileValidationError as error:
             raise HTTPException(status_code=422, detail=list(error.errors)) from error
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-        return _profile_payload(profile, artifacts, catalog=_argument_catalog(request))
+        return _profile_payload(
+            profile,
+            artifacts,
+            catalog=_argument_catalog(request),
+            executables=_runtime_executables(request),
+        )
 
     @app.get("/api/profiles/{profile_id}/export", response_class=PlainTextResponse)
     async def export_profile(profile_id: str, request: Request) -> PlainTextResponse:
@@ -2518,7 +2636,12 @@ def create_app(
                     version=version,
                 )
                 artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-                return _profile_payload(record, artifacts, catalog=catalog)
+                return _profile_payload(
+                    record,
+                    artifacts,
+                    catalog=catalog,
+                    executables=_runtime_executables(request),
+                )
             profile = ModelProfile(
                 alias=alias,
                 model_path=Path(imported_model_path),
@@ -2804,7 +2927,12 @@ def create_app(
         except ProfileValidationError as error:
             raise HTTPException(status_code=422, detail=list(error.errors)) from error
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-        return _profile_payload(created, artifacts, catalog=_argument_catalog(request))
+        return _profile_payload(
+            created,
+            artifacts,
+            catalog=_argument_catalog(request),
+            executables=_runtime_executables(request),
+        )
 
     @app.delete("/api/library/{download_id}")
     async def delete_library_model(download_id: str, request: Request) -> dict[str, object]:

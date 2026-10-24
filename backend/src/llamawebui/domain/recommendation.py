@@ -19,6 +19,8 @@ GIB = 1024**3
 _FITS_RATIO = 0.92
 _TIGHT_RATIO = 0.75
 _ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,99}$")
+# The argument a recommendation's draft model is passed with.
+DRAFT_MODEL_ARGUMENT = "spec-draft-model"
 
 Fit = Literal["fits", "tight", "insufficient"]
 
@@ -32,6 +34,9 @@ class RecommendedModel:
     repo_id: str
     quantization: str
     revision: str | None
+    # A draft model group in the same repository, such as an MTP head. Applying the
+    # recommendation downloads it too and points spec-draft-model at it.
+    draft_group: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +78,7 @@ class Recommendation:
                 "repo_id": self.model.repo_id,
                 "quantization": self.model.quantization,
                 "revision": self.model.revision,
+                "draft_group": self.model.draft_group,
             },
             "tested_on": {
                 "label": self.tested_on.label,
@@ -148,6 +154,13 @@ def parse_recommendation(document: Mapping[str, object]) -> Recommendation:
     exclusive = profile.get("exclusive", False)
     if not isinstance(exclusive, bool):
         raise RecommendationError("profile.exclusive must be true or false")
+    draft_group = _optional_text(model, "draft_group")
+    if draft_group is not None and any(
+        item.get("id") == DRAFT_MODEL_ARGUMENT for item in arguments
+    ):
+        raise RecommendationError(
+            f"profile.arguments must not set {DRAFT_MODEL_ARGUMENT} when model.draft_group does"
+        )
     patterns = {key: _optional_text(tested, key) for key in ("cpu_pattern", "gpu_pattern")}
     for key, pattern in patterns.items():
         if pattern is None:
@@ -164,6 +177,7 @@ def parse_recommendation(document: Mapping[str, object]) -> Recommendation:
             repo_id=_text(model, "repo_id"),
             quantization=_text(model, "quantization"),
             revision=_optional_text(model, "revision"),
+            draft_group=draft_group,
         ),
         tested_on=TestedHardware(
             label=_text(tested, "label"),
@@ -246,6 +260,16 @@ def assess(
         checks.append(discrete_vram_bytes / GIB >= recommendation.vram_gb * _FITS_RATIO)
     hardware_match = bool(checks) and all(checks)
     return Assessment(fit=fit, hardware_match=hardware_match, available_memory_gb=available)
+
+
+def select_draft_group(groups: Iterable[GgufGroup], key: str) -> GgufGroup:
+    """Pick the draft model group named by a recommendation, ignoring case."""
+    match = next((group for group in groups if group.key.lower() == key.lower()), None)
+    if match is None:
+        raise RecommendationError(f"the repository has no draft model {key}")
+    if not match.complete:
+        raise RecommendationError(f"the repository's draft model {key} is missing shards")
+    return match
 
 
 def select_group(groups: Iterable[GgufGroup], quantization: str) -> GgufGroup:

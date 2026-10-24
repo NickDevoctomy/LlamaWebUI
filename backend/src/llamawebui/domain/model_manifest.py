@@ -29,6 +29,12 @@ class GgufGroup:
     projector_files: tuple[HubFile, ...] = ()
 
 
+def group_quantization(key: str) -> str | None:
+    """The quantization a group key names, such as ``UD-IQ4_XS``."""
+    match = _QUANT_PATTERN.search(key)
+    return match.group(0).upper() if match else None
+
+
 def group_gguf_files(files: tuple[HubFile, ...]) -> tuple[GgufGroup, ...]:
     grouped: dict[str, list[tuple[int, int, HubFile]]] = {}
     for file in files:
@@ -57,7 +63,6 @@ def group_gguf_files(files: tuple[HubFile, ...]) -> tuple[GgufGroup, ...]:
             and [index for index, _, _ in entries] == list(range(1, expected_count + 1))
         )
         sizes = [file.size for _, _, file in entries]
-        quant_match = _QUANT_PATTERN.search(key)
         matching_projectors = tuple(
             projector
             for projector in projectors
@@ -67,7 +72,7 @@ def group_gguf_files(files: tuple[HubFile, ...]) -> tuple[GgufGroup, ...]:
         results.append(
             GgufGroup(
                 key=key,
-                quantization=quant_match.group(0).upper() if quant_match else None,
+                quantization=group_quantization(key),
                 files=tuple(file for _, _, file in entries),
                 total_size=sum(size for size in sizes if size is not None)
                 if all(size is not None for size in sizes)

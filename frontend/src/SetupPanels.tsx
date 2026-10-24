@@ -69,6 +69,16 @@ function ProfileVersionTags({ profile }: { profile: Profile }) {
   </>
 }
 
+/** The launch hash, and the other profiles that run the same command under another alias. */
+function ProfileHashTags({ profile, profiles }: { profile: Profile; profiles: Profile[] }) {
+  if (!profile.hash) return null
+  const twins = profiles.filter((other) => other.id !== profile.id && other.hash === profile.hash).map((other) => other.alias)
+  return <>
+    <span className="profile-tag hash-tag" title={`Launch hash ${profile.hash}. Profiles with the same hash run the same llama-server command; only the alias differs.`}>#{profile.hash.slice(0, 8)}</span>
+    {twins.length > 0 && <span className="profile-tag hash-tag" title={`Runs exactly the same command as ${twins.join(', ')}`}>Same as {twins[0]}{twins.length > 1 ? ` +${twins.length - 1}` : ''}</span>}
+  </>
+}
+
 export function Field({ label, hint, className, children }: {
   label: string
   hint?: string
@@ -677,7 +687,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
         {profiles.length ? <div className="record-list">{profiles.map((profile) => (
           <article className="record-row" key={profile.id}>
             <span className="record-icon"><FileCog size={18} /></span>
-            <div className="record-copy"><span className="record-title"><button className="record-link" onClick={() => editProfile(profile)} type="button"><strong>{profile.alias}</strong></button><ProfileVersionTags profile={profile} />{profile.exclusive && <span className="profile-tag" title="Nothing else can be loaded beside this profile">Exclusive</span>}</span>{profile.description && <span className="record-description">{profile.description}</span>}{Object.entries(profile.benchmark_results ?? {}).map(([id, result]) => <span className="record-benchmark" key={id}><BenchmarkSummary result={result} /></span>)}<span>{profile.model_path}</span></div>
+            <div className="record-copy"><span className="record-title"><button className="record-link" onClick={() => editProfile(profile)} type="button"><strong>{profile.alias}</strong></button><ProfileVersionTags profile={profile} />{profile.exclusive && <span className="profile-tag" title="Nothing else can be loaded beside this profile">Exclusive</span>}<ProfileHashTags profile={profile} profiles={profiles} /></span>{profile.description && <span className="record-description">{profile.description}</span>}{Object.entries(profile.benchmark_results ?? {}).map(([id, result]) => <span className="record-benchmark" key={id}><BenchmarkSummary result={result} /></span>)}<span>{profile.model_path}</span></div>
             <div className="record-meta wide"><small>Runtime</small><span>{runtimes.find((item) => item.id === profile.runtime_id)?.name ?? 'Missing runtime'}</span></div>
             {profile.validation_state === 'pending' ? <span className="state-pill downloading" title={profile.auto_enable ? 'Model is downloading. The profile switches on by itself when it finishes.' : 'Model is downloading.'}>{profile.download?.total_bytes ? `Downloading ${Math.min(100, Math.round(profile.download.completed_bytes / profile.download.total_bytes * 100))}%` : 'Downloading'}</span> : profile.validation_state === 'broken' ? <button className="state-pill error" disabled={running || !profile.source_download} onClick={() => setRepairing(profile)} title={profile.source_download ? 'Repair missing model' : 'Model file is missing'} type="button">Broken</button> : <div className="profile-state">
               {profile.recommendation?.upgradable && <button className="button primary compact" disabled={running || upgrade.isPending} onClick={() => upgrade.mutate(profile)} title={running ? 'Stop the router to upgrade a profile' : `Replace these settings with version ${profile.recommendation.latest_version} of the recommendation. The alias, model location and enabled state are kept.`} type="button">{upgrade.isPending && upgrade.variables?.id === profile.id ? <LoaderCircle className="spin" size={14} /> : <CircleArrowUp size={14} />} Upgrade to v{profile.recommendation.latest_version}</button>}

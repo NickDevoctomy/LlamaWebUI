@@ -1,7 +1,7 @@
 """Persistence operations for validated model profiles."""
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -311,8 +311,16 @@ class ProfileRegistry:
             )
             return tuple(sorted({value for value in session.scalars(statement) if value}))
 
-    def enable_ready(self, download_id: str) -> tuple[ModelProfileRecord, ...]:
-        """Enable profiles waiting on a completed download once their files validate."""
+    def enable_ready(
+        self,
+        download_id: str,
+        still_downloading: Callable[[ModelProfileRecord], str | None] | None = None,
+    ) -> tuple[ModelProfileRecord, ...]:
+        """Enable profiles waiting on a completed download once their files validate.
+
+        ``still_downloading`` names another download a profile needs, such as its draft
+        model; the profile then waits on that one instead of being enabled.
+        """
         enabled: list[ModelProfileRecord] = []
         with self._sessions() as session:
             records = session.scalars(
@@ -321,7 +329,10 @@ class ProfileRegistry:
                 )
             )
             for record in records:
-                record.enable_on_download = None
+                other = still_downloading(record) if still_downloading is not None else None
+                record.enable_on_download = other
+                if other is not None:
+                    continue
                 runtime = session.get(RuntimeRecord, record.runtime_id)
                 if runtime is None:
                     continue

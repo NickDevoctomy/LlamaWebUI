@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.domain.argument_catalog import default_catalog
 from llamawebui.domain.model_manifest import HubFile, group_gguf_files
-from llamawebui.domain.model_profile import ModelProfile, ProfileValidationError
+from llamawebui.domain.model_profile import ModelProfile, ProfileValidationError, launch_hash
 from llamawebui.domain.profile_arguments import ProfileArgument
 from llamawebui.domain.recommendation import (
     RECOMMENDATION_FORMAT,
@@ -28,13 +29,19 @@ from llamawebui.models import ModelProfileRecord, RuntimeRecord
 from llamawebui.services.hardware_profile import HardwareProfile
 from llamawebui.services.huggingface_catalog import ModelSearchResult, RepositoryManifest
 from llamawebui.services.profile_registry import ProfileRegistry
-from llamawebui.services.recommendations import is_modified, recommended_profile
+from llamawebui.services.recommendations import (
+    find_download,
+    is_modified,
+    next_free_alias,
+    recommended_profile,
+)
 from llamawebui.services.runtime_probe import RuntimeProbeResult
 
 GIB = 1024**3
 STRIX_CPU = "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S"
 REPO = "unsloth/Qwen3.8-Flash-Next-GGUF"
 SHARDS = tuple(f"Qwen3.8-Flash-Next-UD-IQ4_XS-{index:05d}-of-00002.gguf" for index in (1, 2))
+DRAFT_FILE = "MTP/mtp-Qwen3.8-Flash-Next-BF16.gguf"
 
 
 def _document(**overrides: object) -> dict[str, object]:
@@ -69,6 +76,7 @@ def _files() -> tuple[HubFile, ...]:
         HubFile(SHARDS[1], 4),
         HubFile("Qwen3.8-Flash-Next-Q8_0.gguf", 8),
         HubFile("mmproj-UD-IQ4_XS.gguf", 2),
+        HubFile(DRAFT_FILE, 5),
     )
 
 
@@ -172,15 +180,20 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     for recommendation in recommendations:
         profile = recommended_profile(recommendation, catalog, Path("model.gguf"))
         assert len(profile.arguments) == len(recommendation.arguments)
-        assert all(not argument.is_raw for argument in profile.arguments)
+        # Only options a newer runtime advertises may go beyond the catalog.
+        assert all(
+            not argument.is_raw or argument.origin == "runtime" for argument in profile.arguments
+        )
         # Bundled profiles are tuned to fill the machine, so each one runs alone.
         assert recommendation.exclusive is True
         assert recommendation.description
-    by_backend = {
-        item.tested_on.backend: item for item in recommendations if item.model.repo_id == REPO
-    }
-    strix, nvidia = by_backend["vulkan"], by_backend["cuda"]
+    by_id = {item.id: item for item in recommendations}
+    strix = by_id["qwen3.8-flash-next-ud-iq4-xs-strix-halo"]
+    nvidia = by_id["qwen3.8-flash-next-ud-iq4-xs-nvidia-24gb"]
+    mtp = by_id["qwen3.8-flash-next-ud-iq4-xs-mtp-nvidia-24gb"]
     assert strix.model.quantization == nvidia.model.quantization == "UD-IQ4_XS"
+    assert mtp.model.draft_group == "MTP/mtp-Qwen3.8-Flash-Next-BF16"
+    assert mtp.alias == "qwen3.8-flash-next-mtp-24gb"
     nvidia_host = {
         "cpu": "Intel(R) Core(TM) i7-14700F",
         "memory_bytes": 128 * GIB,
@@ -198,6 +211,7 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     assert assess(nvidia, **nvidia_host).hardware_match  # type: ignore[arg-type]
     assert assess(nvidia, **nvidia_host).fit == "fits"  # type: ignore[arg-type]
     assert not assess(nvidia, **strix_host).hardware_match  # type: ignore[arg-type]
+    assert assess(mtp, **nvidia_host).hardware_match  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -212,6 +226,13 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
         ({"profile": {"alias": "x", "arguments": ["ctx-size"]}}, "profile.arguments"),
         ({"profile": {"alias": "x", "arguments": [], "exclusive": "yes"}}, "profile.exclusive"),
         ({"profile": {"alias": "x", "arguments": [], "description": ""}}, "'description'"),
+        (
+            {
+                "model": {"repo_id": REPO, "quantization": "Q8_0", "draft_group": "MTP/x"},
+                "profile": {"alias": "x", "arguments": [{"id": "spec-draft-model", "value": "d"}]},
+            },
+            "must not set spec-draft-model",
+        ),
     ],
 )
 def test_parse_recommendation_rejects_malformed_documents(
@@ -352,7 +373,10 @@ def test_recommendations_list_reports_fit_runtimes_and_existing_profiles(
         "available_memory_gb": 95.0,
     }
     assert item["compatible_runtime_ids"] == [vulkan]
-    assert item["profile_id"] is None
+    assert item["download"] is None
+    assert item["matches"] == {}
+    assert item["profile_ids"] == []
+    assert item["suggested_alias"] == "qwen-recommended"
     assert item["profile"]["arguments"] == [{"id": "ctx-size", "value": 262144}]
     assert item["profile"]["exclusive"] is True
     assert item["profile"]["description"] == "Long context for a unified-memory APU."
@@ -389,8 +413,13 @@ def test_apply_queues_download_and_enables_profile_when_it_completes(
     assert profiles[0]["auto_enable"] is False
     assert profiles[0]["validation_state"] == "unverified"
     assert "ctx-size = 262144" in profiles[0]["preset"]
-    assert listed["recommendations"][0]["profile_id"] == profiles[0]["id"]
+    item = listed["recommendations"][0]
+    assert item["matches"] == {runtime_id: [profiles[0]["id"]]}
+    assert item["profile_ids"] == [profiles[0]["id"]]
+    assert item["download"]["state"] == "completed"
+    assert item["suggested_alias"] == "qwen-recommended-2"
     assert again.status_code == 409
+    assert again.json()["detail"] == "this profile is already added as qwen-recommended"
     assert unknown.status_code == 404
 
 
@@ -701,6 +730,206 @@ def test_startup_links_only_profiles_that_match_a_recommendation_exactly(
     assert listed["qwen-recommended"]["recommendation"]["id"] == "test-model-gpu"
     assert listed["qwen-recommended"]["recommendation"]["modified"] is False
     assert listed["other-model"]["recommendation"] is None
+
+
+def test_launch_hash_ignores_alias_and_option_order_only() -> None:
+    catalog = default_catalog()
+    context = ProfileArgument("--ctx-size", 4096, catalog_id="ctx-size")
+    threads = ProfileArgument("--threads", 8, catalog_id="threads")
+    model = Path("model.gguf")
+    runtime = Path("llama-server.exe")
+    both = (context, threads)
+    base = launch_hash(ModelProfile("one", model, both), catalog, runtime)
+
+    assert launch_hash(ModelProfile("two", model, (threads, context)), catalog, runtime) == base
+    assert launch_hash(ModelProfile("one", model, (context,)), catalog, runtime) != base
+    assert launch_hash(ModelProfile("one", Path("other.gguf"), both), catalog, runtime) != base
+    assert launch_hash(ModelProfile("one", model, both), catalog, Path("cuda.exe")) != base
+
+
+def test_profiles_with_the_same_command_share_a_hash(tmp_path: Path, login: Login) -> None:
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"gguf")
+    with TestClient(_app(tmp_path, ImmediateTransfer())) as client:  # type: ignore[arg-type]
+        login(client)
+        runtime_id = _register_runtime(client, tmp_path)
+        body = _profile_body(runtime_id, str(model), 4096)
+        first = client.post("/api/profiles", json=body).json()
+        clone = client.post(f"/api/profiles/{first['id']}/clone", json={"alias": "copy"}).json()
+        other = client.post(
+            "/api/profiles", json={**_profile_body(runtime_id, str(model), 8192), "alias": "other"}
+        ).json()
+
+    assert len(first["hash"]) == 64
+    assert clone["hash"] == first["hash"]
+    assert other["hash"] != first["hash"]
+
+
+def test_a_changed_profile_lets_the_original_be_added_again_under_a_new_alias(
+    tmp_path: Path, login: Login
+) -> None:
+    with TestClient(_app(tmp_path, ImmediateTransfer())) as client:  # type: ignore[arg-type]
+        login(client)
+        runtime_id, added = _apply_and_wait(client, tmp_path)
+        client.put(
+            f"/api/profiles/{added['id']}",
+            json=_profile_body(runtime_id, str(added["model_path"]), 4096),
+        )
+        changed = client.get("/api/profiles/recommendations").json()["recommendations"][0]
+        taken = client.post(
+            "/api/profiles/recommendations/test-model-gpu/apply", json={"runtime_id": runtime_id}
+        )
+        copy = client.post(
+            "/api/profiles/recommendations/test-model-gpu/apply",
+            json={"runtime_id": runtime_id, "alias": changed["suggested_alias"]},
+        )
+        listed = client.get("/api/profiles/recommendations").json()["recommendations"][0]
+        downloads = client.get("/api/downloads").json()
+
+    assert changed["matches"] == {}
+    assert changed["profile_ids"] == [added["id"]]
+    assert changed["suggested_alias"] == "qwen-recommended-2"
+    assert taken.status_code == 409
+    assert copy.status_code == 201, copy.text
+    body = copy.json()
+    assert body["ready"] is True
+    assert body["profile"]["alias"] == "qwen-recommended-2"
+    assert body["profile"]["enabled"] is True
+    assert body["profile"]["recommendation"]["modified"] is False
+    assert listed["matches"] == {runtime_id: [body["profile"]["id"]]}
+    assert sorted(listed["profile_ids"]) == sorted([added["id"], body["profile"]["id"]])
+    assert len(downloads) == 1
+
+
+def test_apply_can_download_the_model_without_adding_a_profile(
+    tmp_path: Path, login: Login
+) -> None:
+    with TestClient(_app(tmp_path, ImmediateTransfer())) as client:  # type: ignore[arg-type]
+        login(client)
+        runtime_id = _register_runtime(client, tmp_path)
+        applied = client.post(
+            "/api/profiles/recommendations/test-model-gpu/apply",
+            json={"runtime_id": runtime_id, "add_profile": False},
+        )
+        deadline = time.monotonic() + 5
+        while client.get("/api/downloads").json()[0]["state"] != "completed":
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        listed = client.get("/api/profiles/recommendations").json()["recommendations"][0]
+        profiles = client.get("/api/profiles").json()
+
+    assert applied.status_code == 201, applied.text
+    assert applied.json()["profile"] is None
+    assert profiles == []
+    assert listed["download"]["state"] == "completed"
+    assert listed["matches"] == {}
+
+
+def test_find_download_matches_repo_revision_and_quantization() -> None:
+    def job(state: str, group_key: str = "Model-UD-IQ4_XS", revision: str = "a" * 40) -> object:
+        return SimpleNamespace(repo_id=REPO, revision=revision, group_key=group_key, state=state)
+
+    recommendation = parse_recommendation(_document())
+    pinned = parse_recommendation(
+        _document(model={"repo_id": REPO, "quantization": "UD-IQ4_XS", "revision": "c" * 40})
+    )
+    paused, done = job("paused"), job("completed")
+
+    assert find_download(recommendation, [paused, done]) is done  # type: ignore[list-item]
+    assert find_download(recommendation, [paused]) is paused  # type: ignore[list-item]
+    assert find_download(recommendation, [job("failed"), job("completed", "Model-Q8_0")]) is None  # type: ignore[list-item]
+    assert find_download(recommendation, [job("completed", "mmproj-UD-IQ4_XS")]) is None  # type: ignore[list-item]
+    assert find_download(pinned, [done]) is None  # type: ignore[list-item]
+
+
+class GatedDraftTransfer(ImmediateTransfer):
+    """Finishes the main model at once and holds the draft model until the gate opens."""
+
+    def __init__(self) -> None:
+        self.gate = threading.Event()
+
+    async def download(
+        self, *, repo_id: str, filename: str, revision: str, destination: Path
+    ) -> Path:
+        if filename == DRAFT_FILE:
+            while not self.gate.is_set():
+                await asyncio.sleep(0.02)
+        return await super().download(
+            repo_id=repo_id, filename=filename, revision=revision, destination=destination
+        )
+
+
+def _draft_document() -> dict[str, object]:
+    return _document(
+        model={
+            "repo_id": REPO,
+            "quantization": "UD-IQ4_XS",
+            "revision": None,
+            "draft_group": "MTP/mtp-Qwen3.8-Flash-Next-BF16",
+        }
+    )
+
+
+def test_a_draft_model_is_downloaded_and_the_profile_waits_for_both_files(
+    tmp_path: Path, login: Login
+) -> None:
+    transfer = GatedDraftTransfer()
+    app = _app(tmp_path, transfer, documents=(_draft_document(),))
+    with TestClient(app) as client:  # type: ignore[arg-type]
+        login(client)
+        runtime_id = _register_runtime(client, tmp_path)
+        applied = client.post(
+            "/api/profiles/recommendations/test-model-gpu/apply", json={"runtime_id": runtime_id}
+        )
+        deadline = time.monotonic() + 5
+        while not any(
+            job["state"] == "completed" and "mtp" not in job["group_key"].lower()
+            for job in client.get("/api/downloads").json()
+        ):
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        waiting = client.get("/api/profiles").json()[0]
+        transfer.gate.set()
+        profiles = _wait_for(client, lambda items: items and items[0]["enabled"])
+        listed = client.get("/api/profiles/recommendations").json()["recommendations"][0]
+        downloads = client.get("/api/downloads").json()
+
+    assert applied.status_code == 201, applied.text
+    assert sorted(job["group_key"] for job in downloads) == [
+        "MTP/mtp-Qwen3.8-Flash-Next-BF16",
+        "Qwen3.8-Flash-Next-UD-IQ4_XS",
+    ]
+    # The model finished first; the profile kept waiting for its draft model.
+    assert waiting["enabled"] is False
+    assert waiting["auto_enable"] is True
+    assert profiles[0]["enabled"] is True
+    assert "spec-draft-model" in profiles[0]["preset"]
+    assert profiles[0]["preset"].rstrip().endswith("mtp-Qwen3.8-Flash-Next-BF16.gguf")
+    assert listed["draft_download"]["state"] == "completed"
+    assert listed["matches"] == {runtime_id: [profiles[0]["id"]]}
+    assert profiles[0]["recommendation"]["modified"] is False
+
+
+def test_a_missing_draft_model_group_is_reported(tmp_path: Path, login: Login) -> None:
+    document = _draft_document()
+    document["model"] = {**document["model"], "draft_group": "MTP/missing"}  # type: ignore[dict-item]
+    with TestClient(_app(tmp_path, BlockingTransfer(), documents=(document,))) as client:  # type: ignore[arg-type]
+        login(client)
+        runtime_id = _register_runtime(client, tmp_path)
+        applied = client.post(
+            "/api/profiles/recommendations/test-model-gpu/apply", json={"runtime_id": runtime_id}
+        )
+        downloads = client.get("/api/downloads").json()
+
+    assert applied.status_code == 422
+    assert applied.json()["detail"] == "the repository has no draft model MTP/missing"
+    assert downloads == []
+
+
+def test_next_free_alias_adds_the_first_free_number() -> None:
+    assert next_free_alias("qwen", []) == "qwen"
+    assert next_free_alias("qwen", ["qwen"]) == "qwen-2"
+    assert next_free_alias("qwen", ["qwen", "qwen-2", "qwen-4"]) == "qwen-3"
 
 
 def test_file_locations_never_count_as_a_change() -> None:

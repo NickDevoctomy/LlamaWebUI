@@ -372,6 +372,7 @@ td.mono { font-size: 12px; }
 .record-copy .record-title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; overflow: visible; color: inherit; font: inherit; white-space: normal; }
 .record-copy .record-title .profile-tag { height: 20px; font: 500 10px var(--font-mono); }
 .record-copy .record-title .recommended-tag { border-color: var(--accent-line); color: var(--accent-ink); background: var(--accent-wash); }
+.record-copy .record-title .hash-tag { text-transform: none; }
 .record-copy .record-title .warning-tag { border-color: var(--warn-line); color: var(--warn); background: var(--warn-bg); }
 .record-copy .record-description { display: -webkit-box; color: var(--fg-2); font: 12.5px/1.45 var(--font-sans); white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .record-meta { min-width: 0; display: grid; gap: 3px; }
@@ -595,6 +596,9 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .recommendation-apply, .recommendation-status { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
 .recommendation-apply .form-field { flex: 1 1 240px; }
 .recommendation-apply > .button { margin-left: auto; }
+.recommendation-buttons { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.recommendation-note.info { color: var(--fg-2); }
+.recommendation-note.info svg { color: var(--accent-ink); }
 .recommendation-runtime { margin: 0; color: var(--muted); font-size: 13px; }
 .recommendation-runtime strong { color: var(--fg); }
 .recommendation-status p { margin: 0; color: var(--fg-2); font-size: 13px; }
@@ -609,7 +613,8 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .recommendation-progress > div span { height: 100%; display: block; border-radius: 3px; background: var(--data); transition: width .3s ease; }
 .recommendation-progress small { color: var(--muted); font: 11.5px var(--font-mono); font-variant-numeric: tabular-nums; }
 @container (max-width: 520px) {
-  .recommendation-apply > .button, .recommendation-status > .button { width: 100%; margin-left: 0; }
+  .recommendation-apply > .button, .recommendation-status > .button, .recommendation-buttons { width: 100%; margin-left: 0; }
+  .recommendation-buttons .button { flex: 1 1 100%; }
 }
 @media (max-width: 640px) {
   .recommendation-card { padding: 16px; }

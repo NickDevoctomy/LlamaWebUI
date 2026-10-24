@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shlex
@@ -130,6 +132,22 @@ def launch_vector(
     for option in profile.options(catalog):
         arguments.extend(option.argv(redact=redact))
     return tuple(arguments)
+
+
+def launch_hash(profile: ModelProfile, catalog: ArgumentCatalog, executable: Path) -> str:
+    """A fingerprint of the llama-server command a profile launches.
+
+    The alias is not on the command line, so profiles that differ only by name share a
+    hash. Options are compared sorted by flag, since their order does not change how
+    llama-server runs; a repeated flag keeps its own order. Sensitive values stay
+    redacted, so the hash never depends on a secret.
+    """
+    options = sorted(
+        (option.argv(redact=True) for option in profile.options(catalog)),
+        key=lambda argv: argv[0],
+    )
+    payload = json.dumps([str(executable), *options], separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def render_preset(

@@ -83,6 +83,8 @@ export interface Profile {
   exclusive?: boolean
   description?: string | null
   version?: number
+  /** SHA-256 of the llama-server command, alias excluded; equal hashes launch identically. */
+  hash?: string | null
   /** Set when the profile was added from a bundled recommendation. */
   recommendation?: ProfileRecommendation | null
   /** Latest completed result per benchmark id; kept when the runs are deleted. */
@@ -238,14 +240,24 @@ export interface Recommendation {
   version: number
   title: string
   summary: string
-  model: { repo_id: string; quantization: string; revision: string | null }
+  /** draft_group names a draft model, such as an MTP head, downloaded with the model. */
+  model: { repo_id: string; quantization: string; revision: string | null; draft_group?: string | null }
   tested_on: { label: string; memory_gb: number; unified_memory: boolean; backend: string; notes: string | null }
   /** memory_gb is system memory plus any discrete VRAM; vram_gb, when set, is the GPU share. */
   requirements: { memory_gb: number; vram_gb?: number | null; backends: string[] }
   profile: { alias: string; description?: string | null; exclusive?: boolean; arguments: StoredArgument[] }
   assessment: { fit: 'fits' | 'tight' | 'insufficient'; hardware_match: boolean; available_memory_gb: number }
   compatible_runtime_ids: string[]
-  profile_id: string | null
+  /** A local download of the recommended model, if there is one. */
+  download: { id: string; state: string; completed_bytes: number; total_bytes: number } | null
+  /** A local download of its draft model, if it has one and it was found. */
+  draft_download?: { id: string; state: string; completed_bytes: number; total_bytes: number } | null
+  /** Per runtime id, the profiles that launch exactly what this recommendation would. */
+  matches: Record<string, string[]>
+  /** Profiles added from this recommendation, under any alias. */
+  profile_ids: string[]
+  /** The recommended alias, or the first free alias-n when it is taken. */
+  suggested_alias: string
 }
 
 export interface RecommendationList {
@@ -605,10 +617,14 @@ export const api = {
   reprobeRuntime: (runtimeId: string) => request<Runtime>(`/api/runtimes/${runtimeId}/probe`, { method: 'POST' }),
   profiles: () => request<Profile[]>('/api/profiles'),
   recommendations: () => request<RecommendationList>('/api/profiles/recommendations'),
-  applyRecommendation: (id: string, runtimeId: string) =>
-    request<{ profile: Profile; download: DownloadJob; ready: boolean }>(`/api/profiles/recommendations/${id}/apply`, {
+  applyRecommendation: (id: string, runtimeId: string, options: { alias?: string; addProfile?: boolean } = {}) =>
+    request<{ profile: Profile | null; download: DownloadJob; ready: boolean }>(`/api/profiles/recommendations/${id}/apply`, {
       method: 'POST',
-      body: JSON.stringify({ runtime_id: runtimeId }),
+      body: JSON.stringify({
+        runtime_id: runtimeId,
+        ...(options.alias ? { alias: options.alias } : {}),
+        ...(options.addProfile === false ? { add_profile: false } : {}),
+      }),
     }),
   tokens: () => request<AccessToken[]>('/api/tokens'),
   downloads: () => request<DownloadJob[]>('/api/downloads'),
