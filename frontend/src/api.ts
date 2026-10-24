@@ -181,6 +181,9 @@ export interface BenchmarkStats {
   rounds?: number
   tool_calls?: number
   files_written?: number
+  /** The most tokens the model's context held during the run, and the context's size. */
+  context_peak?: number
+  context_size?: number
 }
 
 /** The latest completed result of a benchmark, written onto the profile. */
@@ -223,6 +226,8 @@ export interface BenchmarkRun {
     decode?: { tokens: number | null; rate: number | null } | null
     /** The tool call being written: its name and bytes of arguments so far. */
     tool_call?: { name: string; bytes: number } | null
+    /** Tokens in the model's context right now, and its size. */
+    context?: { used: number; size: number } | null
     /** Seconds since the prompt was sent, on the same clock as the run's timeline. */
     elapsed?: number | null
   }

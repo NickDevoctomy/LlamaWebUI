@@ -721,12 +721,16 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .benchmark-runs { container-type: inline-size; margin: 0; padding: 4px 18px; list-style: none; }
 .benchmark-runs li { min-height: 64px; padding: 10px 0; border-bottom: 1px solid var(--line-soft); display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
 .benchmark-runs li:last-child { border-bottom: 0; }
-.benchmark-run-copy { min-width: 0; flex: 1 1 240px; display: grid; gap: 3px; }
+.benchmark-run-copy { min-width: 0; flex: 1 1 220px; display: grid; gap: 3px; }
 .benchmark-run-copy strong { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
 .benchmark-run-copy strong .profile-tag, .benchmark-run-copy strong .state-pill { height: 18px; }
 .benchmark-run-copy > span { overflow: hidden; color: var(--muted); font: 11px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-.benchmark-run-figures { margin: 0; display: grid; grid-template-columns: repeat(6, 84px); gap: 2px 12px; }
-.benchmark-runs .state-pill { min-width: 86px; margin-right: 6px; justify-content: center; }
+.benchmark-run-figures { margin: 0; display: grid; grid-template-columns: repeat(6, 78px) 50px; gap: 2px 10px; }
+.benchmark-run-figures dd[data-full] { color: var(--warn); }
+.benchmark-runs .state-pill { min-width: 86px; margin-right: 2px; justify-content: center; }
+.benchmark-run-title { min-width: 0; padding: 0; border: 0; color: var(--fg); background: none; font: inherit; text-align: left; cursor: pointer; }
+.benchmark-run-title:hover { color: var(--accent-ink); text-decoration: underline; text-underline-offset: 3px; }
+.benchmark-run-title:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--radius-xs); }
 .benchmark-run-figures div, .benchmark-facts div { min-width: 0; display: grid; gap: 2px; }
 .benchmark-run-figures dt, .benchmark-facts dt { color: var(--faint); font: 500 9.5px var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }
 .benchmark-run-figures dd, .benchmark-facts dd { margin: 0; font: 500 12.5px var(--font-mono); font-variant-numeric: tabular-nums; }

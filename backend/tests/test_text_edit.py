@@ -106,9 +106,38 @@ def test_the_workspace_edits_within_its_limits(tmp_path: Path) -> None:
         workspace.edit("game.js", None, "b")
     with pytest.raises(WorkspaceError, match="replace_all must be true or false"):
         workspace.edit("game.js", "a", "b", replace_all="yes")
-    with pytest.raises(WorkspaceError, match="line must be a line number"):
-        workspace.edit("game.js", "a", "b", line=0)
     with pytest.raises(WorkspaceError, match="Could not find old_string in game.js"):
         workspace.edit("game.js", "nothing like this", "b")
     workspace.write("empty.txt", "")
     assert workspace.read_numbered("empty.txt") == "(the file is empty)"
+
+
+@pytest.mark.parametrize("line", ["2", "2: let b = 0;", " 2 ", 2.0, 2])
+def test_edit_reads_line_numbers_however_a_model_writes_them(
+    tmp_path: Path, line: object
+) -> None:
+    workspace = BenchmarkWorkspace(tmp_path)
+    workspace.write("game.js", "let a = 0;\nlet b = 0;\nlet b = 0;\n")
+
+    workspace.edit("game.js", "let b = 0;", "let b = 1;", line=line)
+
+    assert workspace.read("game.js") == "let a = 0;\nlet b = 1;\nlet b = 0;\n"
+
+
+@pytest.mark.parametrize("line", [0, -3, "two", True, 1.5, "", [2]])
+def test_an_unreadable_line_is_ignored_when_the_match_is_unique(
+    tmp_path: Path, line: object
+) -> None:
+    workspace = BenchmarkWorkspace(tmp_path)
+    workspace.write("game.js", "let a = 0;\nlet b = 0;\nlet b = 0;\n")
+
+    workspace.edit("game.js", "let a = 0;", "let a = 1;", line=line)
+    assert workspace.read("game.js").startswith("let a = 1;")
+
+    # With several matches it is part of why the edit failed, and the reply says so.
+    with pytest.raises(WorkspaceError) as caught:
+        workspace.edit("game.js", "let b = 0;", "let b = 1;", line=line)
+    assert str(caught.value).startswith("Found 2 matches for old_string in game.js")
+    assert str(caught.value).endswith(
+        f"The line given, {line!r}, is not a line number counting from 1."
+    )

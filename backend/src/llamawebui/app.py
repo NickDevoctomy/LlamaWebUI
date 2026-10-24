@@ -819,6 +819,22 @@ def _require_session(request: Request) -> AuthenticatedUser:
         ) from error
 
 
+def slot_context(models: list[dict[str, object]], alias: str) -> tuple[int, int] | None:
+    """The busiest slot's tokens in use for a model, and the context size it can grow to.
+
+    A unified KV cache shares one size between all slots; otherwise each slot has its own.
+    """
+    model = next((item for item in models if item.get("model") in (alias, None)), None)
+    if model is None:
+        return None
+    slots = cast(list[dict[str, object]], model.get("slots") or [])
+    used = max((cast(int, slot.get("used") or 0) for slot in slots), default=0)
+    shared = model.get("shared_capacity")
+    sizes = [cast(int, slot["total"]) for slot in slots if isinstance(slot.get("total"), int)]
+    size = shared if isinstance(shared, int) else max(sizes, default=0)
+    return (used, size) if size else None
+
+
 def _require_privilege(
     request: Request, user: AuthenticatedUser | None = None
 ) -> AuthenticatedUser:
@@ -1055,6 +1071,9 @@ def create_app(
             router_stopped=lambda: app.state.router_supervisor.state
             in {RouterState.STOPPED, RouterState.CRASHED},
             linter=app.state.benchmark_linter,
+            context=lambda alias: slot_context(
+                cast(RouterSupervisor, app.state.router_supervisor).context, alias
+            ),
         )
 
         def record_router_state(
@@ -1812,6 +1831,8 @@ def create_app(
                 "decode": progress.get("decode"),
                 # The tool call being written: its name and bytes of arguments so far.
                 "tool_call": progress.get("tool_call"),
+                # Tokens in the model's context now, and its size.
+                "context": progress.get("context"),
                 # Lets open timeline steps show how long they have been going.
                 "elapsed": runner.generation_elapsed(record.id),
             }

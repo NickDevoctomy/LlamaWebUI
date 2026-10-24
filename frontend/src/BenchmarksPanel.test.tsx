@@ -72,6 +72,25 @@ describe('BenchmarksPanel', () => {
     await waitFor(() => expect(start).toHaveBeenCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: 2048, tools: true, tool_names: ALL_TOOLS, system_prompt_id: 'coding-agent', reasoning_level: null }))
   })
 
+  it('shows how much of the context each run filled, and opens a run from its title', async () => {
+    const full: BenchmarkRun = { ...finished, stats: { ...finished.stats, context_peak: 64900, context_size: 65536 } }
+    const live: BenchmarkRun = { ...running, live: { ...running.live, context: { used: 16384, size: 65536 } } }
+    const older: BenchmarkRun = { ...finished, id: 'run-old', benchmark_title: 'Snake' }
+    mockApi([live, full, older])
+    vi.spyOn(api, 'benchmarkRun').mockResolvedValue({ ...full, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [] })
+    renderPanel()
+
+    const percent = await screen.findByText('99%')
+    expect(percent).toHaveAttribute('title', '64,900 of 65,536 tokens at most')
+    expect(percent).toHaveAttribute('data-full', 'true')
+    expect(screen.getByText('25%')).toHaveAttribute('title', '16,384 of 65,536 tokens now')
+    expect(screen.queryByRole('button', { name: /^View$/ })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'View run Tetris on qwen-24gb' })[1])
+    const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
+    expect(await within(dialog).findByText('64,900 / 65,536 (99%)')).toBeInTheDocument()
+  })
+
   it('retries a run with its settings on the profile as it is now', async () => {
     const chosen: BenchmarkRun = { ...finished, profile_version: 1, tools: true, tool_names: ['write_file', 'task_complete'], max_tokens: null, system_prompt_id: 'coding-agent', reasoning_level: 'high' }
     const legacy: BenchmarkRun = { ...finished, id: 'run-legacy', benchmark_title: 'Snake', tools: true }

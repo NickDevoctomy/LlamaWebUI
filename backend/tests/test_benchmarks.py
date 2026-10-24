@@ -13,7 +13,7 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 from test_server_api import FakeProcess, available_port
 
-from llamawebui.app import create_app
+from llamawebui.app import create_app, slot_context
 from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.domain.argument_catalog import default_catalog
@@ -264,6 +264,55 @@ async def test_a_benchmark_times_each_step_and_writes_its_result_to_the_profile(
 
 
 @pytest.mark.asyncio
+async def test_a_run_keeps_the_most_context_it_used(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    runner, runs, _ = _runner(engine, client)
+    readings = iter([(1000, 65536), (52000, 65536), (30000, 65536)])
+    seen: list[str] = []
+
+    def context(alias: str) -> tuple[int, int] | None:
+        seen.append(alias)
+        return next(readings, (30000, 65536))
+
+    runner._context = context
+    record = runner.start(profile, BENCHMARK, 256)
+    await runner.wait()
+
+    stats = runs.get(record.id).stats
+    assert (stats["context_peak"], stats["context_size"]) == (52000, 65536)
+    assert set(seen) == {profile.alias}
+    result = ProfileRegistry(engine, default_catalog()).get(profile.id).benchmark_results
+    assert cast(dict[str, dict[str, object]], result)["tetris"]["context_peak"] == 52000
+
+
+@pytest.mark.asyncio
+async def test_a_run_without_context_readings_keeps_none(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    runner, runs, _ = _runner(engine, FakeBenchmarkClient())
+    record = runner.start(profile, BENCHMARK, 256)
+    await runner.wait()
+    assert "context_peak" not in runs.get(record.id).stats
+
+
+def test_slot_context_reads_the_busiest_slot_against_its_size() -> None:
+    slots = [{"id": 0, "used": 900, "total": 16384}, {"id": 1, "used": 4000, "total": 16384}]
+    assert slot_context([{"model": "qwen", "shared_capacity": None, "slots": slots}], "qwen") == (
+        4000,
+        16384,
+    )
+    # A unified cache shares its whole size between the slots.
+    assert slot_context(
+        [{"model": "qwen", "shared_capacity": 65536, "slots": slots}], "qwen"
+    ) == (4000, 65536)
+    # A router serving one model itself logs without a model name.
+    assert slot_context([{"model": None, "slots": slots}], "qwen") == (4000, 16384)
+    assert slot_context([{"model": "other", "slots": slots}], "qwen") is None
+    assert slot_context([{"model": "qwen", "slots": [{"id": 0, "used": 5}]}], "qwen") is None
+    assert slot_context([], "qwen") is None
+
+
+@pytest.mark.asyncio
 async def test_a_router_too_busy_to_answer_while_loading_does_not_fail_the_run(
     tmp_path: Path,
 ) -> None:
@@ -501,7 +550,7 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
     assert listed["reasoning_levels"] == ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
     assert run["reasoning_level"] is None
     assert run["system_prompt_id"] == "coding-agent"
-    assert str(run["system_prompt"]).startswith("You are an AI coding agent")
+    assert "task_complete" in str(run["system_prompt"])
     assert run["tools"] is True
     assert run["tool_names"] == ["write_file", "task_complete"]
     assert unknown_tool.status_code == 422

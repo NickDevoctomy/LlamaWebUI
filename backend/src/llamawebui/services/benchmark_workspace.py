@@ -155,16 +155,22 @@ class BenchmarkWorkspace:
             raise WorkspaceError("give old_string and new_string as text")
         if not isinstance(replace_all, bool):
             raise WorkspaceError("replace_all must be true or false")
-        if line is not None and (isinstance(line, bool) or not isinstance(line, int) or line < 1):
-            raise WorkspaceError("line must be a line number, counting from 1")
+        number = _line_number(line)
         source = self.read(relative)
         name = self.resolve(relative).relative_to(self.folder).as_posix()
         try:
             edited = replace_text(
-                source, old, new, name=name, replace_all=replace_all, line=line
+                source, old, new, name=name, replace_all=replace_all, line=number
             )
         except EditError as error:
-            raise WorkspaceError(str(error)) from error
+            # line only picks between several matches, so one it can't read only matters
+            # when there is more than one; then it is part of why the edit failed.
+            unread = (
+                f" The line given, {line!r}, is not a line number counting from 1."
+                if line is not None and number is None
+                else ""
+            )
+            raise WorkspaceError(f"{error}{unread}") from error
         self.write(relative, edited.text)
         count = edited.replacements
         replaced = f"{count} replacement{'' if count == 1 else 's'}"
@@ -207,3 +213,18 @@ class BenchmarkWorkspace:
         if not entries:
             return "Your workspace is empty."
         return "\n".join(f"{path} ({size:,} bytes)" for path, size in entries)
+
+
+_LINE_TEXT = re.compile(r"^\s*(\d+)\s*(?::.*)?$", re.DOTALL)
+
+
+def _line_number(value: object) -> int | None:
+    """A line number from what a model sends: 42, 42.0, "42", or "42: text" copied from
+    read_file. None for anything else, which edit_file then does without."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, str) and (found := _LINE_TEXT.match(value)):
+        value = int(found.group(1))
+    return value if isinstance(value, int) and value >= 1 else None

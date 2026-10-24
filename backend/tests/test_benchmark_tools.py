@@ -919,7 +919,7 @@ def test_startup_prunes_folders_of_runs_that_no_longer_exist(tmp_path: Path) -> 
 def test_system_prompts_are_bundled_files(tmp_path: Path) -> None:
     bundled = {item.id: item for item in load_system_prompts()}
     assert bundled["coding-agent"].title == "Coding agent"
-    assert bundled["coding-agent"].text.startswith("You are an AI coding agent")
+    assert "task_complete" in bundled["coding-agent"].text
     assert load_system_prompts(tmp_path / "missing") == ()
     (tmp_path / "terse.txt").write_text(" Answer briefly. \n", encoding="utf-8")
     assert load_system_prompts(tmp_path) == (

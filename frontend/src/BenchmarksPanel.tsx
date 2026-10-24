@@ -314,6 +314,20 @@ function ArtifactViewer({ runId, path, files, onClose }: { runId: string; path: 
   </Dialog>
 }
 
+/** The share of the context a run filled at most; while running, what it holds now. */
+function contextUse(run: BenchmarkRun) {
+  const live = run.state === 'running' ? run.live?.context : undefined
+  const used = live?.used ?? run.stats.context_peak
+  const size = live?.size ?? run.stats.context_size
+  return used != null && size ? { used, size, percent: Math.round(used / size * 100), live: Boolean(live) } : undefined
+}
+
+function ContextFigure({ run }: { run: BenchmarkRun }) {
+  const use = contextUse(run)
+  if (!use) return <dd>—</dd>
+  return <dd data-full={use.percent >= 95 || undefined} title={`${use.used.toLocaleString()} of ${use.size.toLocaleString()} tokens${use.live ? ' now' : ' at most'}`}>{use.percent}%</dd>
+}
+
 /** The same benchmark and settings as an earlier run; the profile is whatever it is now. */
 function retryRequest(run: BenchmarkRun) {
   // Runs from before tools could be chosen had them all, which null asks for.
@@ -354,6 +368,7 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
   const { stats } = run
   const decode = run.samples.filter((sample) => sample.phase === 'decode').map((sample) => sample.rate)
   const prefill = run.samples.filter((sample) => sample.phase === 'prefill').map((sample) => sample.rate)
+  const context = contextUse(run)
   const facts: [string, string][] = [
     ['Server start', formatSeconds(stats.server_start_seconds)],
     ['Model load', formatSeconds(stats.load_seconds)],
@@ -364,6 +379,7 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
     ['Decode average', formatRate(stats.decode_tokens_per_second)],
     ['Decode peak (3 s)', formatRate(stats.decode_peak_tokens_per_second)],
     ['Decode at end (3 s)', formatRate(stats.decode_final_tokens_per_second)],
+    [context?.live ? 'Context (now)' : 'Context (most used)', context ? `${context.used.toLocaleString()} / ${context.size.toLocaleString()} (${context.percent}%)` : '—'],
     ['Reasoning', reasoningLabel(run.reasoning_level)],
     ['Total', formatSeconds(stats.total_seconds)],
     ...(run.tools && run.tool_names ? [['Tools', offered && run.tool_names.length === offered.length ? 'All' : run.tool_names.join(', ')] as [string, string]] : []),
@@ -527,7 +543,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
       {runs.data?.length ? <ul className="benchmark-runs">
         {runs.data.map((run) => <li key={run.id}>
           <span className="benchmark-run-copy">
-            <strong>{run.benchmark_title} · {run.profile_alias} <span className="profile-tag">v{run.profile_version}</span> <OutcomeTag run={run} /></strong>
+            <strong><button aria-label={`View run ${run.benchmark_title} on ${run.profile_alias}`} className="benchmark-run-title" onClick={() => setViewing(run.id)} type="button">{run.benchmark_title} · {run.profile_alias}</button> <span className="profile-tag">v{run.profile_version}</span> <OutcomeTag run={run} /></strong>
             <span>{formatWhen(run.started_at)}{run.system_prompt_id ? ` · ${run.system_prompt_id}` : ''}{run.reasoning_level ? ` · reasoning ${reasoningLabel(run.reasoning_level).toLowerCase()}` : ''}{run.stats.files_written ? ` · ${run.stats.files_written} ${run.stats.files_written === 1 ? 'file' : 'files'}` : ''}{run.error && run.state === 'failed' ? ` · ${run.error}` : ''}</span>
           </span>
           <dl className="benchmark-run-figures">
@@ -537,6 +553,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
             <div><dt>Decode avg</dt><dd>{formatRate(run.stats.decode_tokens_per_second ?? run.live?.decode?.rate)}</dd></div>
             <div><dt>Peak</dt><dd>{formatRate(run.stats.decode_peak_tokens_per_second)}</dd></div>
             <div><dt>Tokens</dt><dd>{run.stats.generated_tokens?.toLocaleString() ?? run.live?.decode?.tokens?.toLocaleString() ?? '—'}</dd></div>
+            <div><dt>Context</dt><ContextFigure run={run} /></div>
           </dl>
           <span className="row-actions">
             <StatePill run={run} />
@@ -545,7 +562,6 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
               // Progress and any error show in the run panel, above the list.
               runPanel.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
             }} pending={start.isPending} profile={profiles.find((item) => item.id === run.profile_id)} run={run} />
-            <button aria-label={`View run ${run.benchmark_title} on ${run.profile_alias}`} className="button row-button" onClick={() => setViewing(run.id)} type="button"><Eye size={13} /> View</button>
             <button aria-label={`Delete run ${run.benchmark_title} on ${run.profile_alias}`} className="icon-button small danger-icon" disabled={run.state === 'running' || !canRun} onClick={() => setDeleting(run)} title="Delete run" type="button"><Trash2 size={15} /></button>
           </span>
         </li>)}

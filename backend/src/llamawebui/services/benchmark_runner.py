@@ -605,9 +605,12 @@ class BenchmarkRunner:
         sample_seconds: float = 0.5,
         load_timeout_seconds: float = 900.0,
         linter: BenchmarkLinter | None = None,
+        context: Callable[[str], tuple[int, int] | None] = lambda _alias: None,
     ) -> None:
         self._runs = runs
         self._linter = linter
+        # Tokens in use and the slot's size for a model, from llama-server's own log.
+        self._context = context
         self._workspace_root = runs.workspace_root
         self._client = client
         self._start_router = start_router
@@ -624,6 +627,17 @@ class BenchmarkRunner:
     @property
     def active_run_id(self) -> str | None:
         return self._active
+
+    def _observe_context(self, alias: str, stats: dict[str, object]) -> None:
+        """Keep the context in use now, and the most the run has used, against its size."""
+        reading = self._context(alias)
+        if reading is None:
+            return
+        used, size = reading
+        self._progress["context"] = {"used": used, "size": size}
+        stats["context_size"] = size
+        if used > cast(int, stats.get("context_peak", 0)):
+            stats["context_peak"] = used
 
     def available_tools(self) -> list[str]:
         """Every tool a run can be given now; check_file waits for ESLint to be installed."""
@@ -680,6 +694,8 @@ class BenchmarkRunner:
             "timeline": [],
             # The tool call being streamed: its name and bytes of arguments so far.
             "tool_call": None,
+            # Tokens in the model's context right now, and its size.
+            "context": None,
         }
         self._task = asyncio.create_task(self._run(record, benchmark.prompt))
         return record
@@ -886,6 +902,7 @@ class BenchmarkRunner:
                 if chunk is _CONTEXT_FULL:
                     exhausted = True
                     continue
+                self._observe_context(record.profile_alias, stats)
                 progress = chunk.get("prompt_progress")
                 if isinstance(progress, dict):
                     processed = _number(progress.get("processed"))
@@ -943,6 +960,8 @@ class BenchmarkRunner:
                 if isinstance(choice.get("finish_reason"), str):
                     finish = stats["finish_reason"] = choice["finish_reason"]
 
+            # llama.cpp logs the slot's final size when the request stops, just after it.
+            self._observe_context(record.profile_alias, stats)
             # The last token's counters arrive with the closing chunk.
             generated = _number(timings.get("predicted_n"))
             decoded_so_far = totals["predicted_n"] + (
@@ -1113,6 +1132,8 @@ class BenchmarkRunner:
             "decode_final_tokens_per_second",
             "total_seconds",
             "outcome",
+            "context_peak",
+            "context_size",
         )
         return {
             "run_id": record.id,
