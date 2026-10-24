@@ -24,6 +24,7 @@ from llamawebui.services.benchmark_workspace import (
     run_folder,
 )
 from llamawebui.services.profile_registry import ProfileRegistry
+from llamawebui.services.router_client import RouterAPIError
 
 
 def profile_results(engine: Engine, profile_id: str) -> dict[str, object] | None:
@@ -103,6 +104,84 @@ def test_workspace_refuses_links_that_lead_out(tmp_path: Path) -> None:
     with pytest.raises(WorkspaceError, match="passes through a link"):
         workspace.write("link/escape.txt", "x")
     assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "../outside.txt",
+        "game/../../outside.txt",
+        "OUTSIDE",  # replaced by the absolute path below
+        "C:/outside.txt",
+        "\\\\server\\share\\outside.txt",
+        "~/outside.txt",
+        "",
+        ".",
+        "./",
+    ],
+)
+def test_delete_never_reaches_outside_the_workspace(tmp_path: Path, path: str) -> None:
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep me", encoding="utf-8")
+    workspace = BenchmarkWorkspace(tmp_path / "run")
+    workspace.write("game/index.html", "<html>")
+    target = str(outside) if path == "OUTSIDE" else path
+
+    with pytest.raises(WorkspaceError):
+        workspace.delete(target)
+    assert outside.read_text(encoding="utf-8") == "keep me"
+    assert (workspace.folder / "game" / "index.html").exists()
+    assert workspace.folder.is_dir()
+
+
+def test_delete_removes_only_files_and_tidies_empty_folders(tmp_path: Path) -> None:
+    workspace = BenchmarkWorkspace(tmp_path / "run")
+    workspace.write("game/levels/one.txt", "1")
+    workspace.write("game/index.html", "<html>")
+
+    with pytest.raises(WorkspaceError, match="is a folder; only files can be deleted"):
+        workspace.delete("game")
+    with pytest.raises(WorkspaceError, match="does not exist"):
+        workspace.delete("game/missing.txt")
+    assert workspace.delete("game/levels/one.txt") == "Deleted game/levels/one.txt (1 bytes)"
+    # The emptied folder goes; the one still holding a file stays.
+    assert not (workspace.folder / "game" / "levels").exists()
+    assert (workspace.folder / "game" / "index.html").exists()
+    assert workspace.delete("game/index.html") == "Deleted game/index.html (6 bytes)"
+    # The workspace itself is never removed, even when it ends up empty.
+    assert workspace.folder.is_dir()
+    assert workspace.files() == []
+
+
+def test_delete_refuses_links_out_of_the_workspace(tmp_path: Path) -> None:
+    outside_folder = tmp_path / "outside"
+    outside_folder.mkdir()
+    secret = outside_folder / "secret.txt"
+    secret.write_text("keep me", encoding="utf-8")
+    workspace = BenchmarkWorkspace(tmp_path / "run")
+    workspace.folder.mkdir()
+    linked = 0
+    try:
+        os.symlink(secret, workspace.folder / "file-link.txt")
+        linked += 1
+    except OSError:
+        pass
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(outside_folder), str(workspace.folder / "junction"))
+        linked += 1
+    else:
+        os.symlink(outside_folder, workspace.folder / "junction", target_is_directory=True)
+        linked += 1
+
+    if (workspace.folder / "file-link.txt").exists():
+        with pytest.raises(WorkspaceError, match="link"):
+            workspace.delete("file-link.txt")
+    with pytest.raises(WorkspaceError, match="link"):
+        workspace.delete("junction/secret.txt")
+    assert linked >= 1
+    assert secret.read_text(encoding="utf-8") == "keep me"
 
 
 def test_workspace_writes_reads_and_lists_nested_files(tmp_path: Path) -> None:
@@ -218,7 +297,16 @@ async def test_file_tools_write_only_inside_the_run_folder(tmp_path: Path) -> No
 
     # Every request offered the tools, and later ones carried the results back.
     first_messages, first_tools = client.requests[0]
-    assert first_tools == ["write_file", "read_file", "list_files"]
+    assert first_tools == [
+        "write_file",
+        "edit_file",
+        "read_file",
+        "delete_file",
+        "list_files",
+        "task_complete",
+    ]
+    # It stopped with an answer but never said it was done.
+    assert stats["outcome"] == "unfinished"
     assert first_messages[0]["role"] == "system"
     second_messages, _ = client.requests[1]
     assistant, *results = second_messages[2:]
@@ -228,7 +316,8 @@ async def test_file_tools_write_only_inside_the_run_folder(tmp_path: Path) -> No
     assert results[0]["content"] == "Wrote 6 bytes to tetris/index.html"
     assert results[3]["content"] == "tetris/index.html (6 bytes)"
     third_messages, _ = client.requests[2]
-    assert third_messages[-1]["content"] == "<html>"
+    # Files are read back with numbered lines, as coding agents show them.
+    assert third_messages[-1]["content"] == "1: <html>"
 
     # The timeline breaks generation down step by step, round by round.
     timeline = finished.timeline
@@ -257,6 +346,16 @@ async def test_file_tools_write_only_inside_the_run_folder(tmp_path: Path) -> No
     first_call = timeline[1]
     assert first_call["names"] == ["write_file", "write_file", "write_file", "list_files"]
     assert first_call["tokens"] == 40
+    # Every call's arguments, in bytes, as they arrived.
+    assert first_call["bytes"] == sum(
+        len(json.dumps(arguments).encode("utf-8"))
+        for arguments in (
+            {"path": "tetris/index.html", "content": "<html>"},
+            {"path": "C:/test.py", "content": "print(1)"},
+            {"path": "../escape.txt", "content": "x"},
+            {},
+        )
+    )
     tools = [entry for entry in timeline if entry["kind"] == "tool"]
     assert [(entry["call"], entry["name"], entry["ok"]) for entry in tools] == [
         (0, "write_file", True),
@@ -315,6 +414,176 @@ async def test_tool_calls_stop_when_the_token_budget_is_spent(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_calling_task_complete_ends_the_run_as_completed(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    client.replies = [
+        _round(
+            [
+                _tool_call(0, "write_file", {"path": "index.html", "content": "<html>"}),
+                _tool_call(1, "task_complete", {"summary": "Wrote the game."}),
+            ],
+            finish="tool_calls",
+            generated=20,
+            milliseconds=100.0,
+        ),
+        # Never requested: the run is over once the agent says it is done.
+        _round([], finish="stop", generated=1, milliseconds=1.0),
+    ]
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, None, tools=True)
+    await runner.wait()
+
+    finished = runs.get(record.id)
+    assert finished.state == "completed", finished.error
+    assert len(client.requests) == 1
+    assert finished.stats["outcome"] == "completed"
+    assert finished.stats["finish_reason"] == "task_complete"
+    assert finished.tool_calls[-1]["result"] == "Task marked complete. Wrote the game."
+    results = cast(dict[str, dict[str, object]], profile_results(engine, profile.id))
+    assert results["tetris"]["outcome"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_an_agent_writes_then_edits_a_file_by_line(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    page = "<p>score</p>\n<p>score</p>\n"
+    client.replies = [
+        _round(
+            [_tool_call(0, "write_file", {"path": "index.html", "content": page})],
+            finish="tool_calls",
+            generated=10,
+            milliseconds=10.0,
+        ),
+        _round(
+            [
+                _tool_call(
+                    0, "edit_file", {"path": "index.html", "old_string": "score", "new_string": "x"}
+                ),
+                _tool_call(
+                    1,
+                    "edit_file",
+                    {"path": "index.html", "old_string": "score", "new_string": "lines", "line": 2},
+                ),
+                _tool_call(2, "task_complete", {}),
+            ],
+            finish="tool_calls",
+            generated=10,
+            milliseconds=10.0,
+        ),
+    ]
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, None, tools=True)
+    await runner.wait()
+
+    finished = runs.get(record.id)
+    edits = [call for call in finished.tool_calls if call["name"] == "edit_file"]
+    # The first is ambiguous and refused, telling the model where the matches are.
+    assert edits[0]["ok"] is False
+    assert "starting on lines 1 and 2" in str(edits[0]["result"])
+    assert edits[1]["ok"] is True
+    content = (runs.workspace_root / record.id / "index.html").read_text(encoding="utf-8")
+    assert content == "<p>score</p>\n<p>lines</p>\n"
+    assert finished.stats["outcome"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_a_full_context_ends_the_run_as_unfinished(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    client.replies = [
+        _round(
+            [_tool_call(0, "list_files", {})], finish="tool_calls", generated=5, milliseconds=10.0
+        ),
+        RouterAPIError(400, "the request exceeds the available context size, try increasing it"),
+    ]
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, None, tools=True)
+    await runner.wait()
+
+    finished = runs.get(record.id)
+    assert finished.state == "completed", finished.error
+    assert finished.stats["finish_reason"] == "context"
+    assert finished.stats["outcome"] == "unfinished"
+    assert finished.stats["rounds"] == 2
+    # Without a limit, no max_tokens was sent at all.
+    assert all(call.endswith(":None") for call in client.calls if call.startswith("prompt:"))
+
+
+@pytest.mark.asyncio
+async def test_other_router_errors_still_fail_the_run(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    client.replies = [RouterAPIError(500, "the model crashed")]
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, None, tools=True)
+    await runner.wait()
+
+    finished = runs.get(record.id)
+    assert finished.state == "failed"
+    assert finished.error == "the model crashed"
+    assert finished.stats["outcome"] == "unfinished"
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_being_written_shows_its_size_live(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    arguments = json.dumps({"path": "notes.md", "content": "héllo wörld"})
+    pieces = [arguments[:10], arguments[10:25], arguments[25:]]
+    client.replies = [
+        _round(
+            [
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call-0" if position == 0 else None,
+                                        "function": {
+                                            "name": "write_file" if position == 0 else None,
+                                            "arguments": piece,
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+                for position, piece in enumerate(pieces)
+            ],
+            finish="tool_calls",
+            generated=12,
+            milliseconds=100.0,
+        )
+    ]
+    runner, runs, _ = _runner(engine, client)
+    seen: list[object] = []
+    client.on_chunk = lambda: seen.append(
+        (runner.progress(runner.active_run_id or "") or {}).get("tool_call")
+    )
+
+    record = runner.start(profile, BENCHMARK, None, tools=True)
+    await runner.wait()
+
+    sizes = [len(piece.encode("utf-8")) for piece in pieces]
+    assert seen[:3] == [
+        {"name": "write_file", "bytes": sizes[0]},
+        {"name": "write_file", "bytes": sizes[0] + sizes[1]},
+        {"name": "write_file", "bytes": sum(sizes)},
+    ]
+    timeline = runs.get(record.id).timeline
+    assert next(entry for entry in timeline if entry["kind"] == "tool_call")["bytes"] == sum(sizes)
+
+
+@pytest.mark.asyncio
 async def test_a_run_without_tools_offers_none_and_leaves_no_folder(tmp_path: Path) -> None:
     engine, profile = _database(tmp_path)
     client = FakeBenchmarkClient()
@@ -341,8 +610,22 @@ def test_bad_tool_arguments_are_reported_to_the_model(tmp_path: Path) -> None:
     assert "does not exist" in reply
     workspace.write("big.txt", "x" * 1000)
     reply, entry = _call_tool(workspace, "read_file", json.dumps({"path": "big.txt"}))
-    assert reply == "x" * 1000
+    assert reply == "1: " + "x" * 1000
     assert len(str(entry["result"])) == 301
+    reply, entry = _call_tool(
+        workspace,
+        "edit_file",
+        json.dumps({"path": "big.txt", "old_string": "x" * 1000, "new_string": "y"}),
+    )
+    assert reply == "Edited big.txt (1 replacement; now 1 bytes)"
+    assert entry["ok"] is True
+    assert entry["path"] == "big.txt"
+    reply, entry = _call_tool(workspace, "delete_file", json.dumps({"path": "big.txt"}))
+    assert reply == "Deleted big.txt (1 bytes)"
+    assert (entry["ok"], entry["path"]) == (True, "big.txt")
+    reply, entry = _call_tool(workspace, "delete_file", json.dumps({"path": "../app.db"}))
+    assert "'..' is not allowed" in reply
+    assert entry["ok"] is False
 
 
 def test_startup_prunes_folders_of_runs_that_no_longer_exist(tmp_path: Path) -> None:

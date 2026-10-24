@@ -336,7 +336,8 @@ class ProfileEnabledRequest(BaseModel):
 class BenchmarkRunRequest(BaseModel):
     profile_id: str = Field(min_length=1, max_length=36)
     benchmark_id: str = Field(min_length=1, max_length=64)
-    max_tokens: int = Field(default=DEFAULT_MAX_TOKENS, ge=16, le=131072)
+    # None generates until the model stops or the profile's context is full.
+    max_tokens: int | None = Field(default=DEFAULT_MAX_TOKENS, ge=16, le=1048576)
     # Let the model read and write files, confined to the run's own folder.
     tools: bool = True
     # A bundled system prompt to send first, by id; none sends the prompt on its own.
@@ -1800,6 +1801,8 @@ def create_app(
             payload["live"] = {
                 "prefill": progress.get("prefill"),
                 "decode": progress.get("decode"),
+                # The tool call being written: its name and bytes of arguments so far.
+                "tool_call": progress.get("tool_call"),
                 # Lets open timeline steps show how long they have been going.
                 "elapsed": runner.generation_elapsed(record.id),
             }

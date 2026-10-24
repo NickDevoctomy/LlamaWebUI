@@ -88,7 +88,8 @@ class BenchmarkRunRecord(Base):
     benchmark_id: Mapped[str] = mapped_column(String(64))
     benchmark_title: Mapped[str] = mapped_column(String(200))
     prompt: Mapped[str] = mapped_column(Text)
-    max_tokens: Mapped[int] = mapped_column(Integer)
+    # None leaves generation bounded only by the profile's context size.
+    max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Whether the model could read and write files in the run's own folder, and each
     # call it made, in order.
     tools: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())

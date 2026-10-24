@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
@@ -87,8 +87,11 @@ class FakeBenchmarkClient:
         self.block_after_first_chunk = False
         # Each request's messages and tools, and scripted replies, one list per request.
         self.requests: list[tuple[list[dict[str, object]], list[str]]] = []
-        self.replies: list[list[dict[str, object]]] = []
+        # A scripted reply may instead be an error the request raises.
+        self.replies: list[list[dict[str, object]] | Exception] = []
         self.options: list[dict[str, object]] = []
+        # Called after each chunk is handed over, to look at the run mid-stream.
+        self.on_chunk: Callable[[], None] | None = None
 
     async def list_models(self, *, reload: bool = False) -> tuple[RouterModel, ...]:
         if self._unanswered_polls:
@@ -107,7 +110,7 @@ class FakeBenchmarkClient:
         model: str,
         messages: Sequence[Mapping[str, object]],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         tools: Sequence[Mapping[str, object]] = (),
         options: Mapping[str, object] | None = None,
     ) -> AsyncIterator[dict[str, object]]:
@@ -117,8 +120,12 @@ class FakeBenchmarkClient:
         names = [cast(dict[str, str], tool["function"])["name"] for tool in tools]
         self.requests.append(([dict(item) for item in messages], names))
         chunks = self.replies.pop(0) if self.replies else _chunks()
+        if isinstance(chunks, Exception):
+            raise chunks
         for index, chunk in enumerate(chunks):
             yield chunk
+            if self.on_chunk is not None:
+                self.on_chunk()
             if self.block_after_first_chunk and index == 2:
                 await self.hold.wait()
 
@@ -480,7 +487,8 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
         )
 
     assert listed["benchmarks"] == [BENCHMARK.to_payload()]
-    assert listed["default_max_tokens"] == 32768
+    # No default limit: a run may use the profile's whole context.
+    assert listed["default_max_tokens"] is None
     assert listed["default_system_prompt_id"] == "coding-agent"
     assert "coding-agent" in [item["id"] for item in listed["system_prompts"]]
     assert unknown_system_prompt.status_code == 404

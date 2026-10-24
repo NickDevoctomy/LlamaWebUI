@@ -39,7 +39,7 @@ const running: BenchmarkRun = {
 }
 
 function mockApi(runs: BenchmarkRun[]) {
-  vi.spyOn(api, 'benchmarks').mockResolvedValue({ benchmarks: [{ id: 'tetris', title: 'Tetris', prompt: 'make tetris' }], system_prompts: [{ id: 'coding-agent', title: 'Coding agent', text: 'You are an AI agent running in a coding agent harness.' }], default_system_prompt_id: 'coding-agent', reasoning_levels: ['off', 'low', 'medium', 'high', 'xhigh'], default_max_tokens: 32768, active_run_id: null })
+  vi.spyOn(api, 'benchmarks').mockResolvedValue({ benchmarks: [{ id: 'tetris', title: 'Tetris', prompt: 'make tetris' }], system_prompts: [{ id: 'coding-agent', title: 'Coding agent', text: 'You are an AI agent running in a coding agent harness.' }], default_system_prompt_id: 'coding-agent', reasoning_levels: ['off', 'low', 'medium', 'high', 'xhigh'], default_max_tokens: null, active_run_id: null })
   vi.spyOn(api, 'benchmarkRuns').mockResolvedValue(runs)
 }
 
@@ -80,8 +80,66 @@ describe('BenchmarksPanel', () => {
 
     fireEvent.change(choice, { target: { value: '' } })
     expect(screen.queryByLabelText('System prompt text')).not.toBeInTheDocument()
+    // Max tokens is left blank, so the run may use the profile's whole context.
+    expect(screen.getByRole('spinbutton', { name: 'Max tokens' })).toHaveAttribute('placeholder', 'Full context')
     fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
-    await waitFor(() => expect(start).toHaveBeenCalledWith(expect.objectContaining({ system_prompt_id: null, max_tokens: 32768 })))
+    await waitFor(() => expect(start).toHaveBeenCalledWith(expect.objectContaining({ system_prompt_id: null, max_tokens: null })))
+  })
+
+  it('shows the size of a tool call while it is being written', async () => {
+    mockApi([running])
+    const detail: BenchmarkRunDetail = {
+      ...running,
+      tools: true,
+      live: { ...running.live, elapsed: 700, tool_call: { name: 'write_file', bytes: 12700 } },
+      prompt: 'make tetris',
+      system_prompt: null,
+      samples: [],
+      output: '',
+      reasoning: '',
+      tool_calls: [],
+      artifacts: [],
+      timeline: [
+        { kind: 'reading', round: 1, start: 0, end: 5, prompt_tokens: 529 },
+        { kind: 'tool_call', round: 1, start: 100, end: null },
+      ],
+    }
+    vi.spyOn(api, 'benchmarkRun').mockResolvedValue(detail)
+    renderPanel()
+
+    const toggle = await screen.findByRole('button', { name: /^Generate/ })
+    await waitFor(() => expect(toggle).toHaveTextContent('Generate(Writing tool call (write_file, 12.4 KB)… 10m 0s)'))
+    fireEvent.click(toggle)
+    const steps = screen.getByRole('list', { name: 'Generation steps' })
+    expect(within(steps).getAllByRole('listitem')[1]).toHaveTextContent('Writing tool call: write_file…12.4 KB10m 0s')
+  })
+
+  it('says whether a tool-using agent finished its task, and why generation ended', async () => {
+    const unfinished: BenchmarkRun = { ...finished, id: 'run-3', tools: true, max_tokens: null, stats: { ...finished.stats, finish_reason: 'length', outcome: 'unfinished' } }
+    const done: BenchmarkRun = { ...finished, id: 'run-4', benchmark_title: 'Snake', tools: true, stats: { ...finished.stats, finish_reason: 'task_complete', outcome: 'completed' } }
+    // A tool run from before outcomes were recorded.
+    const older: BenchmarkRun = { ...finished, id: 'run-5', tools: true }
+    mockApi([unfinished, done, finished, older])
+    const detail: BenchmarkRunDetail = { ...unfinished, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [{ kind: 'tool_call', round: 1, start: 1, end: 9, tokens: 900, names: ['write_file'], bytes: 1300 }] }
+    vi.spyOn(api, 'benchmarkRun').mockResolvedValue(detail)
+    renderPanel()
+
+    const rows = await screen.findAllByRole('button', { name: /^View run/ })
+    expect(rows).toHaveLength(4)
+    expect(within(rows[0].closest('li')!).getByText('Unfinished')).toBeInTheDocument()
+    expect(within(rows[1].closest('li')!).getByText('Task complete')).toBeInTheDocument()
+    // Neither a run without tools nor one from before outcomes were kept claims either.
+    expect(within(rows[2].closest('li')!).queryByText(/Unfinished|Task complete/)).not.toBeInTheDocument()
+    expect(within(rows[3].closest('li')!).queryByText(/Unfinished|Task complete/)).not.toBeInTheDocument()
+
+    fireEvent.click(rows[0])
+    const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
+    // With no token limit, running out means the context was full.
+    expect(await within(dialog).findByText('Ran out of context')).toBeInTheDocument()
+    expect(within(dialog).getByText('Unfinished')).toBeInTheDocument()
+    expect(within(dialog).getByText('Tokens / limit').nextSibling).toHaveTextContent('3,001 / context')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Generate' }))
+    expect(within(dialog).getByRole('list', { name: 'Generation steps' })).toHaveTextContent('1.3 KB · 900 tokens')
   })
 
   it('asks for a reasoning level, or leaves it to the model', async () => {

@@ -59,9 +59,36 @@ function formatDuration(entry: TimelineEntry, elapsed?: number | null) {
 function currentActivity(run: BenchmarkRunDetail) {
   const entry = run.state === 'running' ? run.timeline?.at(-1) : undefined
   if (!entry || entry.end != null) return undefined
-  const doing = activityName(entry)
+  const writing = entry.kind === 'tool_call' ? liveToolCall(run) : ''
+  const doing = `${activityName(entry)}${writing ? ` (${writing})` : ''}`
   const soFar = formatDuration(entry, run.live?.elapsed)
   return soFar ? `${doing}… ${soFar}` : `${doing}…`
+}
+
+/** The tool call being streamed, such as "write_file, 12.4 KB", so a long write visibly advances. */
+function liveToolCall(run: BenchmarkRunDetail) {
+  const call = run.live?.tool_call
+  if (!call) return ''
+  return [call.name, formatSize(call.bytes)].filter(Boolean).join(', ')
+}
+
+/** Why generation ended, in words; the token limit and the context are told apart. */
+function finishLabel(run: BenchmarkRun) {
+  switch (run.stats.finish_reason) {
+    case undefined: return undefined
+    case 'length': return run.max_tokens != null ? 'Hit the token limit' : 'Ran out of context'
+    case 'context': return 'Ran out of context'
+    case 'tool_round_limit': return 'Hit the tool round limit'
+    case 'task_complete': return 'Agent called task_complete'
+    default: return `Finished: ${run.stats.finish_reason}`
+  }
+}
+
+/** Whether a tool-using agent said it finished the task; runs from before outcomes were kept show none. */
+function OutcomeTag({ run }: { run: BenchmarkRun }) {
+  if (!run.stats.outcome || run.state === 'running' || run.state === 'cancelled') return null
+  const completed = run.stats.outcome === 'completed'
+  return <span className={`state-pill ${completed ? 'ready' : 'warning'}`} title={completed ? 'The agent called task_complete.' : 'The agent never called task_complete: it stopped, ran out of tokens or context, or failed.'}>{completed ? 'Task complete' : 'Unfinished'}</span>
 }
 
 function activityName(entry: TimelineEntry) {
@@ -117,8 +144,12 @@ function timelineRow(run: BenchmarkRunDetail, entry: TimelineEntry, index: numbe
     </li>
   }
   if (entry.kind === 'tool_call') {
-    const names = entry.names?.join(', ')
-    return <li data-kind="tool_call" key={index}><div className="timeline-row">{head(`Writing tool ${entry.names && entry.names.length > 1 ? 'calls' : 'call'}${names ? `: ${names}` : ''}`, tokenCount(entry.tokens).replace(/^ · /, ''))}</div></li>
+    // While it streams the call has no names yet; the live figures stand in for them.
+    const live = entry.end == null ? run.live?.tool_call : undefined
+    const names = entry.names?.join(', ') ?? live?.name
+    const bytes = entry.bytes ?? live?.bytes
+    const detail = [bytes != null ? formatSize(bytes) : '', tokenCount(entry.tokens).replace(/^ · /, '')].filter(Boolean).join(' · ')
+    return <li data-kind="tool_call" key={index}><div className="timeline-row">{head(`Writing tool ${entry.names && entry.names.length > 1 ? 'calls' : 'call'}${names ? `: ${names}` : ''}`, detail)}</div></li>
   }
   const read = entry.kind === 'reading' ? entry.prompt_tokens : undefined
   return <li data-kind="reading" key={index}><div className="timeline-row">{head(activityName(entry), read ? `${read.toLocaleString()} tokens` : '')}</div></li>
@@ -293,7 +324,7 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
     ['First token', formatSeconds(stats.first_token_seconds)],
     ['Prompt', stats.prompt_tokens != null ? `${stats.prompt_tokens.toLocaleString()} tokens` : '—'],
     ['Prefill', formatRate(stats.prompt_tokens_per_second)],
-    ['Tokens / limit', stats.generated_tokens != null ? `${stats.generated_tokens.toLocaleString()} / ${run.max_tokens.toLocaleString()}` : '—'],
+    ['Tokens / limit', stats.generated_tokens != null ? `${stats.generated_tokens.toLocaleString()} / ${run.max_tokens?.toLocaleString() ?? 'context'}` : '—'],
     ['Decode average', formatRate(stats.decode_tokens_per_second)],
     ['Decode peak (3 s)', formatRate(stats.decode_peak_tokens_per_second)],
     ['Decode at end (3 s)', formatRate(stats.decode_final_tokens_per_second)],
@@ -304,7 +335,7 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
   const refused = run.tool_calls.filter((call) => !call.ok).length
   return <>
     {run.error && run.state !== 'cancelled' && <div className="form-error" role="alert"><AlertCircle size={15} /> {run.error}</div>}
-    <div className="benchmark-detail-head"><StatePill run={run} />{stats.finish_reason && <span className="profile-tag" title="Why generation ended">{stats.finish_reason === 'length' ? 'Hit the token limit' : `Finished: ${stats.finish_reason}`}</span>}</div>
+    <div className="benchmark-detail-head"><StatePill run={run} /><OutcomeTag run={run} />{finishLabel(run) && <span className="profile-tag" title="Why generation ended">{finishLabel(run)}</span>}</div>
     <RunSteps detail={run} run={run} />
     <dl className="benchmark-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
     {decode.length > 1 && <div className="benchmark-chart"><span>Decode speed over the run (3 s windows)</span><Sparkline ceiling={stats.decode_peak_tokens_per_second} values={decode} /></div>}
@@ -359,7 +390,8 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   const systemPrompts = catalog.data?.system_prompts ?? []
   const chosenSystemPrompt = systemPromptId ?? catalog.data?.default_system_prompt_id ?? ''
   const systemPrompt = systemPrompts.find((item) => item.id === chosenSystemPrompt)
-  const tokens = Number(maxTokens || catalog.data?.default_max_tokens || 32768)
+  // Blank means no limit: generation may use the profile's whole context.
+  const tokens = maxTokens ? Number(maxTokens) : catalog.data?.default_max_tokens ?? null
   const active = runs.data?.find((run) => run.state === 'running')
   // The running benchmark's full detail, so its steps can show what generation is doing.
   const activeDetail = useQuery({
@@ -406,7 +438,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
         : !enabled.length ? 'Enable a profile to benchmark it.'
           : !benchmarks.length ? 'No benchmark prompts are installed.'
             : undefined
-  const tokensValid = Number.isInteger(tokens) && tokens >= 16 && tokens <= 131072
+  const tokensValid = tokens == null || (Number.isInteger(tokens) && tokens >= 16 && tokens <= 1048576)
 
   return <>
     <section className="data-panel benchmark-run-panel">
@@ -418,7 +450,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
         <label className="compare-pick"><span>Benchmark</span><select aria-label="Benchmark" onChange={(event) => setBenchmarkId(event.target.value)} value={benchmark?.id ?? ''}>
           {benchmarks.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
         </select></label>
-        <label className="compare-pick benchmark-tokens"><span>Max tokens</span><input aria-label="Max tokens" max={131072} min={16} onChange={(event) => setMaxTokens(event.target.value)} placeholder={String(catalog.data?.default_max_tokens ?? 32768)} type="number" value={maxTokens} /></label>
+        <label className="compare-pick benchmark-tokens"><span>Max tokens</span><input aria-label="Max tokens" max={1048576} min={16} onChange={(event) => setMaxTokens(event.target.value)} placeholder={catalog.data?.default_max_tokens != null ? String(catalog.data.default_max_tokens) : 'Full context'} title="Leave blank to let the run use the profile's whole context" type="number" value={maxTokens} /></label>
         <button className="button primary" disabled={Boolean(blocker) || !tokensValid || start.isPending || !profile || !benchmark} type="submit">{start.isPending ? <LoaderCircle className="spin" size={15} /> : <Play size={14} fill="currentColor" />} Run benchmark</button>
       </form>
       <label className="benchmark-option"><input checked={tools} onChange={(event) => setTools(event.target.checked)} type="checkbox" /><span><strong>File tools</strong><small>The model can write, read and list files, only inside this run&apos;s own folder. They appear as artifacts on the run.</small></span></label>
@@ -452,7 +484,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
       {runs.data?.length ? <ul className="benchmark-runs">
         {runs.data.map((run) => <li key={run.id}>
           <span className="benchmark-run-copy">
-            <strong>{run.benchmark_title} · {run.profile_alias} <span className="profile-tag">v{run.profile_version}</span></strong>
+            <strong>{run.benchmark_title} · {run.profile_alias} <span className="profile-tag">v{run.profile_version}</span> <OutcomeTag run={run} /></strong>
             <span>{formatWhen(run.started_at)}{run.system_prompt_id ? ` · ${run.system_prompt_id}` : ''}{run.reasoning_level ? ` · reasoning ${reasoningLabel(run.reasoning_level).toLowerCase()}` : ''}{run.stats.files_written ? ` · ${run.stats.files_written} ${run.stats.files_written === 1 ? 'file' : 'files'}` : ''}{run.error && run.state === 'failed' ? ` · ${run.error}` : ''}</span>
           </span>
           <dl className="benchmark-run-figures">

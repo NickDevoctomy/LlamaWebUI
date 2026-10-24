@@ -129,7 +129,8 @@ export interface BenchmarkCatalog {
   default_system_prompt_id: string | null
   /** 'off', or effort levels the chat template is asked for. */
   reasoning_levels: string[]
-  default_max_tokens: number
+  /** Null: no limit, so a run may use the profile's whole context. */
+  default_max_tokens: number | null
   active_run_id: string | null
 }
 
@@ -151,7 +152,10 @@ export interface BenchmarkStats {
   decode_final_tokens_per_second?: number
   generation_seconds?: number
   total_seconds?: number
+  /** stop, length, context (the conversation outgrew it), tool_round_limit or task_complete. */
   finish_reason?: string
+  /** With file tools: completed only when the agent called task_complete. */
+  outcome?: 'completed' | 'unfinished'
   /** Requests sent: one, plus one more after each round of tool calls. */
   rounds?: number
   tool_calls?: number
@@ -177,7 +181,8 @@ export interface BenchmarkRun {
   profile_version: number
   benchmark_id: string
   benchmark_title: string
-  max_tokens: number
+  /** Null: no limit beyond the profile's context size. */
+  max_tokens: number | null
   /** Whether the model could read and write files in the run's own folder. */
   tools: boolean
   system_prompt_id: string | null
@@ -193,6 +198,8 @@ export interface BenchmarkRun {
   live?: {
     prefill?: { tokens: number | null; rate: number | null } | null
     decode?: { tokens: number | null; rate: number | null } | null
+    /** The tool call being written: its name and bytes of arguments so far. */
+    tool_call?: { name: string; bytes: number } | null
     /** Seconds since the prompt was sent, on the same clock as the run's timeline. */
     elapsed?: number | null
   }
@@ -205,7 +212,7 @@ export interface BenchmarkRun {
 export type TimelineEntry = { round: number; start: number; end: number | null } & (
   | { kind: 'reading'; prompt_tokens?: number }
   | { kind: 'thinking' | 'answer'; tokens?: number; from: number; to?: number }
-  | { kind: 'tool_call'; tokens?: number; names?: string[] }
+  | { kind: 'tool_call'; tokens?: number; names?: string[]; bytes?: number }
   | { kind: 'tool'; name: string; call: number; path?: string | null; ok?: boolean }
 )
 
@@ -695,7 +702,7 @@ export const api = {
   benchmarkRun: (runId: string) => request<BenchmarkRunDetail>(`/api/benchmarks/runs/${runId}`),
   benchmarkArtifact: (runId: string, path: string) =>
     request<{ path: string; content: string }>(`/api/benchmarks/runs/${runId}/artifacts/${path.split('/').map(encodeURIComponent).join('/')}`),
-  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number; tools: boolean; system_prompt_id: string | null; reasoning_level: string | null }) =>
+  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number | null; tools: boolean; system_prompt_id: string | null; reasoning_level: string | null }) =>
     request<BenchmarkRunDetail>('/api/benchmarks/runs', { method: 'POST', body: JSON.stringify(body) }),
   cancelBenchmark: (runId: string) =>
     request<BenchmarkRun>(`/api/benchmarks/runs/${runId}/cancel`, { method: 'POST' }),

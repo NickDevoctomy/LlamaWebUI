@@ -11,6 +11,8 @@ import re
 import shutil
 from pathlib import Path
 
+from llamawebui.services.text_edit import EditError, numbered, replace_text
+
 MAX_FILE_BYTES = 1024 * 1024
 MAX_FILES = 64
 MAX_TOTAL_BYTES = 16 * 1024 * 1024
@@ -133,6 +135,72 @@ class BenchmarkWorkspace:
         if target.stat().st_size > self._max_file_bytes:
             raise WorkspaceError(f"'{name}' is too large to read")
         return target.read_bytes().decode("utf-8", errors="replace")
+
+    def read_numbered(self, relative: object) -> str:
+        """A file as the model reads it: each line prefixed by its number, as ``12: text``."""
+        text = numbered(self.read(relative))
+        return text or "(the file is empty)"
+
+    def edit(
+        self,
+        relative: object,
+        old: object,
+        new: object,
+        *,
+        replace_all: object = False,
+        line: object = None,
+    ) -> str:
+        """Replace part of a file by exact text; see :func:`replace_text`."""
+        if not isinstance(old, str) or not isinstance(new, str):
+            raise WorkspaceError("give old_string and new_string as text")
+        if not isinstance(replace_all, bool):
+            raise WorkspaceError("replace_all must be true or false")
+        if line is not None and (isinstance(line, bool) or not isinstance(line, int) or line < 1):
+            raise WorkspaceError("line must be a line number, counting from 1")
+        source = self.read(relative)
+        name = self.resolve(relative).relative_to(self.folder).as_posix()
+        try:
+            edited = replace_text(
+                source, old, new, name=name, replace_all=replace_all, line=line
+            )
+        except EditError as error:
+            raise WorkspaceError(str(error)) from error
+        self.write(relative, edited.text)
+        count = edited.replacements
+        replaced = f"{count} replacement{'' if count == 1 else 's'}"
+        how = "" if edited.matched == "exact" else f", matched ignoring {edited.matched}"
+        size = len(edited.text.encode("utf-8"))
+        return f"Edited {name} ({replaced}{how}; now {size:,} bytes)"
+
+    def delete(self, relative: object) -> str:
+        """Delete one file in the workspace, and any folders that leaves empty.
+
+        :meth:`resolve` already refuses anything outside the folder or through a link;
+        the target is checked again just before it goes, and only a plain file inside
+        the folder is ever removed. Folders themselves cannot be deleted.
+        """
+        target = self.resolve(relative)
+        name = target.relative_to(self.folder).as_posix()
+        if target.is_symlink() or target.is_junction():
+            raise WorkspaceError(f"'{name}' is a link, which is not allowed")
+        if target.is_dir():
+            raise WorkspaceError(f"'{name}' is a folder; only files can be deleted")
+        if not target.is_file():
+            raise WorkspaceError(f"'{name}' does not exist; use list_files to see your files")
+        root = self.folder.resolve()
+        resolved = target.resolve()
+        if resolved == root or not resolved.is_relative_to(root):
+            raise WorkspaceError(f"'{relative}' is outside your workspace")
+        size = target.stat().st_size
+        target.unlink()
+        # Tidy folders the file leaves empty, stopping at the workspace itself.
+        parent = target.parent
+        while parent != self.folder and parent.resolve().is_relative_to(root):
+            if parent.is_symlink() or parent.is_junction() or any(parent.iterdir()):
+                break
+            parent.rmdir()
+            parent = parent.parent
+        return f"Deleted {name} ({size:,} bytes)"
 
     def listing(self) -> str:
         entries = self._entries()

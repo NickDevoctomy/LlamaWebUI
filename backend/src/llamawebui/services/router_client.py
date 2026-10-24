@@ -163,25 +163,27 @@ class HttpRouterClient:
         model: str,
         messages: Sequence[Mapping[str, object]],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         tools: Sequence[Mapping[str, object]] = (),
         options: Mapping[str, object] | None = None,
     ) -> AsyncIterator[dict[str, object]]:
         """Stream a chat completion, yielding each chunk llama.cpp sends.
 
         Chunks carry speed timings as they go, and prompt progress while the
-        prompt is processed, so a caller can follow both phases live.
+        prompt is processed, so a caller can follow both phases live. Without
+        ``max_tokens`` generation runs until the model stops or the context is full.
         """
         # Extra fields, such as reasoning controls, go first so none can replace the rest.
         body: dict[str, object] = {
             **(options or {}),
             "model": model,
             "messages": list(messages),
-            "max_tokens": max_tokens,
             "stream": True,
             "timings_per_token": True,
             "return_progress": True,
         }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         if tools:
             body["tools"] = list(tools)
         try:

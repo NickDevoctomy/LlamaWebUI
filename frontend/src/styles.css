@@ -723,7 +723,7 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .benchmark-runs li:last-child { border-bottom: 0; }
 .benchmark-run-copy { min-width: 0; flex: 1 1 240px; display: grid; gap: 3px; }
 .benchmark-run-copy strong { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
-.benchmark-run-copy strong .profile-tag { height: 18px; }
+.benchmark-run-copy strong .profile-tag, .benchmark-run-copy strong .state-pill { height: 18px; }
 .benchmark-run-copy > span { overflow: hidden; color: var(--muted); font: 11px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .benchmark-run-figures { margin: 0; display: grid; grid-template-columns: repeat(6, 84px); gap: 2px 12px; }
 .benchmark-runs .state-pill { min-width: 86px; margin-right: 6px; justify-content: center; }

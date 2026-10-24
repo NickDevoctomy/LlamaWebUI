@@ -28,12 +28,11 @@ from llamawebui.services.benchmark_workspace import (
     remove_run_folder,
     run_folder,
 )
-from llamawebui.services.router_client import RouterModel, RouterUnavailableError
+from llamawebui.services.router_client import RouterAPIError, RouterModel, RouterUnavailableError
 
 LOGGER = logging.getLogger("llamawebui.benchmarks")
-# The output limit a coding client usually gives a model: room for a thinking model to
-# reason and then write its files, while still stopping a run that never ends.
-DEFAULT_MAX_TOKENS = 32768
+# No output limit: a run may use the profile's whole context, as an agent session can.
+DEFAULT_MAX_TOKENS: int | None = None
 # Speeds are measured over this window, matching llama.cpp's own tg_3s figure.
 RATE_WINDOW_SECONDS = 3.0
 
@@ -56,10 +55,15 @@ def reasoning_options(level: str | None) -> dict[str, object]:
 MAX_TOOL_ROUNDS = 24
 TOOL_SYSTEM_PROMPT = (
     "You have a workspace folder for this task. Use the write_file tool to save files "
-    "you create, read_file to read them back, and list_files to see what is there. "
+    "you create, edit_file to change part of a file without writing it all again, "
+    "read_file to read them back, delete_file to remove one, and list_files to see "
+    "what is there. "
     "Paths are relative to the workspace, like 'tetris/index.html'. You cannot read "
-    "or write anything outside it."
+    "or write anything outside it. When the task is finished, call task_complete; a run "
+    "that ends without it counts as unfinished."
 )
+# The tool an agent calls to say it is done. Only a run that calls it counts as completed.
+COMPLETE_TOOL = "task_complete"
 _PATH = {"type": "string", "description": "Relative path inside the workspace."}
 FILE_TOOLS: tuple[dict[str, object], ...] = (
     {
@@ -80,8 +84,59 @@ FILE_TOOLS: tuple[dict[str, object], ...] = (
     {
         "type": "function",
         "function": {
+            "name": "edit_file",
+            "description": (
+                "Replace part of a text file in the workspace by finding exact text. Copy "
+                "old_string from read_file output with its exact indentation, but without the "
+                "line-number prefix such as '12: '. If there is no exact match, the edit retries "
+                "ignoring typographic quote, dash and space variants, then trailing whitespace "
+                "on each line. old_string must be found exactly once: add surrounding lines to "
+                "make it unique, give the line it starts on, or set replace_all to change every "
+                "occurrence. Use write_file to create a file or replace all of it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": _PATH,
+                    "old_string": {"type": "string", "description": "Exact text to replace."},
+                    "new_string": {
+                        "type": "string",
+                        "description": "Text to put in its place; must differ from old_string.",
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "Replace every occurrence instead of exactly one.",
+                    },
+                    "line": {
+                        "type": "integer",
+                        "description": (
+                            "The line old_string starts on, to pick one of several matches."
+                        ),
+                    },
+                },
+                "required": ["path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read_file",
-            "description": "Read a text file from the workspace.",
+            "description": (
+                "Read a text file from the workspace. Each line is prefixed by its number as "
+                "'12: '; the prefix is not part of the file."
+            ),
+            "parameters": {"type": "object", "properties": {"path": _PATH}, "required": ["path"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_file",
+            "description": (
+                "Delete a file from the workspace. Only files can be deleted, not folders; a "
+                "folder left empty is removed with it."
+            ),
             "parameters": {"type": "object", "properties": {"path": _PATH}, "required": ["path"]},
         },
     },
@@ -91,6 +146,19 @@ FILE_TOOLS: tuple[dict[str, object], ...] = (
             "name": "list_files",
             "description": "List the files in the workspace with their sizes.",
             "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": COMPLETE_TOOL,
+            "description": "Say the task is finished. Call it once, after the last file is saved.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string", "description": "What was done, briefly."}
+                },
+            },
         },
     },
 )
@@ -106,7 +174,7 @@ class BenchmarkClient(Protocol):
         model: str,
         messages: Sequence[Mapping[str, object]],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         tools: Sequence[Mapping[str, object]] = (),
         options: Mapping[str, object] | None = None,
     ) -> AsyncIterator[dict[str, object]]: ...
@@ -131,9 +199,24 @@ def _call_tool(
         if name == "write_file":
             result = workspace.write(path, parsed.get("content"))
         elif name == "read_file":
-            result = workspace.read(path)
+            result = workspace.read_numbered(path)
+        elif name == "edit_file":
+            result = workspace.edit(
+                path,
+                parsed.get("old_string"),
+                parsed.get("new_string"),
+                replace_all=parsed.get("replace_all", False),
+                line=parsed.get("line"),
+            )
+        elif name == "delete_file":
+            result = workspace.delete(path)
         elif name == "list_files":
             result = workspace.listing()
+        elif name == COMPLETE_TOOL:
+            summary = parsed.get("summary")
+            result = "Task marked complete."
+            if isinstance(summary, str) and summary.strip():
+                result += f" {summary.strip()}"
         else:
             raise WorkspaceError(f"there is no tool called '{name}'")
         entry["ok"] = True
@@ -246,6 +329,28 @@ def _number(value: object) -> float | None:
     return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
 
 
+# Stands in for the chunks of a request llama.cpp refused because it no longer fits.
+_CONTEXT_FULL: dict[str, object] = {}
+
+
+def _exceeds_context(error: RouterAPIError) -> bool:
+    message = str(error).lower()
+    return error.status_code == 400 and "context" in message and "exceed" in message
+
+
+async def _until_context_full(
+    stream: AsyncIterator[dict[str, object]],
+) -> AsyncIterator[dict[str, object]]:
+    """Pass a reply's chunks on; a request too long for the context ends in a marker."""
+    try:
+        async for chunk in stream:
+            yield chunk
+    except RouterAPIError as error:
+        if not _exceeds_context(error):
+            raise
+        yield _CONTEXT_FULL
+
+
 class BenchmarkRunRegistry:
     def __init__(self, engine: Engine, workspace_root: Path) -> None:
         self._sessions = sessionmaker(engine, expire_on_commit=False)
@@ -258,7 +363,7 @@ class BenchmarkRunRegistry:
         self,
         profile: ModelProfileRecord,
         benchmark: Benchmark,
-        max_tokens: int,
+        max_tokens: int | None,
         *,
         tools: bool = False,
         system_prompt: SystemPrompt | None = None,
@@ -411,7 +516,7 @@ class BenchmarkRunner:
         self,
         profile: ModelProfileRecord,
         benchmark: Benchmark,
-        max_tokens: int,
+        max_tokens: int | None,
         *,
         tools: bool = False,
         system_prompt: SystemPrompt | None = None,
@@ -442,6 +547,8 @@ class BenchmarkRunner:
             "reasoning": "",
             "tool_calls": [],
             "timeline": [],
+            # The tool call being streamed: its name and bytes of arguments so far.
+            "tool_call": None,
         }
         self._task = asyncio.create_task(self._run(record, benchmark.prompt))
         return record
@@ -515,6 +622,9 @@ class BenchmarkRunner:
                     extra={"component": "benchmarks", "event": "stop_failed", "error": str(caught)},
                 )
             stats["total_seconds"] = round(self._clock() - started, 2)
+            if record.tools:
+                # A run that failed or was cancelled never got to say it was done.
+                stats.setdefault("outcome", "unfinished")
             self._runs.update(
                 record.id,
                 state=state,
@@ -618,20 +728,29 @@ class BenchmarkRunner:
             text_length=lambda key: len(cast(str, self._progress[key])),
         )
 
+        completed = False
         for round_number in range(1, MAX_TOOL_ROUNDS + 1):
             stats["rounds"] = round_number
             timings: Mapping[str, object] = {}
             content = ""
             pending: dict[int, dict[str, str]] = {}
+            # Bytes of each tool call's arguments so far, by call index.
+            sizes: dict[int, int] = {}
             round_chunks = 0
+            exhausted = False
             reading = timeline.switch("reading", round_number)
-            async for chunk in self._client.chat_stream(
-                record.profile_alias,
-                messages,
-                max_tokens=max(budget, 1),
-                tools=FILE_TOOLS if workspace is not None else (),
-                options=reasoning_options(record.reasoning_level),
+            async for chunk in _until_context_full(
+                self._client.chat_stream(
+                    record.profile_alias,
+                    messages,
+                    max_tokens=max(budget, 1) if budget is not None else None,
+                    tools=FILE_TOOLS if workspace is not None else (),
+                    options=reasoning_options(record.reasoning_level),
+                )
             ):
+                if chunk is _CONTEXT_FULL:
+                    exhausted = True
+                    continue
                 progress = chunk.get("prompt_progress")
                 if isinstance(progress, dict):
                     processed = _number(progress.get("processed"))
@@ -662,7 +781,7 @@ class BenchmarkRunner:
                     if kind is not None:
                         timeline.switch(kind, round_number)
                 if isinstance(delta, dict) and self._take_delta(
-                    delta, pending, separate=round_number > 1 and not content
+                    delta, pending, sizes, separate=round_number > 1 and not content
                 ):
                     if isinstance(delta.get("content"), str):
                         content += cast(str, delta["content"])
@@ -695,12 +814,18 @@ class BenchmarkRunner:
                 generated if generated is not None else round_chunks
             )
             timeline.close()
+            self._progress["tool_call"] = None
             reading["prompt_tokens"] = int(_number(timings.get("prompt_n")) or 0)
             if reading["end"] is None:
                 reading["end"] = round(self._clock() - sent, 2)
             for key in totals:
                 totals[key] += _number(timings.get(key)) or 0.0
-            budget -= int(_number(timings.get("predicted_n")) or round_chunks)
+            if budget is not None:
+                budget -= int(_number(timings.get("predicted_n")) or round_chunks)
+            if exhausted:
+                # The conversation no longer fits the profile's context, so the run ends here.
+                stats["finish_reason"] = "context"
+                break
             if workspace is None or not pending:
                 break
             ordered = [pending[index] for index in sorted(pending)]
@@ -709,6 +834,7 @@ class BenchmarkRunner:
             for entry in reversed(cast(list[dict[str, object]], self._progress["timeline"])):
                 if entry["kind"] == "tool_call" and entry["round"] == round_number:
                     entry["names"] = [call["name"] for call in ordered]
+                    entry["bytes"] = sum(sizes.values())
                     break
             messages.append(
                 {
@@ -730,12 +856,19 @@ class BenchmarkRunner:
                 timeline.close(path=entry["path"], ok=entry["ok"])
                 calls_made.append({"round": round_number, **entry})
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+                completed = completed or (call["name"] == COMPLETE_TOOL and entry["ok"] is True)
             stats["tool_calls"] = len(calls_made)
-            if budget <= 0:
+            if completed:
+                stats["finish_reason"] = COMPLETE_TOOL
+                break
+            if budget is not None and budget <= 0:
                 stats["finish_reason"] = "length"
                 break
         else:
             stats["finish_reason"] = "tool_round_limit"
+        if workspace is not None:
+            # Only an agent that said it was done finished the task; any other end did not.
+            stats["outcome"] = "completed" if completed else "unfinished"
 
         stats["generation_seconds"] = round(self._clock() - sent, 2)
         if totals["prompt_ms"]:
@@ -765,9 +898,18 @@ class BenchmarkRunner:
             stats["decode_final_tokens_per_second"] = full[-1]
 
     def _take_delta(
-        self, delta: Mapping[str, object], pending: dict[int, dict[str, str]], *, separate: bool
+        self,
+        delta: Mapping[str, object],
+        pending: dict[int, dict[str, str]],
+        sizes: dict[int, int],
+        *,
+        separate: bool,
     ) -> bool:
-        """Add a streamed delta to the run's text and tool calls; true if it held any."""
+        """Add a streamed delta to the run's text and tool calls; true if it held any.
+
+        A tool call's arguments carry whole files, so the call being written is shown
+        live by its name and how many bytes of arguments have arrived.
+        """
         received = False
         for key, field in (("reasoning", "reasoning_content"), ("output", "content")):
             value = delta.get(field)
@@ -783,18 +925,19 @@ class BenchmarkRunner:
                 if not isinstance(part, dict):
                     continue
                 index = part.get("index")
-                call = pending.setdefault(
-                    index if isinstance(index, int) else position,
-                    {"id": "", "name": "", "arguments": ""},
-                )
+                slot = index if isinstance(index, int) else position
+                call = pending.setdefault(slot, {"id": "", "name": "", "arguments": ""})
                 if isinstance(part.get("id"), str):
                     call["id"] = part["id"]
                 function = part.get("function")
                 if isinstance(function, dict):
                     if isinstance(function.get("name"), str):
                         call["name"] += function["name"]
-                    if isinstance(function.get("arguments"), str):
-                        call["arguments"] += function["arguments"]
+                    piece = function.get("arguments")
+                    if isinstance(piece, str):
+                        call["arguments"] += piece
+                        sizes[slot] = sizes.get(slot, 0) + len(piece.encode("utf-8"))
+                self._progress["tool_call"] = {"name": call["name"], "bytes": sizes.get(slot, 0)}
                 received = True
         return received
 
@@ -811,6 +954,7 @@ class BenchmarkRunner:
             "decode_peak_tokens_per_second",
             "decode_final_tokens_per_second",
             "total_seconds",
+            "outcome",
         )
         return {
             "run_id": record.id,
