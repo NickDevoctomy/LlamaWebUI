@@ -71,6 +71,37 @@ describe('BenchmarksPanel', () => {
     await waitFor(() => expect(start).toHaveBeenCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: 2048, tools: true, tool_names: ALL_TOOLS, system_prompt_id: 'coding-agent', reasoning_level: null }))
   })
 
+  it('retries a run with its settings on the profile as it is now', async () => {
+    const chosen: BenchmarkRun = { ...finished, profile_version: 1, tools: true, tool_names: ['write_file', 'task_complete'], max_tokens: null, system_prompt_id: 'coding-agent', reasoning_level: 'high' }
+    const legacy: BenchmarkRun = { ...finished, id: 'run-legacy', benchmark_title: 'Snake', tools: true }
+    const gone: BenchmarkRun = { ...finished, id: 'run-gone', benchmark_title: 'Pong', profile_id: 'deleted', profile_alias: 'old-profile' }
+    const off: BenchmarkRun = { ...finished, id: 'run-off', benchmark_title: 'Off', profile_id: 'p2', profile_alias: 'qwen-off' }
+    mockApi([chosen, legacy, gone, off])
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [] })
+    renderPanel()
+
+    const retry = await screen.findByRole('button', { name: 'Retry run Tetris on qwen-24gb' })
+    await waitFor(() => expect(retry).toBeEnabled())
+    expect(retry).toHaveAttribute('title', 'Run again with the same settings on the profile as it is now (v2, this run used v1)')
+    fireEvent.click(retry)
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: null, tools: true, tool_names: ['write_file', 'task_complete'], system_prompt_id: 'coding-agent', reasoning_level: 'high' }))
+
+    // A run from before tools could be chosen had them all.
+    fireEvent.click(screen.getByRole('button', { name: 'Retry run Snake on qwen-24gb' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ tools: true, tool_names: null, max_tokens: 4096 })))
+    expect(screen.getByRole('button', { name: 'Retry run Pong on old-profile' })).toHaveAttribute('title', 'This profile has been deleted.')
+    expect(screen.getByRole('button', { name: 'Retry run Pong on old-profile' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Retry run Off on qwen-off' })).toHaveAttribute('title', 'Enable the profile to run it again.')
+  })
+
+  it('waits for the router to stop before retrying', async () => {
+    mockApi([finished])
+    renderPanel('ready')
+    const retry = await screen.findByRole('button', { name: 'Retry run Tetris on qwen-24gb' })
+    expect(retry).toBeDisabled()
+    expect(retry.getAttribute('title')).toMatch(/^Stop the router first/)
+  })
+
   it('turns every file tool on or off at once, or chooses them one by one', async () => {
     mockApi([])
     const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [] })

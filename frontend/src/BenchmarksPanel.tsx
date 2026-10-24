@@ -314,6 +314,18 @@ function ArtifactViewer({ runId, path, files, onClose }: { runId: string; path: 
   </Dialog>
 }
 
+/** The same benchmark and settings as an earlier run; the profile is whatever it is now. */
+function retryRequest(run: BenchmarkRun) {
+  // Runs from before tools could be chosen had them all, which null asks for.
+  return { profile_id: run.profile_id, benchmark_id: run.benchmark_id, max_tokens: run.max_tokens, tools: run.tools, tool_names: run.tools ? run.tool_names ?? null : [], system_prompt_id: run.system_prompt_id, reasoning_level: run.reasoning_level }
+}
+
+function RetryButton({ run, profile, blocker, pending, onRetry }: { run: BenchmarkRun; profile?: Profile; blocker?: string; pending: boolean; onRetry: () => void }) {
+  const reason = blocker ?? (!profile ? 'This profile has been deleted.' : !profile.enabled ? 'Enable the profile to run it again.' : undefined)
+  const version = profile && profile.version !== run.profile_version ? `v${profile.version}, this run used v${run.profile_version}` : `v${run.profile_version}`
+  return <button aria-label={`Retry run ${run.benchmark_title} on ${run.profile_alias}`} className="icon-button small" disabled={Boolean(reason) || pending || run.state === 'running'} onClick={onRetry} title={reason ?? `Run again with the same settings on the profile as it is now (${version})`} type="button"><RotateCcw size={15} /></button>
+}
+
 /** File tools for a run: all on or off at once, or chosen one by one when expanded. */
 function ToolPicker({ tools, chosen, onChange }: { tools: BenchmarkTool[]; chosen: string[]; onChange: (names: string[]) => void }) {
   const [open, setOpen] = useState(false)
@@ -407,6 +419,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   const [reasoningLevel, setReasoningLevel] = useState('')
   const [viewing, setViewing] = useState<string>()
   const [deleting, setDeleting] = useState<BenchmarkRun>()
+  const runPanel = useRef<HTMLElement>(null)
   const enabled = profiles.filter((profile) => profile.enabled)
   const profile = profiles.find((item) => item.id === profileId) ?? enabled[0]
   const benchmarks = catalog.data?.benchmarks ?? []
@@ -441,7 +454,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   }, [activeId, queryClient, watched])
 
   const start = useMutation({
-    mutationFn: () => api.startBenchmark({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools: chosenTools.length > 0, tool_names: chosenTools, system_prompt_id: systemPrompt?.id ?? null, reasoning_level: reasoningLevel || null }),
+    mutationFn: (body: Parameters<typeof api.startBenchmark>[0]) => api.startBenchmark(body),
     onSettled: async () => {
       await Promise.all([queryClient.invalidateQueries({ queryKey: ['benchmark-runs'] }), queryClient.invalidateQueries({ queryKey: ['benchmarks'] })])
     },
@@ -467,9 +480,9 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   const tokensValid = tokens == null || (Number.isInteger(tokens) && tokens >= 16 && tokens <= 1048576)
 
   return <>
-    <section className="data-panel benchmark-run-panel">
+    <section className="data-panel benchmark-run-panel" ref={runPanel}>
       <div className="panel-heading"><div><h2>Run a benchmark</h2><p>Starts the server, loads one profile, sends the prompt and measures it, then stops the server again.</p></div><Timer size={18} /></div>
-      <form className="benchmark-form" onSubmit={(event) => { event.preventDefault(); start.mutate() }}>
+      <form className="benchmark-form" onSubmit={(event) => { event.preventDefault(); start.mutate({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools: chosenTools.length > 0, tool_names: chosenTools, system_prompt_id: systemPrompt?.id ?? null, reasoning_level: reasoningLevel || null }) }}>
         <label className="compare-pick"><span>Profile</span><select aria-label="Profile" onChange={(event) => setProfileId(event.target.value)} value={profile?.id ?? ''}>
           {profiles.map((item) => <option disabled={!item.enabled} key={item.id} value={item.id}>{item.alias}{item.enabled ? '' : ' (disabled)'}</option>)}
         </select></label>
@@ -523,6 +536,11 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
           </dl>
           <span className="row-actions">
             <StatePill run={run} />
+            <RetryButton blocker={blocker} onRetry={() => {
+              start.mutate(retryRequest(run))
+              // Progress and any error show in the run panel, above the list.
+              runPanel.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+            }} pending={start.isPending} profile={profiles.find((item) => item.id === run.profile_id)} run={run} />
             <button aria-label={`View run ${run.benchmark_title} on ${run.profile_alias}`} className="button row-button" onClick={() => setViewing(run.id)} type="button"><Eye size={13} /> View</button>
             <button aria-label={`Delete run ${run.benchmark_title} on ${run.profile_alias}`} className="icon-button small danger-icon" disabled={run.state === 'running' || !canRun} onClick={() => setDeleting(run)} title="Delete run" type="button"><Trash2 size={15} /></button>
           </span>
