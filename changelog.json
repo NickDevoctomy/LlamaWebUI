@@ -1,6 +1,16 @@
 {
   "versions": [
     {
+      "version": "0.6.0",
+      "release_date": null,
+      "changes": [
+        {
+          "type": "change",
+          "description": "Reorganised benchmark tools into categorised groups."
+        }         
+      ]
+    },    
+    {
       "version": "0.4.0",
       "release_date": "2026-10-25",
       "changes": [
