@@ -101,7 +101,7 @@ describe('BenchmarksPanel', () => {
     await waitFor(() => expect(start).toHaveBeenCalledWith(expect.objectContaining({ verbose_log: true })))
 
     // Without tools there is nothing to log, so the option goes.
-    fireEvent.click(screen.getByRole('checkbox', { name: 'File tools' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Tools' }))
     expect(screen.queryByRole('checkbox', { name: 'Verbose log' })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry run Tetris on qwen-24gb' }))
@@ -170,13 +170,16 @@ describe('BenchmarksPanel', () => {
     const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
     renderPanel()
 
-    const all = await screen.findByRole('checkbox', { name: 'File tools' })
+    const all = await screen.findByRole('checkbox', { name: 'Tools' })
     expect(all).toBeChecked()
     const expand = screen.getByRole('button', { name: 'Choose tools' })
     expect(expand).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByRole('checkbox', { name: /delete_file/ })).not.toBeInTheDocument()
     fireEvent.click(expand)
     expect(expand).toHaveAttribute('aria-expanded', 'true')
+    // Grouped under headers, each holding its own tools.
+    expect(within(screen.getByRole('region', { name: 'Files' })).getByRole('checkbox', { name: /delete_file/ })).toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: 'Source' })).getByRole('checkbox', { name: /check_file/ })).toBeInTheDocument()
     const lint = screen.getByRole('checkbox', { name: /check_file/ })
     expect(lint).toBeDisabled()
     expect(lint).not.toBeChecked()

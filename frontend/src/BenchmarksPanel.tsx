@@ -356,7 +356,21 @@ function toolsFor(tools: BenchmarkTool[], typescript: boolean): PickerTool[] {
   })
 }
 
-/** File tools for a run: all on or off at once, or chosen one by one when expanded. */
+// How the tool list is grouped when expanded; a tool not named here goes under Other.
+const TOOL_GROUPS: { title: string; names: string[] }[] = [
+  { title: 'Files', names: ['write_file', 'edit_file', 'read_file', 'delete_file', 'list_files'] },
+  { title: 'Tasks', names: ['list_tasks', 'create_task', 'complete_task', 'delete_task'] },
+  { title: 'Source', names: ['check_file', 'check_typescript', 'bundle_typescript'] },
+  { title: 'Job', names: ['finish_job'] },
+]
+
+function groupTools(tools: PickerTool[]) {
+  const known = TOOL_GROUPS.flatMap((group) => group.names)
+  return [...TOOL_GROUPS.map((group) => ({ title: group.title, tools: tools.filter((tool) => group.names.includes(tool.name)) })),
+    { title: 'Other', tools: tools.filter((tool) => !known.includes(tool.name)) }].filter((group) => group.tools.length)
+}
+
+/** Tools for a run: all on or off at once, or chosen one by one, by group, when expanded. */
 function ToolPicker({ tools, chosen, onChange }: { tools: PickerTool[]; chosen: string[]; onChange: (names: string[]) => void }) {
   const [open, setOpen] = useState(false)
   const all = useRef<HTMLInputElement>(null)
@@ -370,12 +384,17 @@ function ToolPicker({ tools, chosen, onChange }: { tools: PickerTool[]; chosen: 
       : `All ${usable.length} tools. The model works on files only inside this run's own folder, and they appear as artifacts on the run.`
   return <div className="benchmark-tools">
     <div className="benchmark-tools-head">
-      <label className="benchmark-option"><input aria-label="File tools" checked={chosen.length > 0 && !some} onChange={(event) => onChange(event.target.checked ? usable : [])} ref={all} type="checkbox" /><span><strong>File tools</strong><small>{summary}</small></span></label>
+      <label className="benchmark-option"><input aria-label="Tools" checked={chosen.length > 0 && !some} onChange={(event) => onChange(event.target.checked ? usable : [])} ref={all} type="checkbox" /><span><strong>Tools</strong><small>{summary}</small></span></label>
       <button aria-controls="benchmark-tool-list" aria-expanded={open} className="button secondary compact" onClick={() => setOpen(!open)} type="button">Choose tools<ChevronDown aria-hidden="true" className="benchmark-tools-chevron" size={14} /></button>
     </div>
-    {open && <ul className="benchmark-tool-list" id="benchmark-tool-list">
-      {tools.map((tool) => <li key={tool.name}><label className="benchmark-option" data-disabled={!tool.available || undefined}><input checked={tool.available && chosen.includes(tool.name)} disabled={!tool.available} onChange={(event) => toggle(tool.name, event.target.checked)} type="checkbox" /><span><code>{tool.name}</code><small>{tool.summary}{tool.reason && ` ${tool.reason}`}</small></span></label></li>)}
-    </ul>}
+    {open && <div className="benchmark-tool-groups" id="benchmark-tool-list">
+      {groupTools(tools).map((group) => <section aria-labelledby={`benchmark-tools-${group.title}`} className="benchmark-tool-group" key={group.title}>
+        <h4 id={`benchmark-tools-${group.title}`}>{group.title}</h4>
+        <ul className="benchmark-tool-list">
+          {group.tools.map((tool) => <li key={tool.name}><label className="benchmark-option" data-disabled={!tool.available || undefined}><input checked={tool.available && chosen.includes(tool.name)} disabled={!tool.available} onChange={(event) => toggle(tool.name, event.target.checked)} type="checkbox" /><span><code>{tool.name}</code><small>{tool.summary}{tool.reason && ` ${tool.reason}`}</small></span></label></li>)}
+        </ul>
+      </section>)}
+    </div>}
   </div>
 }
 
