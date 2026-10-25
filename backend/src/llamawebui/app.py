@@ -1076,6 +1076,9 @@ def create_app(
             context=lambda alias: slot_context(
                 cast(RouterSupervisor, app.state.router_supervisor).context, alias
             ),
+            memory=lambda alias: cast(ProcessMemorySampler, app.state.process_memory).model(
+                cast(RouterSupervisor, app.state.router_supervisor).pid, alias
+            ),
         )
 
         def record_router_state(
@@ -1844,6 +1847,11 @@ def create_app(
             payload["prompt"] = record.prompt
             payload["system_prompt"] = record.system_prompt
             payload["samples"] = list(progress["samples"]) if progress else record.samples  # type: ignore[call-overload]
+            payload["resources"] = (
+                list(cast(list[dict[str, object]], progress["resources"]))
+                if progress
+                else record.resources
+            )
             payload["output"] = progress["output"] if progress else record.output
             payload["reasoning"] = progress["reasoning"] if progress else record.reasoning
             payload["tool_calls"] = (

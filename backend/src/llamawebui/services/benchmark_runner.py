@@ -11,6 +11,7 @@ import json
 import logging
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
@@ -892,11 +893,16 @@ class BenchmarkRunner:
         load_timeout_seconds: float = 900.0,
         linter: BenchmarkLinter | None = None,
         context: Callable[[str], tuple[int, int] | None] = lambda _alias: None,
+        memory: Callable[[str], Mapping[str, object] | None] = lambda _alias: None,
+        resource_seconds: float = 2.0,
     ) -> None:
         self._runs = runs
         self._linter = linter
         # Tokens in use and the slot's size for a model, from llama-server's own log.
         self._context = context
+        # A model process's memory as process_memory measures it, for the resource chart.
+        self._memory = memory
+        self._resource_seconds = resource_seconds
         self._workspace_root = runs.workspace_root
         self._client = client
         self._start_router = start_router
@@ -998,6 +1004,7 @@ class BenchmarkRunner:
             "stage": "starting",
             "stats": {},
             "samples": [],
+            "resources": [],
             "output": "",
             "reasoning": "",
             "tool_calls": [],
@@ -1061,7 +1068,13 @@ class BenchmarkRunner:
             stats["load_seconds"] = round(self._clock() - begun, 2)
 
             self._stage(record.id, "prefill")
-            await self._generate(record, prompt)
+            watcher = asyncio.create_task(self._watch_resources(record.profile_alias))
+            try:
+                await self._generate(record, prompt)
+            finally:
+                watcher.cancel()
+                with suppress(asyncio.CancelledError):
+                    await watcher
         except asyncio.CancelledError:
             state, error = "cancelled", "cancelled"
         except Exception as caught:
@@ -1095,6 +1108,7 @@ class BenchmarkRunner:
                 error=error,
                 stats=dict(stats),
                 samples=list(self._samples()),
+                resources=list(cast(list[dict[str, object]], self._progress["resources"])),
                 output=self._progress["output"],
                 reasoning=self._progress["reasoning"],
                 tool_calls=list(cast(list[dict[str, object]], self._progress["tool_calls"])),
@@ -1108,6 +1122,33 @@ class BenchmarkRunner:
                 )
             self._active = None
             self._progress = {}
+
+    async def _watch_resources(self, alias: str) -> None:
+        """Every few seconds while generating, note the context and memory in use."""
+        resources = cast(list[dict[str, object]], self._progress["resources"])
+        while True:
+            origin = self._progress.get("generation_origin")
+            if isinstance(origin, float):
+                entry: dict[str, object] = {"t": round(self._clock() - origin, 2)}
+                reading = self._context(alias)
+                if reading is not None:
+                    entry["context_used"], entry["context_size"] = reading
+                try:
+                    # Reading memory maps takes a moment, so it runs off the event loop.
+                    memory = await asyncio.to_thread(self._memory, alias)
+                except Exception:  # A missed reading leaves a gap in the chart, no more.
+                    memory = None
+                if memory is not None:
+                    ram = _number(memory.get("ram_bytes"))
+                    mapped = _number(memory.get("mapped_bytes")) or 0.0
+                    vram = _number(memory.get("vram_bytes"))
+                    if ram is not None:
+                        entry["ram_bytes"] = int(ram + mapped)
+                    if vram is not None:
+                        entry["vram_bytes"] = int(vram)
+                if len(entry) > 1:
+                    resources.append(entry)
+            await asyncio.sleep(self._resource_seconds)
 
     async def _wait_loaded(self, alias: str) -> None:
         deadline = self._clock() + self._load_timeout

@@ -139,3 +139,20 @@ def test_sampler_caches_briefly_per_router() -> None:
     sampler.sample(2)
 
     assert calls == [1, 2, 2]
+
+
+def test_sampler_measures_one_model_now_and_caches_it() -> None:
+    calls: list[int] = []
+
+    def measure(pid: int) -> list[dict[str, object]]:
+        calls.append(pid)
+        return [{"model": "qwen", "ram_bytes": 1}, {"model": "gemma", "ram_bytes": 2}]
+
+    sampler = ProcessMemorySampler(measure, max_age_seconds=3, clock=lambda: 0.0)
+
+    assert sampler.model(None, "qwen") is None
+    assert sampler.model(1, "gemma") == {"model": "gemma", "ram_bytes": 2}
+    # Measured again rather than cached, but the reading serves the next sample.
+    assert sampler.model(1, "llama") is None
+    assert len(sampler.sample(1)) == 2
+    assert calls == [1, 1]

@@ -3,6 +3,7 @@ import { AlertCircle, Check, ChevronDown, ChevronRight, Code, Copy, Download, Ey
 import { useEffect, useRef, useState } from 'react'
 import { api, type BenchmarkRun, type BenchmarkRunDetail, type BenchmarkStage, type BenchmarkTask, type BenchmarkTool, type Profile, type RouterState, type TimelineEntry } from './api'
 import { formatRate, formatSeconds, formatWhen, reasoningLabel } from './benchmarkFormat'
+import { ContextChart, MemoryChart } from './BenchmarkCharts'
 import { Sparkline } from './Dashboard'
 import { Dialog } from './SetupPanels'
 
@@ -461,6 +462,8 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
     <dl className="benchmark-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
     {decode.length > 1 && <div className="benchmark-chart"><span>Decode speed over the run (3 s windows)</span><Sparkline ceiling={stats.decode_peak_tokens_per_second} values={decode} /></div>}
     {prefill.length > 1 && <div className="benchmark-chart"><span>Prefill speed</span><Sparkline values={prefill} /></div>}
+    <ContextChart resources={run.resources ?? []} />
+    <MemoryChart resources={run.resources ?? []} />
     <TaskList run={run} />
     {run.tools && <section className="benchmark-text">
       <h3>Artifacts</h3>

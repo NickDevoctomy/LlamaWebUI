@@ -197,3 +197,13 @@ class ProcessMemorySampler:
             measured = self._measure(router_pid)
             self._sample = (router_pid, now, measured)
             return measured
+
+    def model(self, router_pid: int | None, alias: str) -> dict[str, object] | None:
+        """One model process's memory, measured now; the fresh reading is cached for
+        everyone else too."""
+        if router_pid is None:
+            return None
+        with self._lock:
+            measured = self._measure(router_pid)
+            self._sample = (router_pid, self._clock(), measured)
+        return next((entry for entry in measured if entry.get("model") == alias), None)

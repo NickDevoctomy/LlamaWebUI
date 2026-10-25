@@ -265,6 +265,17 @@ export type TimelineEntry = { round: number; start: number; end: number | null }
   | { kind: 'tool'; name: string; call: number; path?: string | null; ok?: boolean }
 )
 
+/** Context and model memory in use at one moment of a run; a reading not available is left out. */
+export interface BenchmarkResource {
+  /** Seconds since the prompt was sent. */
+  t: number
+  context_used?: number
+  context_size?: number
+  /** The model process's RAM, including the model file pages it holds. */
+  ram_bytes?: number
+  vram_bytes?: number
+}
+
 export interface BenchmarkRunDetail extends BenchmarkRun {
   /** What generation spent its time on, step by step. */
   timeline: TimelineEntry[]
@@ -273,6 +284,8 @@ export interface BenchmarkRunDetail extends BenchmarkRun {
   system_prompt: string | null
   /** Speed over the recent window (span seconds), sampled about every half second. */
   samples: { t: number; phase: 'prefill' | 'decode'; tokens: number | null; rate: number; span?: number }[]
+  /** Context and memory use every few seconds while generating; absent from older runs. */
+  resources?: BenchmarkResource[]
   output: string
   reasoning: string
   /** Each file tool call, in order; results are cut short unless the run kept a verbose log, which also keeps the arguments as sent. */

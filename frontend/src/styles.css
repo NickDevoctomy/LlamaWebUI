@@ -45,6 +45,9 @@
   --bad-bg: #f6e1dc;
   --bad-line: #e3bab1;
   --info: #3b5277;
+  /* Chart series, checked for colour-blind separation against the surface. */
+  --chart-vram: #5f8410;
+  --chart-ram: #3d68c4;
   --info-bg: #e5ecf6;
   --on-solid: #ffffff;
 
@@ -120,6 +123,8 @@
     --bad-bg: #2f1a16;
     --bad-line: #5a2c24;
     --info: #a7bfe8;
+    --chart-vram: #82a318;
+    --chart-ram: #5a82d4;
     --info-bg: #19212f;
     --code-bg: #0c0d0b;
     --code-bg-2: #1a1c18;
@@ -166,6 +171,8 @@
   --bad-bg: #2f1a16;
   --bad-line: #5a2c24;
   --info: #a7bfe8;
+  --chart-vram: #82a318;
+  --chart-ram: #5a82d4;
   --info-bg: #19212f;
   --code-bg: #0c0d0b;
   --code-bg-2: #1a1c18;
@@ -742,6 +749,31 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .benchmark-facts { margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px 18px; background: var(--surface-2); }
 .benchmark-chart { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 .benchmark-chart .sparkline { height: 56px; }
+.time-chart { margin: 0; display: grid; gap: 8px; color: var(--muted); font-size: 12px; }
+.time-chart [data-series='context'] { --series: var(--data); }
+.time-chart [data-series='vram'] { --series: var(--chart-vram); }
+.time-chart [data-series='ram'] { --series: var(--chart-ram); }
+.time-chart-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
+.time-chart-legend { margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; list-style: none; }
+.time-chart-legend li { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.time-chart-legend li span { color: var(--fg-2); font: 500 12px var(--font-mono); font-variant-numeric: tabular-nums; }
+.time-chart-legend i, .time-chart-tip i { width: 10px; height: 3px; flex: none; border-radius: 2px; background: var(--series); }
+.time-chart-body { display: grid; grid-template-columns: 52px minmax(0, 1fr); column-gap: 8px; }
+.time-chart-axis { height: 96px; display: flex; flex-direction: column; justify-content: space-between; color: var(--faint); font: 10.5px var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.time-chart-axis span { line-height: 1; transform: translateY(-1px); }
+.time-chart-plot { position: relative; height: 96px; cursor: crosshair; touch-action: pan-y; }
+.time-chart-plot svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.time-chart-grid { stroke: var(--line); stroke-width: 1; }
+.time-chart-line { fill: none; stroke: var(--series); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.time-chart-area { fill: color-mix(in srgb, var(--series) 16%, transparent); stroke: none; }
+.time-chart-time { grid-column: 2; margin-top: 4px; display: flex; justify-content: space-between; color: var(--faint); font: 10.5px var(--font-mono); }
+.time-chart-cursor { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line-strong); pointer-events: none; }
+.time-chart-dot { position: absolute; width: 8px; height: 8px; border-radius: 50%; background: var(--series); box-shadow: 0 0 0 2px var(--surface); transform: translate(-50%, -50%); pointer-events: none; }
+.time-chart-tip { position: absolute; top: 0; z-index: 2; min-width: 150px; margin-left: 12px; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); display: grid; gap: 3px; color: var(--muted); background: var(--surface); box-shadow: var(--shadow-sm); font-size: 11.5px; white-space: nowrap; pointer-events: none; }
+.time-chart-tip[data-flip] { margin-left: 0; transform: translateX(calc(-100% - 12px)); }
+.time-chart-tip strong { color: var(--fg); font-size: 12px; }
+.time-chart-tip span { display: flex; align-items: center; gap: 6px; }
+.time-chart-tip b { margin-left: auto; padding-left: 10px; color: var(--fg); font: 500 11.5px var(--font-mono); font-variant-numeric: tabular-nums; }
 .benchmark-text { display: grid; gap: 8px; color: var(--muted); font-size: 12.5px; }
 .benchmark-text h3 { margin: 0; color: var(--fg); font-size: 13px; }
 .benchmark-text pre { max-height: 360px; margin: 0; padding: 12px 14px; overflow: auto; border-radius: var(--radius-sm); color: var(--code-fg); background: var(--code-bg); font: 11.5px/1.6 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
