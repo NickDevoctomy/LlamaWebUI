@@ -15,7 +15,7 @@ from llamawebui.domain.recommendation import (
     DRAFT_MODEL_ARGUMENT,
     Recommendation,
     select_draft_group,
-    select_group,
+    select_model_group,
 )
 from llamawebui.models import DownloadJobRecord, ModelProfileRecord
 from llamawebui.services.download_coordinator import DownloadCoordinator
@@ -142,13 +142,18 @@ def find_download(
     """
     model = recommendation.model
     wanted = model.quantization.upper()
+
+    def same_group(key: str) -> bool:
+        if model.group is not None:
+            return key.lower() == model.group.lower()
+        return "mmproj" not in key.lower() and group_quantization(key) == wanted
+
     candidates = [
         job
         for job in jobs
         if job.repo_id == model.repo_id
         and (model.revision is None or job.revision == model.revision)
-        and "mmproj" not in job.group_key.lower()
-        and group_quantization(job.group_key) == wanted
+        and same_group(job.group_key)
         and DownloadState(job.state) in _REUSABLE_STATES
     ]
     return _preferred(candidates)
@@ -319,12 +324,20 @@ def link_unchanged_profiles(
 ) -> tuple[str, ...]:
     """Link profiles added before links were kept, when they match a recommendation exactly.
 
-    A profile that differs in any setting is left alone, so an upgrade can never
-    overwrite changes made to it.
+    A linked profile whose settings already equal a newer version of its recommendation,
+    because that version adopted them, moves to that version. A profile that differs in
+    any setting is left alone, so an upgrade can never overwrite changes made to it.
     """
     linked: list[str] = []
     for record in profiles.list():
         if record.recommendation_id is not None:
+            latest = _find(recommendations, record.recommendation_id)
+            if latest is None or latest.version <= record.version:
+                continue
+            link = recommendation_link(latest, catalog)
+            if _same_settings(_current_arguments(record, catalog), link.baseline, catalog):
+                profiles.link_recommendation(record.id, link)
+                linked.append(record.alias)
             continue
         recommendation = next(
             (item for item in recommendations if item.alias == record.alias), None
@@ -362,7 +375,7 @@ async def apply_recommendation(
     """
     model = recommendation.model
     manifest = await hub.repository(model.repo_id, revision=model.revision)
-    groups = [select_group(manifest.groups, model.quantization)]
+    groups = [select_model_group(manifest.groups, model)]
     if model.draft_group is not None:
         groups.append(select_draft_group(manifest.groups, model.draft_group))
     known = downloads.list(include_hidden=True)

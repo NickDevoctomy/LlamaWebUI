@@ -375,6 +375,34 @@ describe('App', () => {
     })
   })
 
+  it('picks a recommendation variant suited to this machine and applies the chosen one', async () => {
+    const me = responses['/api/auth/me'] as { privileges: string[] }
+    const base = { ...recommendation, family: 'qwen-strix', label: '128 GB', assessment: { fit: 'insufficient', hardware_match: false, available_memory_gb: 95.6 } }
+    const small = { ...recommendation, id: 'qwen-strix-small', family: 'qwen-strix', label: '96 GB', title: 'Qwen3.8 Flash Next, 128K context', profile: { ...recommendation.profile, alias: 'qwen3.8-flash-next-96gb' }, profile_ids: ['profile-3'] }
+    const fetchMock = renderApp({
+      currentUser: { ...me, privileges: [...me.privileges, 'profiles.write', 'downloads.write'] },
+      runtimeList: [vulkanRuntime],
+      onRequest: (path, init) => {
+        if (path === '/api/profiles/recommendations') return { host, recommendations: [base, small] }
+        if (path.endsWith('/apply') && init?.method === 'POST') return { profile: {}, download: {}, ready: false }
+        return undefined
+      },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Recommended' }))
+
+    // One card for the family, opened on the variant that fits this machine.
+    expect(await screen.findByRole('heading', { name: 'Qwen3.8 Flash Next, 128K context' })).toBeInTheDocument()
+    expect(screen.getAllByRole('article')).toHaveLength(1)
+    const variants = screen.getByRole('tablist', { name: 'Variant' })
+    expect(within(variants).getByRole('tab', { name: /96 GB/ })).toHaveAttribute('aria-selected', 'true')
+    expect(within(variants).getByRole('tab', { name: /96 GB/ })).toHaveAttribute('title', 'Qwen3.8 Flash Next, 128K context · added as a profile')
+    fireEvent.click(within(variants).getByRole('tab', { name: '128 GB' }))
+    expect(screen.getByRole('heading', { name: 'Qwen3.8 Flash Next, 262K context' })).toBeInTheDocument()
+    expect(screen.getByText('Not enough memory')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Download model and add profile' }))
+    await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => path === '/api/profiles/recommendations/qwen-strix/apply')).toBe(true))
+  })
+
   it('allows a recommended profile on an untested backend with a note', async () => {
     const me = responses['/api/auth/me'] as { privileges: string[] }
     const cudaRuntime = { ...vulkanRuntime, id: 'runtime-cuda', name: 'CUDA b11070', backend: 'cuda' }

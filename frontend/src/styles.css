@@ -588,6 +588,9 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .recommendation-head p { margin: 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .recommendation-badges { display: flex; flex-wrap: wrap; gap: 6px; }
 .recommendation-badges .state-pill { text-transform: none; letter-spacing: 0; font-size: 11px; }
+.segmented.recommendation-variants { width: fit-content; max-width: 100%; margin: 0; grid-auto-columns: minmax(0, max-content); }
+.segmented.recommendation-variants button { padding: 0 14px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
+.recommendation-variants button svg { color: var(--good); }
 .recommendation-summary { max-width: 72ch; margin: 0; color: var(--fg-2); font-size: 13.5px; line-height: 1.6; }
 .recommendation-facts { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 1px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--line); overflow: hidden; }
 .recommendation-facts div { min-width: 0; padding: 10px 12px; display: grid; gap: 3px; background: var(--surface); }
@@ -628,6 +631,7 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 @container (max-width: 520px) {
   .recommendation-apply > .button, .recommendation-status > .button, .recommendation-buttons { width: 100%; margin-left: 0; }
   .recommendation-buttons .button { flex: 1 1 100%; }
+  .segmented.recommendation-variants { width: 100%; grid-auto-columns: minmax(0, 1fr); }
 }
 @media (max-width: 640px) {
   .recommendation-card { padding: 16px; }

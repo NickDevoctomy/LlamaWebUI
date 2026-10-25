@@ -83,8 +83,10 @@ function ProfileState({ profile, onOpenProfiles }: { profile?: Profile; onOpenPr
   </div>
 }
 
-function RecommendationCard({ recommendation, catalog, runtimes, profiles, downloads, canApply, running, onOpenProfiles, onOpenRuntimes }: {
+function RecommendationCard({ recommendation, variants, onSelectVariant, catalog, runtimes, profiles, downloads, canApply, running, onOpenProfiles, onOpenRuntimes }: {
   recommendation: Recommendation
+  variants: Recommendation[]
+  onSelectVariant: (id: string) => void
   catalog?: ArgumentCatalog
   runtimes: Runtime[]
   profiles: Profile[]
@@ -144,6 +146,11 @@ function RecommendationCard({ recommendation, catalog, runtimes, profiles, downl
         {recommendation.profile.exclusive && <span className="state-pill" title="Uses the machine fully, so no other model can be loaded beside it">Exclusive</span>}
       </div>
     </header>
+    {variants.length > 1 && <div aria-label="Variant" className="segmented recommendation-variants" role="tablist">
+      {variants.map((variant) => <button aria-selected={variant.id === recommendation.id} key={variant.id} onClick={() => onSelectVariant(variant.id)} role="tab" title={variant.profile_ids.length ? `${variant.title} · added as a profile` : variant.title} type="button">
+        {variant.label ?? variant.title}{variant.profile_ids.length > 0 && <BadgeCheck aria-label="Added" size={13} />}
+      </button>)}
+    </div>}
     <p className="recommendation-summary">{recommendation.summary}</p>
     <dl className="recommendation-facts">
       <div><dt>Tested on</dt><dd>{recommendation.tested_on.label}{recommendation.tested_on.notes && <small>{recommendation.tested_on.notes}</small>}</dd></div>
@@ -187,6 +194,31 @@ function RecommendationCard({ recommendation, catalog, runtimes, profiles, downl
   </article>
 }
 
+/** The variant to show first: one tuned for this machine with enough memory, then the base. */
+function preferredVariant(variants: Recommendation[]) {
+  return variants.find((item) => item.assessment.hardware_match && item.assessment.fit === 'fits')
+    ?? variants.find((item) => item.assessment.hardware_match)
+    ?? variants.find((item) => item.assessment.fit === 'fits')
+    ?? variants[0]
+}
+
+/** One recommendation with its variants, showing the picked one. */
+function RecommendationFamily({ variants, ...props }: Omit<Parameters<typeof RecommendationCard>[0], 'recommendation' | 'onSelectVariant'>) {
+  const [selectedId, setSelectedId] = useState<string>()
+  const recommendation = variants.find((item) => item.id === selectedId) ?? preferredVariant(variants)
+  return <RecommendationCard {...props} key={recommendation.id} onSelectVariant={setSelectedId} recommendation={recommendation} variants={variants} />
+}
+
+/** Recommendations grouped by family in bundled order, the base first. */
+function families(recommendations: Recommendation[]) {
+  const grouped = new Map<string, Recommendation[]>()
+  for (const item of recommendations) {
+    const family = item.family ?? item.id
+    grouped.set(family, [...(grouped.get(family) ?? []), item])
+  }
+  return [...grouped.entries()]
+}
+
 export function RecommendationsPanel({ runtimes, profiles, downloads, canApply, running, onOpenProfiles, onOpenRuntimes }: {
   runtimes: Runtime[]
   profiles: Profile[]
@@ -208,19 +240,19 @@ export function RecommendationsPanel({ runtimes, profiles, downloads, canApply, 
     </section>
     {list.error ? <div className="form-error" role="alert"><AlertCircle size={15} /> {list.error.message}</div>
       : list.isPending ? <div className="empty"><LoaderCircle className="spin" size={26} /><strong>Checking this machine</strong></div>
-        : list.data.recommendations.length ? [...list.data.recommendations]
-          .sort((left, right) => Number(right.assessment.hardware_match) - Number(left.assessment.hardware_match))
-          .map((recommendation) => <RecommendationCard
+        : list.data.recommendations.length ? families(list.data.recommendations)
+          .sort(([, left], [, right]) => Number(right.some((item) => item.assessment.hardware_match)) - Number(left.some((item) => item.assessment.hardware_match)))
+          .map(([family, variants]) => <RecommendationFamily
           canApply={canApply}
           catalog={catalog.data}
           downloads={downloads}
-          key={recommendation.id}
+          key={family}
           onOpenProfiles={onOpenProfiles}
           onOpenRuntimes={onOpenRuntimes}
           profiles={profiles}
-          recommendation={recommendation}
           running={running}
           runtimes={runtimes}
+          variants={variants}
         />)
           : <div className="data-panel empty"><BadgeCheck size={26} /><strong>No recommended profiles</strong><span>This build does not include any recommended profiles.</span></div>}
   </div>

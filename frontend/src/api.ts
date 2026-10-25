@@ -315,8 +315,12 @@ export interface Recommendation {
   version: number
   title: string
   summary: string
-  /** draft_group names a draft model, such as an MTP head, downloaded with the model. */
-  model: { repo_id: string; quantization: string; revision: string | null; draft_group?: string | null }
+  /** The base recommendation's id, shared by all its variants. */
+  family?: string
+  /** The short name a variant is picked by, such as "16 GB VRAM". */
+  label?: string | null
+  /** draft_group names a draft model, such as an MTP head, downloaded with the model; group pins the exact model group. */
+  model: { repo_id: string; quantization: string; revision: string | null; draft_group?: string | null; group?: string | null }
   tested_on: { label: string; memory_gb: number; unified_memory: boolean; backend: string; notes: string | null }
   /** memory_gb is system memory plus any discrete VRAM; vram_gb, when set, is the GPU share. */
   requirements: { memory_gb: number; vram_gb?: number | null; backends: string[] }
