@@ -1,9 +1,9 @@
 {
   "format": "llamawebui.recommendation.v1",
-  "version": 2,
+  "version": 3,
   "id": "qwen3.8-27b-ud-q4-k-m-nvidia-24gb",
   "label": "24 GB VRAM",
-  "title": "Qwen3.8 27B with MTP, 128K context on a 24 GB NVIDIA GPU",
+  "title": "Qwen3.8 27B with MTP, 128K context on a 24 GB GPU",
   "summary": "The dense 27B model fully on a 24 GB NVIDIA card, with speculative decoding from the model's built-in MTP head. 128K context with a q4_0 KV cache and flash attention.",
   "model": {
     "repo_id": "unsloth/Qwen3.8-27B-GGUF",
@@ -53,8 +53,8 @@
     {
       "id": "qwen3.8-27b-gsq-rco-iq3-s-nvidia-16gb",
       "label": "16 GB VRAM",
-      "title": "Qwen3.8 27B with MTP, 48K context on a 16 GB NVIDIA GPU",
-      "summary": "The dense 27B model in ISTA-DASLab's GSQ-RCO IQ3_S quantization, fully on a 16 GB NVIDIA card, with speculative decoding from the MTP head built into the file. 48K context with a q4_0 KV cache and flash attention.",
+      "title": "Qwen3.8 27B with MTP, 96K context on a 16 GB GPU",
+      "summary": "The dense 27B model in ISTA-DASLab's GSQ-RCO IQ3_S quantization, fully on a 16 GB NVIDIA card, with speculative decoding from the MTP head built into the file. 96K context with a q4_0 KV cache and flash attention.",
       "model": {
         "repo_id": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
         "quantization": "IQ3_S",
@@ -69,9 +69,9 @@
       },
       "profile": {
         "alias": "qwen3.8-27b-16gb",
-        "description": "Qwen3.8 27B for a 16 GB NVIDIA GPU. A 3-bit GSQ-RCO build with its MTP head, every layer and the KV cache on the GPU, drafting up to 8 tokens. 48K context with a q4_0 cache and flash attention. Uses nearly all VRAM, so it runs on its own.",
+        "description": "Qwen3.8 27B for a 16 GB NVIDIA GPU. A 3-bit GSQ-RCO build with its MTP head, every layer and the KV cache on the GPU, drafting up to 8 tokens. 96K context with a q4_0 cache and flash attention. Uses nearly all VRAM, so it runs on its own.",
         "arguments": [
-          { "id": "ctx-size", "value": 49152 }
+          { "id": "ctx-size", "value": 98304 }
         ]
       }
     }

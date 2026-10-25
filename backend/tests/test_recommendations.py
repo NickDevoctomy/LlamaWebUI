@@ -207,7 +207,7 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     assert small.model.group == "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp"
     # Only the context differs from the base settings.
     assert [item for item in small.arguments if item not in dense.arguments] == [
-        {"id": "ctx-size", "value": 49152}
+        {"id": "ctx-size", "value": 98304}
     ]
     nvidia_host = {
         "cpu": "Intel(R) Core(TM) i7-14700F",
