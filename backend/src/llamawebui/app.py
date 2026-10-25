@@ -178,6 +178,7 @@ from llamawebui.version import __version__
 
 MODEL_EVENT_KEEPALIVE_SECONDS = 15.0
 DEFAULT_SYSTEM_PROMPT_ID = "coding-agent"
+DEFAULT_BENCHMARK_ID = "tetris-no-details"
 PROFILE_DESCRIPTION_LIMIT = 500
 _ACTIVE_DOWNLOAD_STATES = frozenset(
     {DownloadState.QUEUED, DownloadState.DOWNLOADING, DownloadState.PAUSED}
@@ -1919,6 +1920,10 @@ def create_app(
         return {
             "benchmarks": [item.to_payload() for item in benchmarks],
             "system_prompts": [item.to_payload() for item in system_prompts],
+            # The quickest bundled benchmark is picked first; others need choosing.
+            "default_benchmark_id": next(
+                (item.id for item in benchmarks if item.id == DEFAULT_BENCHMARK_ID), None
+            ),
             # Runs default to the coding agent framing a client like OpenCode sends.
             "default_system_prompt_id": next(
                 (item.id for item in system_prompts if item.id == DEFAULT_SYSTEM_PROMPT_ID),

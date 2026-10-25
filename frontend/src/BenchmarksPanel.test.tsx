@@ -44,8 +44,8 @@ const ALL_TOOLS = TOOLS.filter((tool) => tool.available).map((tool) => tool.name
 
 const TETRIS: Benchmark = { id: 'tetris', title: 'Tetris', prompt: 'make tetris', tasks: [], typescript: null }
 
-function mockApi(runs: BenchmarkRun[], { benchmarks = [TETRIS], tools = TOOLS }: { benchmarks?: Benchmark[]; tools?: BenchmarkTool[] } = {}) {
-  vi.spyOn(api, 'benchmarks').mockResolvedValue({ benchmarks, system_prompts: [{ id: 'coding-agent', title: 'Coding agent', text: 'You are an AI agent running in a coding agent harness.' }], default_system_prompt_id: 'coding-agent', reasoning_levels: ['off', 'low', 'medium', 'high', 'xhigh'], default_max_tokens: null, tools, active_run_id: null })
+function mockApi(runs: BenchmarkRun[], { benchmarks = [TETRIS], tools = TOOLS, defaultBenchmarkId = null }: { benchmarks?: Benchmark[]; tools?: BenchmarkTool[]; defaultBenchmarkId?: string | null } = {}) {
+  vi.spyOn(api, 'benchmarks').mockResolvedValue({ benchmarks, system_prompts: [{ id: 'coding-agent', title: 'Coding agent', text: 'You are an AI agent running in a coding agent harness.' }], default_system_prompt_id: 'coding-agent', default_benchmark_id: defaultBenchmarkId, reasoning_levels: ['off', 'low', 'medium', 'high', 'xhigh'], default_max_tokens: null, tools, active_run_id: null })
   vi.spyOn(api, 'benchmarkRuns').mockResolvedValue(runs)
 }
 
@@ -72,6 +72,17 @@ describe('BenchmarksPanel', () => {
     fireEvent.click(run)
 
     await waitFor(() => expect(start).toHaveBeenCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: 2048, tools: true, tool_names: ALL_TOOLS, system_prompt_id: 'coding-agent', reasoning_level: null, verbose_log: false }))
+  })
+
+  it('picks the catalog\'s default benchmark until another is chosen', async () => {
+    const plain: Benchmark = { ...TETRIS, id: 'tetris-no-details', title: 'Tetris no details' }
+    mockApi([], { benchmarks: [TETRIS, plain], defaultBenchmarkId: 'tetris-no-details' })
+    renderPanel()
+
+    const picker = await screen.findByRole('combobox', { name: 'Benchmark' })
+    await waitFor(() => expect(picker).toHaveValue('tetris-no-details'))
+    fireEvent.change(picker, { target: { value: 'tetris' } })
+    expect(picker).toHaveValue('tetris')
   })
 
   it('keeps a verbose log when asked, and shows each call\'s arguments as sent', async () => {

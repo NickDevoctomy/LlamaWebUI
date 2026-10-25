@@ -639,6 +639,8 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
     # No default limit: a run may use the profile's whole context.
     assert listed["default_max_tokens"] is None
     assert listed["default_system_prompt_id"] == "coding-agent"
+    # The bundled default is not among this test's benchmarks.
+    assert listed["default_benchmark_id"] is None
     assert "coding-agent" in [item["id"] for item in listed["system_prompts"]]
     assert unknown_system_prompt.status_code == 404
     assert unknown_level.status_code == 422

@@ -516,7 +516,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   const enabled = profiles.filter((profile) => profile.enabled)
   const profile = profiles.find((item) => item.id === profileId) ?? enabled[0]
   const benchmarks = catalog.data?.benchmarks ?? []
-  const benchmark = benchmarks.find((item) => item.id === benchmarkId) ?? benchmarks[0]
+  const benchmark = benchmarks.find((item) => item.id === (benchmarkId || catalog.data?.default_benchmark_id)) ?? benchmarks[0]
   const systemPrompts = catalog.data?.system_prompts ?? []
   const allTools = toolsFor(catalog.data?.tools ?? [], Boolean(benchmark?.typescript))
   // A TypeScript benchmark without its tools would run as a plain one, so say so.

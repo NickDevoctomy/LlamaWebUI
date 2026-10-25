@@ -140,6 +140,8 @@ export interface BenchmarkCatalog {
   /** Bundled system prompts a run can be sent with, ahead of the benchmark prompt. */
   system_prompts: SystemPrompt[]
   default_system_prompt_id: string | null
+  /** The benchmark picked until another is chosen; null falls back to the first. */
+  default_benchmark_id: string | null
   /** 'off', or effort levels the chat template is asked for. */
   reasoning_levels: string[]
   /** Null: no limit, so a run may use the profile's whole context. */
