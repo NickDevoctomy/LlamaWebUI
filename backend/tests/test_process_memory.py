@@ -11,6 +11,7 @@ from llamawebui.services.process_memory import (
     ProcessMemorySampler,
     gpu_memory_by_pid,
     measure_model_processes,
+    system_memory,
 )
 
 GIB = 1024**3
@@ -107,6 +108,45 @@ def test_missing_nvidia_tools_report_no_gpu_memory(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(process_memory.subprocess, "run", unavailable)
 
     assert gpu_memory_by_pid() is None
+
+
+def test_reads_machine_wide_memory_off_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(process_memory.sys, "platform", "linux")
+    monkeypatch.setattr(
+        process_memory.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(total=64 * GIB, available=40 * GIB),
+    )
+    monkeypatch.setattr(
+        process_memory.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout="1024\n[N/A]\n512\n"),
+    )
+
+    # Every NVIDIA GPU's used memory, summed; a GPU that reports nothing is skipped.
+    assert system_memory() == {"vram_bytes": 1536 * 1024 * 1024, "ram_bytes": 24 * GIB}
+
+
+def test_machine_wide_vram_is_unknown_without_readings(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unavailable(*args: object, **kwargs: object) -> None:
+        raise OSError("nvidia-smi not found")
+
+    monkeypatch.setattr(process_memory.sys, "platform", "linux")
+    monkeypatch.setattr(process_memory.subprocess, "run", unavailable)
+    assert system_memory()["vram_bytes"] is None
+
+    monkeypatch.setattr(
+        process_memory.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="")
+    )
+    assert system_memory()["vram_bytes"] is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows performance counters")
+def test_reads_windows_gpu_adapter_counters() -> None:
+    memory = system_memory()
+
+    assert isinstance(memory["vram_bytes"], int)
+    assert isinstance(memory["ram_bytes"], int) and memory["ram_bytes"] > 0
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows performance counters")

@@ -194,6 +194,10 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     assert strix.model.quantization == nvidia.model.quantization == "UD-IQ4_XS"
     assert mtp.model.draft_group == "MTP/mtp-Qwen3.8-Flash-Next-BF16"
     assert mtp.alias == "qwen3.8-flash-next-mtp-24gb"
+    dense = by_id["qwen3.8-27b-ud-q4-k-m-nvidia-24gb"]
+    assert dense.model.quantization == "UD-Q4_K_M"
+    assert dense.model.draft_group is None
+    assert dense.vram_gb == 24
     nvidia_host = {
         "cpu": "Intel(R) Core(TM) i7-14700F",
         "memory_bytes": 128 * GIB,
@@ -212,6 +216,8 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     assert assess(nvidia, **nvidia_host).fit == "fits"  # type: ignore[arg-type]
     assert not assess(nvidia, **strix_host).hardware_match  # type: ignore[arg-type]
     assert assess(mtp, **nvidia_host).hardware_match  # type: ignore[arg-type]
+    assert assess(dense, **nvidia_host).fit == "fits"  # type: ignore[arg-type]
+    assert not assess(dense, **strix_host).hardware_match  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(

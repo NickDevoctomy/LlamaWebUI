@@ -89,6 +89,33 @@ def gpu_memory_by_pid() -> GpuMemory | None:
     return _nvidia_process_memory()
 
 
+def system_memory() -> dict[str, int | None]:
+    """Memory in use across the whole machine: dedicated VRAM on every GPU and system RAM."""
+    virtual = psutil.virtual_memory()
+    return {
+        "vram_bytes": _gpu_dedicated_total(),
+        "ram_bytes": int(virtual.total - virtual.available),
+    }
+
+
+def _gpu_dedicated_total() -> int | None:
+    if sys.platform == "win32":
+        counters = _windows_counter("\\GPU Adapter Memory(*)\\Dedicated Usage")
+        return None if counters is None else sum(value for _, value in counters)
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    used = [line.strip() for line in result.stdout.splitlines() if line.strip().isdigit()]
+    return sum(int(value) for value in used) * 1024 * 1024 if used else None
+
+
 def _nvidia_process_memory() -> GpuMemory | None:
     try:
         result = subprocess.run(
@@ -126,6 +153,21 @@ class _CounterItem(ctypes.Structure):
 
 def _windows_gpu_counter(counter: str) -> dict[int, int] | None:
     """Read a ``GPU Process Memory`` performance counter, summed per process."""
+    counters = _windows_counter(f"\\GPU Process Memory(*)\\{counter}")
+    if counters is None:
+        return None
+    usage: dict[int, int] = {}
+    for name, value in counters:
+        # Instances look like "pid_13924_luid_0x00000000_0x000156ba_phys_0".
+        parts = name.split("_")
+        if len(parts) > 1 and parts[1].isdigit():
+            pid = int(parts[1])
+            usage[pid] = usage.get(pid, 0) + value
+    return usage
+
+
+def _windows_counter(path: str) -> list[tuple[str, int]] | None:
+    """Every instance of a wildcard performance counter with a valid reading."""
     if sys.platform != "win32":
         return None
     try:
@@ -137,7 +179,6 @@ def _windows_gpu_counter(counter: str) -> dict[int, int] | None:
         return None
     try:
         handle = ctypes.c_void_p()
-        path = f"\\GPU Process Memory(*)\\{counter}"
         # The English name works whatever language Windows is installed in.
         if pdh.PdhAddEnglishCounterW(query, path, None, ctypes.byref(handle)) != 0:
             return None
@@ -148,21 +189,18 @@ def _windows_gpu_counter(counter: str) -> dict[int, int] | None:
             handle, _PDH_FMT_LARGE, ctypes.byref(size), ctypes.byref(count), None
         )
         if status & 0xFFFFFFFF != _PDH_MORE_DATA:
-            return {} if status == 0 else None
+            return [] if status == 0 else None
         buffer = ctypes.create_string_buffer(size.value)
         if pdh.PdhGetFormattedCounterArrayW(
             handle, _PDH_FMT_LARGE, ctypes.byref(size), ctypes.byref(count), buffer
         ) != 0:
             return None
         items = ctypes.cast(buffer, ctypes.POINTER(_CounterItem * count.value)).contents
-        usage: dict[int, int] = {}
-        for item in items:
-            # Instances look like "pid_13924_luid_0x00000000_0x000156ba_phys_0".
-            parts = (item.name or "").split("_")
-            if item.value.status == 0 and len(parts) > 1 and parts[1].isdigit():
-                pid = int(parts[1])
-                usage[pid] = usage.get(pid, 0) + int(item.value.value.large)
-        return usage
+        return [
+            (item.name or "", int(item.value.value.large))
+            for item in items
+            if item.value.status == 0
+        ]
     finally:
         pdh.PdhCloseQuery(query)
 

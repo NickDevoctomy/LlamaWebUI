@@ -894,6 +894,7 @@ class BenchmarkRunner:
         linter: BenchmarkLinter | None = None,
         context: Callable[[str], tuple[int, int] | None] = lambda _alias: None,
         memory: Callable[[str], Mapping[str, object] | None] = lambda _alias: None,
+        system_memory: Callable[[], Mapping[str, object] | None] = lambda: None,
         resource_seconds: float = 2.0,
     ) -> None:
         self._runs = runs
@@ -902,6 +903,8 @@ class BenchmarkRunner:
         self._context = context
         # A model process's memory as process_memory measures it, for the resource chart.
         self._memory = memory
+        # Memory in use across the whole machine, so the chart shows what else holds it.
+        self._system_memory = system_memory
         self._resource_seconds = resource_seconds
         self._workspace_root = runs.workspace_root
         self._client = client
@@ -1146,6 +1149,18 @@ class BenchmarkRunner:
                         entry["ram_bytes"] = int(ram + mapped)
                     if vram is not None:
                         entry["vram_bytes"] = int(vram)
+                try:
+                    system = await asyncio.to_thread(self._system_memory)
+                except Exception:
+                    system = None
+                if system is not None:
+                    for source, key in (
+                        ("vram_bytes", "vram_total_bytes"),
+                        ("ram_bytes", "ram_total_bytes"),
+                    ):
+                        total = _number(system.get(source))
+                        if total is not None:
+                            entry[key] = int(total)
                 if len(entry) > 1:
                     resources.append(entry)
             await asyncio.sleep(self._resource_seconds)

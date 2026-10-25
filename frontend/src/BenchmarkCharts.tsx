@@ -54,6 +54,9 @@ function TimeChart({ title, times, series, max, formatAxis, summary }: { title: 
     setHover(nearest)
   }
   const at = hover != null && hover < times.length ? hover : undefined
+  // The tip opens right of the cursor unless it would run past the plot's edge.
+  const width = plot.current?.clientWidth
+  const flip = at != null && (width ? x(times[at]) / 100 * width + 200 > width : x(times[at]) > 55)
   return <figure aria-label={`${title}. ${summary}`} className="time-chart" data-single={single || undefined}>
     <figcaption className="time-chart-head">
       <span>{title}</span>
@@ -84,7 +87,7 @@ function TimeChart({ title, times, series, max, formatAxis, summary }: { title: 
         {at != null && <>
           <span className="time-chart-cursor" style={{ left: `${x(times[at])}%` }} />
           {series.map((item) => item.values[at] != null && <span className="time-chart-dot" data-series={item.key} key={item.key} style={{ left: `${x(times[at])}%`, top: `${y(item.values[at]!)}%` }} />)}
-          <div className="time-chart-tip" data-flip={x(times[at]) > 55 || undefined} style={{ left: `${x(times[at])}%` }}>
+          <div className="time-chart-tip" data-flip={flip || undefined} style={{ left: `${x(times[at])}%` }}>
             <strong>At {formatSeconds(times[at])}</strong>
             {series.map((item) => <span data-series={item.key} key={item.key}><i />{item.label}<b>{item.values[at] != null ? item.format(item.values[at]!, at) : '—'}</b></span>)}
           </div>
@@ -120,24 +123,31 @@ export function ContextChart({ resources }: { resources: BenchmarkResource[] }) 
   />
 }
 
-/** The model process's RAM and VRAM over the run, on one byte axis. */
+const memorySeries = [
+  { key: 'vram', label: 'VRAM', read: (item: BenchmarkResource) => item.vram_bytes },
+  { key: 'vram-total', label: 'VRAM Total', read: (item: BenchmarkResource) => item.vram_total_bytes },
+  { key: 'ram', label: 'RAM', read: (item: BenchmarkResource) => item.ram_bytes },
+  { key: 'ram-total', label: 'RAM Total', read: (item: BenchmarkResource) => item.ram_total_bytes },
+]
+
+/**
+ * The model process's RAM and VRAM over the run, on one byte axis, with what the
+ * whole machine was using alongside for reference.
+ */
 export function MemoryChart({ resources }: { resources: BenchmarkResource[] }) {
-  const measured = resources.filter((item) => item.ram_bytes != null || item.vram_bytes != null)
+  const measured = resources.filter((item) => memorySeries.some(({ read }) => read(item) != null))
   if (measured.length < 2) return null
-  const vram = measured.map((item) => item.vram_bytes ?? null)
-  const ram = measured.map((item) => item.ram_bytes ?? null)
-  const highest = Math.max(...vram.map((value) => value ?? 0), ...ram.map((value) => value ?? 0))
   const peak = (values: (number | null)[]) => Math.max(...values.map((value) => value ?? 0))
-  const series: Series[] = [
-    { key: 'vram', label: 'VRAM', values: vram, format: (value: number) => formatBytes(value) },
-    { key: 'ram', label: 'RAM', values: ram, format: (value: number) => formatBytes(value) },
-  ].filter((item) => item.values.some((value) => value != null))
+  const series: Series[] = memorySeries
+    .map(({ key, label, read }) => ({ key, label, values: measured.map((item) => read(item) ?? null), format: (value: number) => formatBytes(value) }))
+    .filter((item) => item.values.some((value) => value != null))
+  const totals = series.some((item) => item.key.endsWith('-total'))
   return <TimeChart
     formatAxis={(value) => value ? formatBytes(value) : '0'}
-    max={byteCeiling(highest)}
+    max={byteCeiling(Math.max(...series.map((item) => peak(item.values))))}
     series={series}
     summary={series.map((item) => `${item.label} peaked at ${formatBytes(peak(item.values))}`).join('; ') + '.'}
     times={measured.map((item) => item.t)}
-    title={series.length === 1 ? `Model ${series[0].label} over the run` : 'Model memory over the run'}
+    title={totals ? 'Memory over the run' : series.length === 1 ? `Model ${series[0].label} over the run` : 'Model memory over the run'}
   />
 }

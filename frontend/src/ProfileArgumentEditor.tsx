@@ -3,6 +3,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  ChevronDown,
   CircleHelp,
   Info,
   LoaderCircle,
@@ -185,6 +186,77 @@ function ModelPathInput({ label, inputId, value, placeholder, inputProps, onChan
   )
 }
 
+/** Common sizes, in binary thousands: 32K is 32,768. */
+const SIZE_PRESETS = [4, 8, 16, 24, 32, 48, 64, 96, 128, 192, 256].map((size) => ({ label: `${size}K`, value: size * 1024 }))
+
+/** Sizes counted in tokens or MiB get presets; counts such as threads or layers do not. */
+function sizePresets(definition: ArgumentDefinition) {
+  const schema = definition.value
+  if (schema.type !== 'integer' || (schema.unit !== 'tokens' && schema.unit !== 'MiB')) return []
+  return SIZE_PRESETS.filter(({ value }) => (schema.minimum === undefined || value >= schema.minimum) && (schema.maximum === undefined || value <= schema.maximum))
+}
+
+function PresetMenu({ label, presets, value, onPick }: {
+  label: string
+  presets: { label: string; value: number }[]
+  value: string
+  onPick: (value: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const id = useId()
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  function close() {
+    setOpen(false)
+    buttonRef.current?.focus()
+  }
+
+  useEffect(() => {
+    if (!open) return
+    const items = menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitemradio"]')
+    const current = [...(items ?? [])].find((item) => item.getAttribute('aria-checked') === 'true')
+    ;(current ?? items?.[0])?.focus()
+    function onPointerDown(event: MouseEvent) {
+      const target = event.target as Node
+      if (!menuRef.current?.contains(target) && !buttonRef.current?.contains(target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    return () => document.removeEventListener('mousedown', onPointerDown)
+  }, [open])
+
+  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const items = [...(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? [])]
+    const index = items.indexOf(document.activeElement as HTMLElement)
+    const move = ({ ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 } as Record<string, number>)[event.key]
+    if (move) {
+      event.preventDefault()
+      items[(index + move + items.length) % items.length]?.focus()
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault()
+      items[event.key === 'Home' ? 0 : items.length - 1]?.focus()
+    } else if (event.key === 'Escape') {
+      // Close only the menu, not the surrounding profile dialog.
+      event.preventDefault()
+      event.stopPropagation()
+      close()
+    } else if (event.key === 'Tab') setOpen(false)
+  }
+
+  return (
+    <>
+      <button aria-controls={open ? id : undefined} aria-expanded={open} aria-haspopup="menu" aria-label={`Common values for ${label}`} className="icon-button preset-button" onClick={() => setOpen((shown) => !shown)} ref={buttonRef} title="Common values" type="button"><ChevronDown aria-hidden="true" size={15} /></button>
+      {open && <div aria-label={`Common values for ${label}`} className="preset-menu" id={id} onKeyDown={onKeyDown} ref={menuRef} role="menu">
+        {presets.map((preset) => (
+          <button aria-checked={value.trim() === String(preset.value)} key={preset.value} onClick={() => { onPick(String(preset.value)); close() }} role="menuitemradio" tabIndex={-1} type="button">
+            <strong>{preset.label}</strong>{' '}<span>{preset.value.toLocaleString()}</span>
+          </button>
+        ))}
+      </div>}
+    </>
+  )
+}
+
 function ArgumentInput({ definition, draft, inputId, describedBy, invalid, onChange }: {
   definition: ArgumentDefinition
   draft: DraftValue
@@ -239,7 +311,8 @@ function ArgumentInput({ definition, draft, inputId, describedBy, invalid, onCha
     )
   }
   const numeric = schema.type === 'integer' || schema.type === 'number'
-  return (
+  const value = typeof draft === 'string' ? draft : ''
+  const input = (
     <input
       {...common}
       autoComplete="off"
@@ -248,9 +321,12 @@ function ArgumentInput({ definition, draft, inputId, describedBy, invalid, onCha
       placeholder={placeholder}
       spellCheck={false}
       type={definition.safety?.sensitive ? 'password' : 'text'}
-      value={typeof draft === 'string' ? draft : ''}
+      value={value}
     />
   )
+  const presets = sizePresets(definition)
+  if (!presets.length) return input
+  return <div className="preset-input">{input}<PresetMenu label={definition.label} onPick={onChange} presets={presets} value={value} /></div>
 }
 
 export function ArgumentField({ catalog, definition, draft, issues, acknowledged, onChange, onAcknowledge, onRemove }: {

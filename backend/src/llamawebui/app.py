@@ -130,7 +130,7 @@ from llamawebui.services.model_artifact_registry import ModelArtifactError, Mode
 from llamawebui.services.model_event_stream import stream_model_events
 from llamawebui.services.model_library import ModelLibrary
 from llamawebui.services.model_locator import ModelLocation, local_models, locate_model
-from llamawebui.services.process_memory import ProcessMemorySampler
+from llamawebui.services.process_memory import ProcessMemorySampler, system_memory
 from llamawebui.services.profile_registry import (
     ProfileAliasExistsError,
     ProfileNotFoundError,
@@ -1079,6 +1079,7 @@ def create_app(
             memory=lambda alias: cast(ProcessMemorySampler, app.state.process_memory).model(
                 cast(RouterSupervisor, app.state.router_supervisor).pid, alias
             ),
+            system_memory=system_memory,
         )
 
         def record_router_state(

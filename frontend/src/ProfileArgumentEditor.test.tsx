@@ -102,6 +102,36 @@ describe('ProfileArgumentEditor', () => {
     expect(screen.getByRole('dialog', { name: 'Edit' })).toBeInTheDocument()
   })
 
+  it('fills a size field from a menu of common values', () => {
+    let state: EditorEntry[] = []
+    const onClose = vi.fn()
+    render(<Dialog description="Profile" onClose={onClose} title="Edit"><Harness onState={(entries) => { state = entries }} /></Dialog>)
+    // Counts such as threads get no presets; sizes in tokens do.
+    expect(screen.queryByRole('button', { name: 'Common values for CPU threads' })).toBeNull()
+    const button = screen.getByRole('button', { name: 'Common values for Context size' })
+
+    fireEvent.click(button)
+    const menu = screen.getByRole('menu', { name: 'Common values for Context size' })
+    expect(button).toHaveAttribute('aria-expanded', 'true')
+    expect(within(menu).getByRole('menuitemradio', { name: /^4K/ })).toHaveFocus()
+    fireEvent.click(within(menu).getByRole('menuitemradio', { name: '32K 32,768' }))
+    expect(state).toMatchObject([{ id: 'ctx-size', draft: '32768' }])
+    expect(screen.getByLabelText('Context size')).toHaveValue('32768')
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(button).toHaveFocus()
+
+    // Reopening marks the current value; arrows move and Escape closes only the menu.
+    fireEvent.click(button)
+    const current = screen.getByRole('menuitemradio', { name: '32K 32,768' })
+    expect(current).toHaveAttribute('aria-checked', 'true')
+    expect(current).toHaveFocus()
+    fireEvent.keyDown(current, { key: 'ArrowDown' })
+    expect(screen.getByRole('menuitemradio', { name: '48K 49,152' })).toHaveFocus()
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
   it('searches advanced arguments, pins added settings, and removes them', () => {
     let state: EditorEntry[] = []
     render(<Harness onState={(entries) => { state = entries }} />)

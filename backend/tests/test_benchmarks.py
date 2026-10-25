@@ -401,6 +401,19 @@ async def test_a_run_keeps_its_context_and_memory_use_over_time(tmp_path: Path) 
             raise reading
         return reading
 
+    totals: list[dict[str, object] | Exception | None] = [
+        {"vram_bytes": 2000, "ram_bytes": 5000},
+        None,
+        RuntimeError("counters gone"),
+        {"vram_bytes": None, "ram_bytes": 6000},
+    ]
+
+    def system_memory() -> dict[str, object] | None:
+        reading = totals.pop(0) if len(totals) > 1 else totals[0]
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
+
     runs = BenchmarkRunRegistry(engine, engine_folder(engine) / "benchmark-runs")
     runner = BenchmarkRunner(
         runs,
@@ -411,6 +424,7 @@ async def test_a_run_keeps_its_context_and_memory_use_over_time(tmp_path: Path) 
         sample_seconds=0,
         context=lambda _alias: (2048, 8192),
         memory=memory,
+        system_memory=system_memory,
         resource_seconds=0.001,
     )
 
@@ -432,9 +446,13 @@ async def test_a_run_keeps_its_context_and_memory_use_over_time(tmp_path: Path) 
         "context_size": 8192,
         "ram_bytes": 150,
         "vram_bytes": 900,
+        "vram_total_bytes": 2000,
+        "ram_total_bytes": 5000,
     }
     assert "ram_bytes" not in live[1] and "ram_bytes" not in live[2]
+    assert "ram_total_bytes" not in live[1] and "ram_total_bytes" not in live[2]
     assert live[3]["ram_bytes"] == 120 and "vram_bytes" not in live[3]
+    assert live[3]["ram_total_bytes"] == 6000 and "vram_total_bytes" not in live[3]
     assert all(isinstance(entry["t"], float) for entry in live)
     stored = runs.get(record.id).resources
     assert len(stored) >= 4 and stored[:4] == live[:4]

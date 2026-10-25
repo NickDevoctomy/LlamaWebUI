@@ -45,6 +45,17 @@ describe('benchmark resource charts', () => {
     expect(within(tip).getByText('—')).toBeInTheDocument()
   })
 
+  it('adds what the whole machine was using alongside the model', () => {
+    const withTotals = resources.map((item, index) => ({ ...item, vram_total_bytes: (14 + index) * GIB, ram_total_bytes: 30 * GIB }))
+    render(<MemoryChart resources={withTotals} />)
+
+    const chart = screen.getByRole('figure', { name: /^Memory over the run\. VRAM peaked at .+; VRAM Total peaked at 16\.0 GB; RAM peaked at .+; RAM Total peaked at 30\.0 GB\.$/ })
+    const legend = chart.querySelector('.time-chart-legend') as HTMLElement
+    expect([...legend.querySelectorAll('li')].map((item) => item.dataset.series)).toEqual(['vram', 'vram-total', 'ram', 'ram-total'])
+    expect(within(legend).getByText('VRAM Total')).toBeInTheDocument()
+    expect(within(legend).getByText('RAM Total')).toBeInTheDocument()
+  })
+
   it('names the one series it has, and draws nothing without two readings', () => {
     const cpuOnly = resources.map(({ t, ram_bytes }) => ({ t, ram_bytes: ram_bytes ?? GIB }))
     const { container, rerender } = render(<MemoryChart resources={cpuOnly} />)

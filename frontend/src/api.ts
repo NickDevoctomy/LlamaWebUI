@@ -274,6 +274,10 @@ export interface BenchmarkResource {
   /** The model process's RAM, including the model file pages it holds. */
   ram_bytes?: number
   vram_bytes?: number
+  /** Dedicated VRAM in use on every GPU, by any process. */
+  vram_total_bytes?: number
+  /** System memory in use across the machine. */
+  ram_total_bytes?: number
 }
 
 export interface BenchmarkRunDetail extends BenchmarkRun {
