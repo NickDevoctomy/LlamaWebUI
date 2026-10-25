@@ -22,7 +22,9 @@ from llamawebui.domain.recommendation import (
     assess,
     load_recommendations,
     parse_recommendation,
+    parse_recommendations,
     select_group,
+    select_model_group,
 )
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
 from llamawebui.models import ModelProfileRecord, RuntimeRecord
@@ -194,6 +196,19 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     assert strix.model.quantization == nvidia.model.quantization == "UD-IQ4_XS"
     assert mtp.model.draft_group == "MTP/mtp-Qwen3.8-Flash-Next-BF16"
     assert mtp.alias == "qwen3.8-flash-next-mtp-24gb"
+    dense = by_id["qwen3.8-27b-ud-q4-k-m-nvidia-24gb"]
+    assert dense.model.quantization == "UD-Q4_K_M"
+    assert dense.model.draft_group is None
+    assert dense.vram_gb == 24
+    small = by_id["qwen3.8-27b-gsq-rco-iq3-s-nvidia-16gb"]
+    assert small.family == dense.id
+    assert small.version == dense.version
+    assert (small.label, small.alias, small.vram_gb) == ("16 GB VRAM", "qwen3.8-27b-16gb", 16)
+    assert small.model.group == "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp"
+    # Only the context differs from the base settings.
+    assert [item for item in small.arguments if item not in dense.arguments] == [
+        {"id": "ctx-size", "value": 98304}
+    ]
     nvidia_host = {
         "cpu": "Intel(R) Core(TM) i7-14700F",
         "memory_bytes": 128 * GIB,
@@ -212,6 +227,12 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     assert assess(nvidia, **nvidia_host).fit == "fits"  # type: ignore[arg-type]
     assert not assess(nvidia, **strix_host).hardware_match  # type: ignore[arg-type]
     assert assess(mtp, **nvidia_host).hardware_match  # type: ignore[arg-type]
+    assert assess(dense, **nvidia_host).fit == "fits"  # type: ignore[arg-type]
+    assert assess(small, **nvidia_host).hardware_match  # type: ignore[arg-type]
+    sixteen = {**nvidia_host, "discrete_vram_bytes": 16303 * 1024**2, "memory_bytes": 16 * GIB}
+    assert assess(small, **sixteen).hardware_match  # type: ignore[arg-type]
+    assert not assess(dense, **sixteen).hardware_match  # type: ignore[arg-type]
+    assert not assess(dense, **strix_host).hardware_match  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -951,3 +972,220 @@ def test_file_locations_never_count_as_a_change() -> None:
     assert is_modified(record, catalog) is True  # type: ignore[arg-type]
     unlinked = SimpleNamespace(recommendation_baseline=None)
     assert is_modified(unlinked, catalog) is True  # type: ignore[arg-type]
+
+
+def _family_document() -> dict[str, object]:
+    return _document(
+        label="96 GB",
+        profile={
+            "alias": "qwen-recommended",
+            "description": "Long context for a unified-memory APU.",
+            "exclusive": True,
+            "arguments": [
+                {"id": "ctx-size", "value": 262144},
+                {"id": "parallel", "value": 1},
+                {"id": "temperature", "value": 0.6},
+            ],
+        },
+        variants=[
+            {
+                "id": "test-model-small",
+                "label": "Q8 build",
+                "title": "Test model, smaller",
+                "model": {"quantization": "Q8_0", "group": "Qwen3.8-Flash-Next-Q8_0"},
+                "requirements": {"memory_gb": 48},
+                "profile": {
+                    "alias": "qwen-small",
+                    "arguments": [
+                        {"id": "ctx-size", "value": 65536},
+                        {"id": "threads", "value": 8},
+                    ],
+                    "remove_arguments": ["parallel"],
+                },
+            }
+        ],
+    )
+
+
+def test_a_variant_is_its_base_with_its_changes_on_top() -> None:
+    base, small = parse_recommendations(_family_document())
+
+    assert (base.family, base.label) == ("test-model-gpu", "96 GB")
+    assert (small.id, small.family, small.label, small.version) == (
+        "test-model-small",
+        "test-model-gpu",
+        "Q8 build",
+        1,
+    )
+    assert small.title == "Test model, smaller"
+    assert small.summary == base.summary
+    assert small.model.repo_id == REPO
+    assert (small.model.quantization, small.model.group) == ("Q8_0", "Qwen3.8-Flash-Next-Q8_0")
+    assert small.memory_gb == 48
+    assert small.backends == base.backends
+    assert small.tested_on == base.tested_on
+    assert (small.alias, small.description, small.exclusive) == (
+        "qwen-small",
+        base.description,
+        True,
+    )
+    assert list(small.arguments) == [
+        {"id": "ctx-size", "value": 65536},
+        {"id": "temperature", "value": 0.6},
+        {"id": "threads", "value": 8},
+    ]
+    assert small.to_payload()["family"] == "test-model-gpu"
+    # A file without variants is one recommendation of its own family.
+    (single,) = parse_recommendations(_document())
+    assert single.family == single.id
+    assert single.label is None
+
+
+def _variant(**fields: object) -> dict[str, object]:
+    return {"variants": [{"id": "other", "label": "x", **fields}]}
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"variants": "small"}, "variants must be a list"),
+        ({"label": None}, "needs a 'label'"),
+        ({"variants": [{"id": "test-model-gpu", "label": "x"}]}, "its own 'id' and 'label'"),
+        ({"variants": [{"id": "other"}]}, "its own 'id' and 'label'"),
+        (_variant(version=3), "cannot set 'version'"),
+        (_variant(variants=[]), "cannot set 'variants'"),
+        (_variant(model="Q8"), "'model' must be"),
+        (_variant(profile={"remove_arguments": ["fit"]}), "names no base argument: fit"),
+        (_variant(profile={"remove_arguments": "fit"}), "remove_arguments must list"),
+        (_variant(profile={"arguments": ["ctx-size"]}), r"variants\[0\]: profile.arguments"),
+    ],
+)
+def test_malformed_variants_are_rejected(change: dict[str, object], message: str) -> None:
+    with pytest.raises(RecommendationError, match=message):
+        parse_recommendations({**_family_document(), **change})
+
+
+def test_a_variant_alias_must_not_repeat_its_base(tmp_path: Path) -> None:
+    document = _family_document()
+    document["variants"][0]["profile"]["alias"] = "qwen-recommended"  # type: ignore[index]
+    (tmp_path / "a.json").write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(RecommendationError, match="duplicate recommendation profile aliases"):
+        load_recommendations(tmp_path)
+
+
+def test_a_named_model_group_is_picked_exactly() -> None:
+    groups = group_gguf_files((*_files(), HubFile("Qwen3.8-Flash-Next-Q8_0-mtp.gguf", 9)))
+    _, small = parse_recommendations(_family_document())
+    plain = parse_recommendation(_document())
+
+    assert select_model_group(groups, small.model).key == "Qwen3.8-Flash-Next-Q8_0"
+    assert select_model_group(groups, plain.model).files[0].path == SHARDS[0]
+    with pytest.raises(RecommendationError, match="more than one Q8_0 group"):
+        select_group(groups, "Q8_0")
+    missing = parse_recommendation(
+        _document(model={"repo_id": REPO, "quantization": "Q8_0", "group": "Nope-Q8_0"})
+    )
+    with pytest.raises(RecommendationError, match="has no model Nope-Q8_0"):
+        select_model_group(groups, missing.model)
+    sharded = parse_recommendation(
+        _document(
+            model={
+                "repo_id": REPO,
+                "quantization": "UD-IQ4_XS",
+                "group": "Qwen3.8-Flash-Next-UD-IQ4_XS",
+            }
+        )
+    )
+    with pytest.raises(RecommendationError, match="missing shards"):
+        select_model_group(group_gguf_files((HubFile(SHARDS[0], 3),)), sharded.model)
+
+
+def test_find_download_matches_a_named_group_only() -> None:
+    def job(group_key: str) -> object:
+        return SimpleNamespace(
+            repo_id=REPO, revision="a" * 40, group_key=group_key, state="completed"
+        )
+
+    _, small = parse_recommendations(_family_document())
+    plain, mtp = job("Qwen3.8-Flash-Next-Q8_0"), job("Qwen3.8-Flash-Next-Q8_0-mtp")
+
+    assert find_download(small, [mtp, plain]) is plain  # type: ignore[list-item]
+    assert find_download(small, [mtp]) is None  # type: ignore[list-item]
+
+
+def test_variants_are_listed_and_applied_on_their_own(tmp_path: Path, login: Login) -> None:
+    app = create_app(
+        Settings(data_dir=tmp_path / "data"),
+        runtime_prober=_fake_probe_factory(),  # type: ignore[arg-type]
+        catalog=FakeCatalog(),
+        file_transfer=ImmediateTransfer(),  # type: ignore[arg-type]
+        hardware_detector=lambda: HardwareProfile(
+            cpu=STRIX_CPU, memory_bytes=95 * GIB, gpus=("AMD Radeon 8060S",), discrete_vram_bytes=0
+        ),
+        recommendations=parse_recommendations(_family_document()),
+    )
+    with TestClient(app) as client:
+        login(client)
+        runtime_id = _register_runtime(client, tmp_path)
+        listed = client.get("/api/profiles/recommendations").json()["recommendations"]
+        applied = client.post(
+            "/api/profiles/recommendations/test-model-small/apply", json={"runtime_id": runtime_id}
+        )
+        assert applied.status_code == 201, applied.text
+        profiles = _wait_for(client, lambda items: items and items[0]["enabled"])
+        again = client.get("/api/profiles/recommendations").json()["recommendations"]
+
+    assert [(item["id"], item["family"], item["label"]) for item in listed] == [
+        ("test-model-gpu", "test-model-gpu", "96 GB"),
+        ("test-model-small", "test-model-gpu", "Q8 build"),
+    ]
+    assert listed[1]["model"]["group"] == "Qwen3.8-Flash-Next-Q8_0"
+    (profile,) = profiles
+    assert profile["alias"] == "qwen-small"
+    assert profile["model_path"].endswith("Qwen3.8-Flash-Next-Q8_0.gguf")
+    assert profile["recommendation"]["id"] == "test-model-small"
+    assert "ctx-size = 65536" in profile["preset"]
+    assert "parallel" not in profile["preset"]
+    assert again[0]["profile_ids"] == []
+    assert again[1]["profile_ids"] == [profile["id"]]
+
+
+def test_a_changed_profile_adopted_by_a_newer_version_moves_to_it(
+    tmp_path: Path, login: Login
+) -> None:
+    with TestClient(_app(tmp_path, ImmediateTransfer())) as client:  # type: ignore[arg-type]
+        login(client)
+        runtime_id, added = _apply_and_wait(client, tmp_path)
+        edited = client.put(
+            f"/api/profiles/{added['id']}",
+            json=_profile_body(runtime_id, str(added["model_path"]), 131072),
+        )
+    assert edited.json()["recommendation"]["modified"] is True
+
+    newer = _app(tmp_path, ImmediateTransfer(), documents=(_upgraded_document(),))
+    with TestClient(newer) as client:  # type: ignore[arg-type]
+        login(client)
+        listed = client.get("/api/profiles").json()[0]
+
+    assert listed["version"] == 2
+    assert listed["recommendation"]["modified"] is False
+    assert listed["recommendation"]["upgradable"] is False
+
+    # A newer version that did not adopt a later change leaves the profile modified.
+    newest = _document(
+        version=3,
+        profile={"alias": "qwen-recommended", "arguments": [{"id": "ctx-size", "value": 8192}]},
+    )
+    with TestClient(_app(tmp_path, ImmediateTransfer())) as client:  # type: ignore[arg-type]
+        login(client)
+        client.put(
+            f"/api/profiles/{added['id']}",
+            json=_profile_body(runtime_id, str(added["model_path"]), 4096),
+        )
+    with TestClient(_app(tmp_path, ImmediateTransfer(), documents=(newest,))) as client:  # type: ignore[arg-type]
+        login(client)
+        listed = client.get("/api/profiles").json()[0]
+
+    assert listed["version"] == 2
+    assert listed["recommendation"]["modified"] is True

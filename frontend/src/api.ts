@@ -140,6 +140,8 @@ export interface BenchmarkCatalog {
   /** Bundled system prompts a run can be sent with, ahead of the benchmark prompt. */
   system_prompts: SystemPrompt[]
   default_system_prompt_id: string | null
+  /** The benchmark picked until another is chosen; null falls back to the first. */
+  default_benchmark_id: string | null
   /** 'off', or effort levels the chat template is asked for. */
   reasoning_levels: string[]
   /** Null: no limit, so a run may use the profile's whole context. */
@@ -265,6 +267,21 @@ export type TimelineEntry = { round: number; start: number; end: number | null }
   | { kind: 'tool'; name: string; call: number; path?: string | null; ok?: boolean }
 )
 
+/** Context and model memory in use at one moment of a run; a reading not available is left out. */
+export interface BenchmarkResource {
+  /** Seconds since the prompt was sent. */
+  t: number
+  context_used?: number
+  context_size?: number
+  /** The model process's RAM, including the model file pages it holds. */
+  ram_bytes?: number
+  vram_bytes?: number
+  /** Dedicated VRAM in use on every GPU, by any process. */
+  vram_total_bytes?: number
+  /** System memory in use across the machine. */
+  ram_total_bytes?: number
+}
+
 export interface BenchmarkRunDetail extends BenchmarkRun {
   /** What generation spent its time on, step by step. */
   timeline: TimelineEntry[]
@@ -273,6 +290,8 @@ export interface BenchmarkRunDetail extends BenchmarkRun {
   system_prompt: string | null
   /** Speed over the recent window (span seconds), sampled about every half second. */
   samples: { t: number; phase: 'prefill' | 'decode'; tokens: number | null; rate: number; span?: number }[]
+  /** Context and memory use every few seconds while generating; absent from older runs. */
+  resources?: BenchmarkResource[]
   output: string
   reasoning: string
   /** Each file tool call, in order; results are cut short unless the run kept a verbose log, which also keeps the arguments as sent. */
@@ -298,8 +317,12 @@ export interface Recommendation {
   version: number
   title: string
   summary: string
-  /** draft_group names a draft model, such as an MTP head, downloaded with the model. */
-  model: { repo_id: string; quantization: string; revision: string | null; draft_group?: string | null }
+  /** The base recommendation's id, shared by all its variants. */
+  family?: string
+  /** The short name a variant is picked by, such as "16 GB VRAM". */
+  label?: string | null
+  /** draft_group names a draft model, such as an MTP head, downloaded with the model; group pins the exact model group. */
+  model: { repo_id: string; quantization: string; revision: string | null; draft_group?: string | null; group?: string | null }
   tested_on: { label: string; memory_gb: number; unified_memory: boolean; backend: string; notes: string | null }
   /** memory_gb is system memory plus any discrete VRAM; vram_gb, when set, is the GPU share. */
   requirements: { memory_gb: number; vram_gb?: number | null; backends: string[] }

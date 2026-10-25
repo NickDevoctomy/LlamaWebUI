@@ -130,7 +130,7 @@ from llamawebui.services.model_artifact_registry import ModelArtifactError, Mode
 from llamawebui.services.model_event_stream import stream_model_events
 from llamawebui.services.model_library import ModelLibrary
 from llamawebui.services.model_locator import ModelLocation, local_models, locate_model
-from llamawebui.services.process_memory import ProcessMemorySampler
+from llamawebui.services.process_memory import ProcessMemorySampler, system_memory
 from llamawebui.services.profile_registry import (
     ProfileAliasExistsError,
     ProfileNotFoundError,
@@ -178,6 +178,7 @@ from llamawebui.version import __version__
 
 MODEL_EVENT_KEEPALIVE_SECONDS = 15.0
 DEFAULT_SYSTEM_PROMPT_ID = "coding-agent"
+DEFAULT_BENCHMARK_ID = "tetris-no-details"
 PROFILE_DESCRIPTION_LIMIT = 500
 _ACTIVE_DOWNLOAD_STATES = frozenset(
     {DownloadState.QUEUED, DownloadState.DOWNLOADING, DownloadState.PAUSED}
@@ -1076,6 +1077,10 @@ def create_app(
             context=lambda alias: slot_context(
                 cast(RouterSupervisor, app.state.router_supervisor).context, alias
             ),
+            memory=lambda alias: cast(ProcessMemorySampler, app.state.process_memory).model(
+                cast(RouterSupervisor, app.state.router_supervisor).pid, alias
+            ),
+            system_memory=system_memory,
         )
 
         def record_router_state(
@@ -1844,6 +1849,11 @@ def create_app(
             payload["prompt"] = record.prompt
             payload["system_prompt"] = record.system_prompt
             payload["samples"] = list(progress["samples"]) if progress else record.samples  # type: ignore[call-overload]
+            payload["resources"] = (
+                list(cast(list[dict[str, object]], progress["resources"]))
+                if progress
+                else record.resources
+            )
             payload["output"] = progress["output"] if progress else record.output
             payload["reasoning"] = progress["reasoning"] if progress else record.reasoning
             payload["tool_calls"] = (
@@ -1910,6 +1920,10 @@ def create_app(
         return {
             "benchmarks": [item.to_payload() for item in benchmarks],
             "system_prompts": [item.to_payload() for item in system_prompts],
+            # The quickest bundled benchmark is picked first; others need choosing.
+            "default_benchmark_id": next(
+                (item.id for item in benchmarks if item.id == DEFAULT_BENCHMARK_ID), None
+            ),
             # Runs default to the coding agent framing a client like OpenCode sends.
             "default_system_prompt_id": next(
                 (item.id for item in system_prompts if item.id == DEFAULT_SYSTEM_PROMPT_ID),

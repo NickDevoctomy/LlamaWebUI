@@ -382,6 +382,95 @@ async def test_a_slow_load_times_out(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_run_keeps_its_context_and_memory_use_over_time(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    client.block_after_first_chunk = True
+    readings: list[dict[str, object] | Exception | None] = [
+        {"ram_bytes": 100, "mapped_bytes": 50, "vram_bytes": 900},
+        RuntimeError("process gone"),
+        None,
+        {"ram_bytes": 120, "mapped_bytes": None, "vram_bytes": None},
+    ]
+    asked: list[str] = []
+
+    def memory(alias: str) -> dict[str, object] | None:
+        asked.append(alias)
+        reading = readings.pop(0) if len(readings) > 1 else readings[0]
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
+
+    totals: list[dict[str, object] | Exception | None] = [
+        {"vram_bytes": 2000, "ram_bytes": 5000},
+        None,
+        RuntimeError("counters gone"),
+        {"vram_bytes": None, "ram_bytes": 6000},
+    ]
+
+    def system_memory() -> dict[str, object] | None:
+        reading = totals.pop(0) if len(totals) > 1 else totals[0]
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
+
+    runs = BenchmarkRunRegistry(engine, engine_folder(engine) / "benchmark-runs")
+    runner = BenchmarkRunner(
+        runs,
+        client,
+        start_router=lambda _runtime: asyncio.sleep(0),
+        stop_router=lambda: asyncio.sleep(0),
+        router_stopped=lambda: True,
+        sample_seconds=0,
+        context=lambda _alias: (2048, 8192),
+        memory=memory,
+        system_memory=system_memory,
+        resource_seconds=0.001,
+    )
+
+    record = runner.start(profile, BENCHMARK, 256)
+    for _ in range(500):
+        await asyncio.sleep(0.002)
+        progress = runner.progress(record.id)
+        if progress and len(cast(list[object], progress["resources"])) >= 4:
+            break
+    live = cast(list[dict[str, object]], runner.progress(record.id)["resources"])  # type: ignore[index]
+    client.hold.set()
+    await runner.wait()
+
+    assert asked[0] == "qwen"
+    # RAM counts the model file pages the process holds; a failed or missing reading
+    # still keeps the context.
+    assert {key: value for key, value in live[0].items() if key != "t"} == {
+        "context_used": 2048,
+        "context_size": 8192,
+        "ram_bytes": 150,
+        "vram_bytes": 900,
+        "vram_total_bytes": 2000,
+        "ram_total_bytes": 5000,
+    }
+    assert "ram_bytes" not in live[1] and "ram_bytes" not in live[2]
+    assert "ram_total_bytes" not in live[1] and "ram_total_bytes" not in live[2]
+    assert live[3]["ram_bytes"] == 120 and "vram_bytes" not in live[3]
+    assert live[3]["ram_total_bytes"] == 6000 and "vram_total_bytes" not in live[3]
+    assert all(isinstance(entry["t"], float) for entry in live)
+    stored = runs.get(record.id).resources
+    assert len(stored) >= 4 and stored[:4] == live[:4]
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_nothing_to_measure_keeps_no_resources(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    runner, runs, _ = _runner(engine, FakeBenchmarkClient())
+    runner._resource_seconds = 0.001
+
+    record = runner.start(profile, BENCHMARK, 256)
+    await runner.wait()
+
+    assert runs.get(record.id).resources == []
+
+
+@pytest.mark.asyncio
 async def test_a_cancelled_benchmark_keeps_its_partial_output(tmp_path: Path) -> None:
     engine, profile = _database(tmp_path)
     client = FakeBenchmarkClient()
@@ -550,6 +639,8 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
     # No default limit: a run may use the profile's whole context.
     assert listed["default_max_tokens"] is None
     assert listed["default_system_prompt_id"] == "coding-agent"
+    # The bundled default is not among this test's benchmarks.
+    assert listed["default_benchmark_id"] is None
     assert "coding-agent" in [item["id"] for item in listed["system_prompts"]]
     assert unknown_system_prompt.status_code == 404
     assert unknown_level.status_code == 422
@@ -584,6 +675,8 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
         "available": True,
     }
     assert detail["artifacts"] == [{"path": "game/index.html", "size": 25}]
+    # Nothing in this test measures context or memory, so there is nothing over time.
+    assert detail["resources"] == []
     # Files come back as text inside JSON, never as a page the browser would run.
     assert artifact.headers["content-type"].startswith("application/json")
     assert artifact.json() == {"path": "game/index.html", "content": "<script>alert(1)</script>"}

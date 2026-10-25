@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -37,6 +37,9 @@ class RecommendedModel:
     # A draft model group in the same repository, such as an MTP head. Applying the
     # recommendation downloads it too and points spec-draft-model at it.
     draft_group: str | None = None
+    # The exact model group to use, for a repository with more than one group per
+    # quantization (such as a plain and an MTP build).
+    group: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +70,10 @@ class Recommendation:
     exclusive: bool = False
     # Bumped whenever the bundled settings change, so added profiles can be upgraded.
     version: int = 1
+    # Variants of one recommendation share the base's id here; a plain one has its own.
+    family: str = ""
+    # The short name a variant is picked by, such as "16 GB VRAM".
+    label: str | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -74,11 +81,14 @@ class Recommendation:
             "version": self.version,
             "title": self.title,
             "summary": self.summary,
+            "family": self.family or self.id,
+            "label": self.label,
             "model": {
                 "repo_id": self.model.repo_id,
                 "quantization": self.model.quantization,
                 "revision": self.model.revision,
                 "draft_group": self.model.draft_group,
+                "group": self.model.group,
             },
             "tested_on": {
                 "label": self.tested_on.label,
@@ -133,7 +143,80 @@ def _positive_int(document: Mapping[str, object], key: str) -> int:
     return value
 
 
+def _merged_arguments(
+    base: object, changes: Mapping[str, object]
+) -> list[object]:
+    """The base arguments with a variant's applied: same id replaces, new ids append."""
+    if not isinstance(base, list):
+        raise RecommendationError("profile.arguments must be a list of argument objects")
+    removed = changes.get("remove_arguments", [])
+    if not isinstance(removed, list) or not all(isinstance(item, str) for item in removed):
+        raise RecommendationError("profile.remove_arguments must list argument ids")
+    added = changes.get("arguments", [])
+    if not isinstance(added, list) or not all(isinstance(item, dict) for item in added):
+        raise RecommendationError("profile.arguments must be a list of argument objects")
+    present = {item.get("id") for item in base if isinstance(item, dict)}
+    unknown = sorted(set(removed) - present)
+    if unknown:
+        raise RecommendationError(f"profile.remove_arguments names no base argument: {unknown[0]}")
+    replaced = {item.get("id"): item for item in added if item.get("id") is not None}
+    merged = [
+        replaced.pop(item.get("id"), item) if isinstance(item, dict) else item
+        for item in base
+        if not (isinstance(item, dict) and item.get("id") in removed)
+    ]
+    return merged + [item for item in added if item.get("id") is None or item.get("id") in replaced]
+
+
+def _variant_document(
+    base: Mapping[str, object], variant: Mapping[str, object]
+) -> dict[str, object]:
+    """A variant as a full document: the base with the variant's changes laid on top.
+
+    Top-level text replaces the base's. ``model``, ``tested_on``, ``requirements`` and
+    ``profile`` merge key by key, and profile arguments merge by id.
+    """
+    document = {key: value for key, value in base.items() if key != "variants"}
+    for key, value in variant.items():
+        if key in {"model", "tested_on", "requirements", "profile"}:
+            if not isinstance(value, dict):
+                raise RecommendationError(f"recommendation field '{key}' must be an object")
+            merged = {**_section(base, key), **value}
+            if key == "profile":
+                merged.pop("remove_arguments", None)
+                merged["arguments"] = _merged_arguments(_section(base, key).get("arguments"), value)
+            document[key] = merged
+        elif key in {"version", "variants"}:
+            raise RecommendationError(f"a variant cannot set '{key}'; it shares its base's")
+        else:
+            document[key] = value
+    return document
+
+
+def parse_recommendations(document: Mapping[str, object]) -> tuple[Recommendation, ...]:
+    """A recommendation file: the base and each of its variants."""
+    base = parse_recommendation(document)
+    variants = document.get("variants", [])
+    if not isinstance(variants, list) or not all(isinstance(item, dict) for item in variants):
+        raise RecommendationError("variants must be a list of objects")
+    if variants and base.label is None:
+        raise RecommendationError("a recommendation with variants needs a 'label'")
+    parsed = [base]
+    for index, variant in enumerate(variants):
+        try:
+            item = parse_recommendation(_variant_document(document, variant))
+        except RecommendationError as error:
+            raise RecommendationError(f"variants[{index}]: {error}") from error
+        if item.id == base.id or variant.get("label") is None:
+            raise RecommendationError(
+                f"variants[{index}]: a variant needs its own 'id' and 'label'"
+            )
+        parsed.append(replace(item, family=base.id))
+    return tuple(parsed)
+
+
 def parse_recommendation(document: Mapping[str, object]) -> Recommendation:
+    """One recommendation, ignoring any variants; see ``parse_recommendations``."""
     if document.get("format") != RECOMMENDATION_FORMAT:
         raise RecommendationError("unsupported recommendation format")
     identifier = _text(document, "id")
@@ -178,6 +261,7 @@ def parse_recommendation(document: Mapping[str, object]) -> Recommendation:
             quantization=_text(model, "quantization"),
             revision=_optional_text(model, "revision"),
             draft_group=draft_group,
+            group=_optional_text(model, "group"),
         ),
         tested_on=TestedHardware(
             label=_text(tested, "label"),
@@ -200,6 +284,8 @@ def parse_recommendation(document: Mapping[str, object]) -> Recommendation:
         description=_optional_text(profile, "description"),
         exclusive=exclusive,
         version=1 if document.get("version") is None else _positive_int(document, "version"),
+        family=identifier,
+        label=_optional_text(document, "label"),
     )
 
 
@@ -216,7 +302,7 @@ def load_recommendations(directory: Path = RECOMMENDATION_DIRECTORY) -> tuple[Re
         if not isinstance(document, dict):
             raise RecommendationError(f"{path.name}: recommendation must be a JSON object")
         try:
-            loaded.append(parse_recommendation(document))
+            loaded.extend(parse_recommendations(document))
         except RecommendationError as error:
             raise RecommendationError(f"{path.name}: {error}") from error
     for field, values in (
@@ -269,6 +355,18 @@ def select_draft_group(groups: Iterable[GgufGroup], key: str) -> GgufGroup:
         raise RecommendationError(f"the repository has no draft model {key}")
     if not match.complete:
         raise RecommendationError(f"the repository's draft model {key} is missing shards")
+    return match
+
+
+def select_model_group(groups: Iterable[GgufGroup], model: RecommendedModel) -> GgufGroup:
+    """The model group a recommendation names exactly, or the one for its quantization."""
+    if model.group is None:
+        return select_group(groups, model.quantization)
+    match = next((group for group in groups if group.key.lower() == model.group.lower()), None)
+    if match is None:
+        raise RecommendationError(f"the repository has no model {model.group}")
+    if not match.complete:
+        raise RecommendationError(f"the repository's model {model.group} is missing shards")
     return match
 
 

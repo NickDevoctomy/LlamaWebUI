@@ -119,6 +119,12 @@ class BenchmarkRunRecord(Base):
     timeline: Mapped[list[dict[str, object]]] = mapped_column(
         JSON, default=list, server_default=text("'[]'")
     )
+    # Context and model memory use while generating, every few seconds: seconds since
+    # the prompt was sent, tokens in context and its size, and the model process's RAM
+    # (model file pages included) and VRAM in bytes. A reading not available is left out.
+    resources: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON, default=list, server_default=text("'[]'")
+    )
     # running, completed, failed or cancelled; stage is the step a run reached.
     state: Mapped[str] = mapped_column(String(20))
     stage: Mapped[str] = mapped_column(String(20))
