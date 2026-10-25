@@ -17,6 +17,7 @@ const responses: Record<string, unknown> = {
     logs: [],
   },
   '/api/runtimes': [],
+  '/api/settings/benchmark-tools': { eslint: { state: 'missing', versions: null, installed_at: null, size: null, progress: null, error: null, pinned: { node: '24.22.1', eslint: '10.13.0', 'eslint-plugin-html': '8.2.1' } } },
   '/api/profiles': [],
   '/api/tokens': [],
   '/api/downloads': [],
@@ -198,11 +199,14 @@ describe('App', () => {
     expect(screen.queryByText('Passwords do not match.')).not.toBeInTheDocument()
   })
 
-  it('renders Settings as an empty full-width section for users with settings access', async () => {
+  it('renders Settings with its benchmark tools for users with settings access', async () => {
     renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
     expect(screen.getByRole('heading', { name: 'Settings', level: 2 })).toBeInTheDocument()
-    expect(screen.getByText('Application settings will be available here in a future release.')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Benchmark' })).toHaveAttribute('aria-selected', 'true')
+    // Without settings.write the download is shown but cannot be started.
+    expect(await screen.findByRole('button', { name: 'Download' })).toBeDisabled()
+    expect(screen.getByText(/Fetches Node.js 24.22.1 · eslint 10.13.0/)).toBeInTheDocument()
   })
 
   it('renders live operational state and navigates to server details', async () => {
@@ -329,7 +333,10 @@ describe('App', () => {
     profile: { alias: 'qwen3.8-flash-next', exclusive: true, arguments: [{ id: 'ctx-size', value: 262144 }, { id: 'cache-type-k', value: 'q4_0' }] },
     assessment: { fit: 'fits', hardware_match: true, available_memory_gb: 95.6 },
     compatible_runtime_ids: ['runtime-vk'],
-    profile_id: null,
+    download: null,
+    matches: {},
+    profile_ids: [],
+    suggested_alias: 'qwen3.8-flash-next',
   }
   const host = { cpu: 'AMD RYZEN AI MAX+ 395 w/ Radeon 8060S', memory_bytes: 96 * 1024 ** 3, gpus: ['AMD Radeon(TM) 8060S Graphics'], discrete_vram_bytes: 0 }
   const vulkanRuntime = { id: 'runtime-vk', name: 'Vulkan b11070', executable_path: 'E:\\llama-server.exe', build: 'b11070', backend: 'vulkan', devices: [], options: [], usable: true }
@@ -358,7 +365,7 @@ describe('App', () => {
     const contextSize = within(context).getByText('Context size').closest('li')!
     expect(contextSize).toHaveTextContent('262,144')
     expect(within(contextSize).getByText('VRAM')).toHaveAttribute('data-color', 'violet')
-    const apply = screen.getByRole('button', { name: 'Download & add profile' })
+    const apply = screen.getByRole('button', { name: 'Download model and add profile' })
     expect(apply).toBeEnabled()
     fireEvent.click(apply)
 
@@ -384,7 +391,7 @@ describe('App', () => {
 
     expect(await screen.findByText(/The settings carry over to CUDA, but speed and memory use will differ/)).toBeInTheDocument()
     expect(screen.getByText(/Runs on/)).toHaveTextContent('Runs on CUDA b11070')
-    fireEvent.click(screen.getByRole('button', { name: 'Download & add profile' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Download model and add profile' }))
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(([path]) => path === '/api/profiles/recommendations/qwen-strix/apply')
       expect(JSON.parse(String(call?.[1]?.body))).toEqual({ runtime_id: 'runtime-cuda' })
@@ -401,7 +408,7 @@ describe('App', () => {
 
     expect(await screen.findByText(/Register a llama-server build to use this profile. It was tested with Vulkan or ROCm./)).toBeInTheDocument()
     expect(screen.getByText('Not enough memory')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download & add profile' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Download model and add profile' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open runtimes' }))
     expect(screen.getByRole('heading', { name: 'Runtimes', level: 1 })).toBeInTheDocument()
   })
@@ -412,7 +419,7 @@ describe('App', () => {
       runtimeList: [vulkanRuntime],
       profileList: [pending],
       onRequest: (path) => path === '/api/profiles/recommendations'
-        ? { host, recommendations: [{ ...recommendation, profile_id: 'profile-9' }] }
+        ? { host, recommendations: [{ ...recommendation, matches: { 'runtime-vk': ['profile-9'] }, profile_ids: ['profile-9'] }] }
         : undefined,
     })
     fireEvent.click(await screen.findByRole('button', { name: 'Profiles' }))
@@ -421,6 +428,94 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Recommended' }))
     expect(await screen.findByText(/Downloading · 43 B of 100 B · 43%/)).toBeInTheDocument()
     expect(screen.getByText(/switches on by itself when the download finishes/)).toBeInTheDocument()
+  })
+
+  it('downloads a recommended model without adding a profile', async () => {
+    const me = responses['/api/auth/me'] as { privileges: string[] }
+    const fetchMock = renderApp({
+      currentUser: { ...me, privileges: [...me.privileges, 'profiles.write', 'downloads.write'] },
+      runtimeList: [vulkanRuntime],
+      onRequest: (path, init) => {
+        if (path === '/api/profiles/recommendations') return { host, recommendations: [recommendation] }
+        if (path.endsWith('/apply') && init?.method === 'POST') return { profile: null, download: {}, ready: false }
+        return undefined
+      },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Recommended' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Download model' }))
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([path]) => path === '/api/profiles/recommendations/qwen-strix/apply')
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ runtime_id: 'runtime-vk', add_profile: false })
+    })
+  })
+
+  it('shows a draft model downloading beside a finished model', async () => {
+    const withDraft = { ...recommendation, model: { ...recommendation.model, draft_group: 'MTP/mtp-Qwen3.8-Flash-Next-BF16' }, download: { id: 'job-1', state: 'completed', completed_bytes: 100, total_bytes: 100 } }
+    renderApp({
+      runtimeList: [vulkanRuntime],
+      onRequest: (path) => path === '/api/profiles/recommendations'
+        ? { host, recommendations: [withDraft, { ...withDraft, id: 'draft-running', title: 'Draft running', draft_download: { id: 'job-2', state: 'downloading', completed_bytes: 20, total_bytes: 80 } }] }
+        : undefined,
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Recommended' }))
+
+    const missing = (await screen.findByRole('heading', { name: 'Qwen3.8 Flash Next, 262K context' })).closest('article')!
+    expect(within(missing).getByText(/draft MTP\/mtp-Qwen3.8-Flash-Next-BF16/)).toBeInTheDocument()
+    // The draft model is not on disk yet, so adding the profile still downloads.
+    expect(within(missing).getByRole('button', { name: 'Download model and add profile' })).toBeInTheDocument()
+    const running = screen.getByRole('heading', { name: 'Draft running' }).closest('article')!
+    expect(within(running).getByText(/Draft model · Downloading · 20 B of 80 B · 25%/)).toBeInTheDocument()
+    expect(within(running).getByRole('button', { name: 'Add profile' })).toBeInTheDocument()
+  })
+
+  it('offers another copy under a numbered alias when the original was changed', async () => {
+    const me = responses['/api/auth/me'] as { privileges: string[] }
+    const changed = { id: 'profile-1', alias: 'qwen3.8-flash-next', runtime_id: 'runtime-vk', model_path: 'E:\\models\\qwen.gguf', configuration: {}, enabled: true, version: 1, recommendation: { id: 'qwen-strix', title: null, latest_version: 1, modified: true, upgradable: false }, validation_state: 'available', source_download: null }
+    const fetchMock = renderApp({
+      currentUser: { ...me, privileges: [...me.privileges, 'profiles.write', 'downloads.write'] },
+      runtimeList: [vulkanRuntime],
+      profileList: [changed],
+      onRequest: (path, init) => {
+        if (path === '/api/profiles/recommendations') return { host, recommendations: [{ ...recommendation, download: { id: 'job-1', state: 'completed', completed_bytes: 100, total_bytes: 100 }, profile_ids: ['profile-1'], suggested_alias: 'qwen3.8-flash-next-2' }] }
+        if (path.endsWith('/apply') && init?.method === 'POST') return { profile: {}, download: {}, ready: true }
+        return undefined
+      },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Recommended' }))
+
+    const alias = await screen.findByRole('textbox', { name: /Profile alias/ })
+    expect(alias).toHaveValue('qwen3.8-flash-next-2')
+    expect(screen.getByText('qwen3.8-flash-next is already used by a profile with different settings.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Download model' })).not.toBeInTheDocument()
+    fireEvent.change(alias, { target: { value: 'Qwen Original' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add profile' }))
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([path]) => path === '/api/profiles/recommendations/qwen-strix/apply')
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ runtime_id: 'runtime-vk', alias: 'qwen-original' })
+    })
+  })
+
+  it('offers both an upgrade and a new copy for an older unchanged profile', async () => {
+    const me = responses['/api/auth/me'] as { privileges: string[] }
+    const older = { id: 'profile-1', alias: 'qwen3.8-flash-next', runtime_id: 'runtime-vk', model_path: 'E:\\models\\qwen.gguf', configuration: {}, enabled: true, version: 1, recommendation: { id: 'qwen-strix', title: null, latest_version: 2, modified: false, upgradable: true }, validation_state: 'available', source_download: null }
+    const fetchMock = renderApp({
+      currentUser: { ...me, privileges: [...me.privileges, 'profiles.write', 'downloads.write'] },
+      runtimeList: [vulkanRuntime],
+      profileList: [older],
+      onRequest: (path, init) => {
+        if (path === '/api/profiles/recommendations') return { host, recommendations: [{ ...recommendation, version: 2, download: { id: 'job-1', state: 'completed', completed_bytes: 100, total_bytes: 100 }, profile_ids: ['profile-1'], suggested_alias: 'qwen3.8-flash-next-2' }] }
+        if (path === '/api/profiles/profile-1/upgrade' && init?.method === 'POST') return older
+        return undefined
+      },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Recommended' }))
+
+    expect(await screen.findByText(/is unchanged from version 1. Upgrade it to version 2, or add version 2 as another profile./)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add profile' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Upgrade qwen3.8-flash-next' }))
+    await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => path === '/api/profiles/profile-1/upgrade')).toBe(true))
   })
 
   it('switches and remembers the colour theme', async () => {

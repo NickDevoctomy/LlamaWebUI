@@ -83,6 +83,8 @@ export interface Profile {
   exclusive?: boolean
   description?: string | null
   version?: number
+  /** SHA-256 of the llama-server command, alias excluded; equal hashes launch identically. */
+  hash?: string | null
   /** Set when the profile was added from a bundled recommendation. */
   recommendation?: ProfileRecommendation | null
   /** Latest completed result per benchmark id; kept when the runs are deleted. */
@@ -112,6 +114,19 @@ export interface Benchmark {
   id: string
   title: string
   prompt: string
+  /** Tasks a run with complete_task starts with, from the prompt file's frontmatter. */
+  tasks: string[]
+  /** Set for a TypeScript benchmark, which gets the TypeScript tools; null otherwise. */
+  typescript: { strict: boolean } | null
+}
+
+/** A task on the agent's task list; deleting one only marks it deleted. */
+export interface BenchmarkTask {
+  id: number
+  title: string
+  status: 'open' | 'done' | 'deleted'
+  /** Whether the benchmark prompt or the agent added it. */
+  source: 'prompt' | 'agent'
 }
 
 export interface SystemPrompt {
@@ -127,8 +142,34 @@ export interface BenchmarkCatalog {
   default_system_prompt_id: string | null
   /** 'off', or effort levels the chat template is asked for. */
   reasoning_levels: string[]
-  default_max_tokens: number
+  /** Null: no limit, so a run may use the profile's whole context. */
+  default_max_tokens: number | null
+  /** The file tools a run can be given, in the order they are offered. */
+  tools: BenchmarkTool[]
   active_run_id: string | null
+}
+
+export interface BenchmarkTool {
+  name: string
+  summary: string
+  /** False until what the tool needs is installed (check_file needs ESLint). */
+  available: boolean
+}
+
+export interface LinterStatus {
+  state: 'missing' | 'installing' | 'installed' | 'failed'
+  /** Installed versions of Node.js and each package. */
+  versions: Record<string, string> | null
+  installed_at: string | null
+  size: number | null
+  progress: { stage: 'downloading' | 'verifying' | 'extracting' | 'packages'; received?: number; total?: number | null } | null
+  error: string | null
+  /** What an install fetches. */
+  pinned: Record<string, string>
+  /** Whether the install carries TypeScript and esbuild, for the TypeScript tools. */
+  typescript: boolean
+  /** Installed from before the TypeScript tools; installing again adds them. */
+  outdated: boolean
 }
 
 /** Timings in seconds and speeds in tokens per second; any may be missing for a run that stopped early. */
@@ -149,11 +190,17 @@ export interface BenchmarkStats {
   decode_final_tokens_per_second?: number
   generation_seconds?: number
   total_seconds?: number
+  /** stop, length, context (the conversation outgrew it), tool_round_limit or finish_job (task_complete on older runs). */
   finish_reason?: string
+  /** With file tools: completed only when the agent called finish_job. */
+  outcome?: 'completed' | 'unfinished'
   /** Requests sent: one, plus one more after each round of tool calls. */
   rounds?: number
   tool_calls?: number
   files_written?: number
+  /** The most tokens the model's context held during the run, and the context's size. */
+  context_peak?: number
+  context_size?: number
 }
 
 /** The latest completed result of a benchmark, written onto the profile. */
@@ -175,12 +222,19 @@ export interface BenchmarkRun {
   profile_version: number
   benchmark_id: string
   benchmark_title: string
-  max_tokens: number
+  /** Null: no limit beyond the profile's context size. */
+  max_tokens: number | null
   /** Whether the model could read and write files in the run's own folder. */
   tools: boolean
+  /** The tools it was given; null for runs from before they could be chosen, which had them all. */
+  tool_names?: string[] | null
   system_prompt_id: string | null
   /** 'off', an effort level, or null for the model's own default. */
   reasoning_level: string | null
+  /** For a run with the TypeScript tools, whether check_typescript was strict; null otherwise. */
+  typescript_strict?: boolean | null
+  /** Whether each tool call kept its arguments and whole result. */
+  verbose_log?: boolean
   state: BenchmarkState
   stage: BenchmarkStage
   error: string | null
@@ -191,6 +245,10 @@ export interface BenchmarkRun {
   live?: {
     prefill?: { tokens: number | null; rate: number | null } | null
     decode?: { tokens: number | null; rate: number | null } | null
+    /** The tool call being written: its name and bytes of arguments so far. */
+    tool_call?: { name: string; bytes: number } | null
+    /** Tokens in the model's context right now, and its size. */
+    context?: { used: number; size: number } | null
     /** Seconds since the prompt was sent, on the same clock as the run's timeline. */
     elapsed?: number | null
   }
@@ -203,7 +261,7 @@ export interface BenchmarkRun {
 export type TimelineEntry = { round: number; start: number; end: number | null } & (
   | { kind: 'reading'; prompt_tokens?: number }
   | { kind: 'thinking' | 'answer'; tokens?: number; from: number; to?: number }
-  | { kind: 'tool_call'; tokens?: number; names?: string[] }
+  | { kind: 'tool_call'; tokens?: number; names?: string[]; bytes?: number }
   | { kind: 'tool'; name: string; call: number; path?: string | null; ok?: boolean }
 )
 
@@ -217,8 +275,10 @@ export interface BenchmarkRunDetail extends BenchmarkRun {
   samples: { t: number; phase: 'prefill' | 'decode'; tokens: number | null; rate: number; span?: number }[]
   output: string
   reasoning: string
-  /** Each file tool call, in order; results are cut short. */
-  tool_calls: { round: number; name: string; path: string | null; ok: boolean; result: string }[]
+  /** Each file tool call, in order; results are cut short unless the run kept a verbose log, which also keeps the arguments as sent. */
+  tool_calls: { round: number; name: string; path: string | null; ok: boolean; result: string; arguments?: string }[]
+  /** The agent's task list from the planning tools, in the order tasks were added. */
+  tasks: BenchmarkTask[]
   /** Files the model wrote into the run's folder. */
   artifacts: { path: string; size: number }[]
 }
@@ -238,14 +298,24 @@ export interface Recommendation {
   version: number
   title: string
   summary: string
-  model: { repo_id: string; quantization: string; revision: string | null }
+  /** draft_group names a draft model, such as an MTP head, downloaded with the model. */
+  model: { repo_id: string; quantization: string; revision: string | null; draft_group?: string | null }
   tested_on: { label: string; memory_gb: number; unified_memory: boolean; backend: string; notes: string | null }
   /** memory_gb is system memory plus any discrete VRAM; vram_gb, when set, is the GPU share. */
   requirements: { memory_gb: number; vram_gb?: number | null; backends: string[] }
   profile: { alias: string; description?: string | null; exclusive?: boolean; arguments: StoredArgument[] }
   assessment: { fit: 'fits' | 'tight' | 'insufficient'; hardware_match: boolean; available_memory_gb: number }
   compatible_runtime_ids: string[]
-  profile_id: string | null
+  /** A local download of the recommended model, if there is one. */
+  download: { id: string; state: string; completed_bytes: number; total_bytes: number } | null
+  /** A local download of its draft model, if it has one and it was found. */
+  draft_download?: { id: string; state: string; completed_bytes: number; total_bytes: number } | null
+  /** Per runtime id, the profiles that launch exactly what this recommendation would. */
+  matches: Record<string, string[]>
+  /** Profiles added from this recommendation, under any alias. */
+  profile_ids: string[]
+  /** The recommended alias, or the first free alias-n when it is taken. */
+  suggested_alias: string
 }
 
 export interface RecommendationList {
@@ -605,10 +675,14 @@ export const api = {
   reprobeRuntime: (runtimeId: string) => request<Runtime>(`/api/runtimes/${runtimeId}/probe`, { method: 'POST' }),
   profiles: () => request<Profile[]>('/api/profiles'),
   recommendations: () => request<RecommendationList>('/api/profiles/recommendations'),
-  applyRecommendation: (id: string, runtimeId: string) =>
-    request<{ profile: Profile; download: DownloadJob; ready: boolean }>(`/api/profiles/recommendations/${id}/apply`, {
+  applyRecommendation: (id: string, runtimeId: string, options: { alias?: string; addProfile?: boolean } = {}) =>
+    request<{ profile: Profile | null; download: DownloadJob; ready: boolean }>(`/api/profiles/recommendations/${id}/apply`, {
       method: 'POST',
-      body: JSON.stringify({ runtime_id: runtimeId }),
+      body: JSON.stringify({
+        runtime_id: runtimeId,
+        ...(options.alias ? { alias: options.alias } : {}),
+        ...(options.addProfile === false ? { add_profile: false } : {}),
+      }),
     }),
   tokens: () => request<AccessToken[]>('/api/tokens'),
   downloads: () => request<DownloadJob[]>('/api/downloads'),
@@ -679,10 +753,13 @@ export const api = {
   benchmarkRun: (runId: string) => request<BenchmarkRunDetail>(`/api/benchmarks/runs/${runId}`),
   benchmarkArtifact: (runId: string, path: string) =>
     request<{ path: string; content: string }>(`/api/benchmarks/runs/${runId}/artifacts/${path.split('/').map(encodeURIComponent).join('/')}`),
-  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number; tools: boolean; system_prompt_id: string | null; reasoning_level: string | null }) =>
+  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number | null; tools: boolean; tool_names: string[] | null; system_prompt_id: string | null; reasoning_level: string | null; verbose_log: boolean }) =>
     request<BenchmarkRunDetail>('/api/benchmarks/runs', { method: 'POST', body: JSON.stringify(body) }),
   cancelBenchmark: (runId: string) =>
     request<BenchmarkRun>(`/api/benchmarks/runs/${runId}/cancel`, { method: 'POST' }),
+  benchmarkTools: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools'),
+  installEslint: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools/eslint', { method: 'POST' }),
+  removeEslint: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools/eslint', { method: 'DELETE' }),
   deleteBenchmarkRun: (runId: string) =>
     request<void>(`/api/benchmarks/runs/${runId}`, { method: 'DELETE' }),
   upgradeProfile: (profileId: string) =>

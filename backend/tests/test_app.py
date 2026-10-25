@@ -8,6 +8,7 @@ from llamawebui.app import create_app
 from llamawebui.config import Settings
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
 from llamawebui.services.runtime_probe import RuntimeProbeResult
+from llamawebui.version import __version__
 
 
 def test_health_creates_data_directory_without_exposing_token(tmp_path: Path) -> None:
@@ -20,7 +21,7 @@ def test_health_creates_data_directory_without_exposing_token(tmp_path: Path) ->
     assert response.status_code == 200
     assert response.json() == {
         "status": "ok",
-        "version": "0.3.1",
+        "version": __version__,
     }
     assert "hf_private" not in response.text
     assert data_dir.is_dir()

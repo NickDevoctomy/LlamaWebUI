@@ -35,6 +35,6 @@ export function formatWhen(value: string | null) {
 /** The headline figures of a benchmark, as written onto a profile. */
 export function BenchmarkSummary({ result }: { result: BenchmarkResult }) {
   return <span title={`Benchmark run on profile v${result.profile_version}, ${formatWhen(result.completed_at)}`}>
-    {result.benchmark_title}{result.reasoning_level ? ` (reasoning ${reasoningLabel(result.reasoning_level).toLowerCase()})` : ''}: {formatRate(result.decode_tokens_per_second)} decode{result.decode_peak_tokens_per_second != null ? ` (peak ${formatRate(result.decode_peak_tokens_per_second)})` : ''} · {formatRate(result.prompt_tokens_per_second)} prefill · load {formatSeconds(result.load_seconds)}
+    {result.benchmark_title}{result.reasoning_level ? ` (reasoning ${reasoningLabel(result.reasoning_level).toLowerCase()})` : ''}: {formatRate(result.decode_tokens_per_second)} decode{result.decode_peak_tokens_per_second != null ? ` (peak ${formatRate(result.decode_peak_tokens_per_second)})` : ''} · {formatRate(result.prompt_tokens_per_second)} prefill · load {formatSeconds(result.load_seconds)}{result.outcome ? ` · ${result.outcome === 'completed' ? 'task complete' : 'unfinished'}` : ''}
   </span>
 }

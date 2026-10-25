@@ -1,0 +1,478 @@
+---
+# A TypeScript benchmark: the agent writes modules under src/ and builds index.html
+# with bundle_typescript. check_typescript is non-strict; set strict: true to tighten it.
+typescript:
+  strict: false
+# The build plan, seeded as the agent's task list.
+tasks:
+  - 'Step 1, skeleton and loop: the src/index.html template with the HTML structure and CSS layout (desktop and mobile), src/main.ts as the entry, a constants module, fixed-tick loop with accumulator, empty board drawn with grid, bundled into index.html. Done when the layout code applies the section 11 sizes and recalculates them on resize.'
+  - 'Step 2, pieces and movement: shapes, spawn, collision, left/right/down, 7-bag, gravity table, ghost, locking, line clears, levels. Done when the code supports a whole game with the arrow keys: pieces spawn, move, lock, clear lines and level up.'
+  - 'Step 3, SRS and lock delay: both rotation directions with kick tables, lock delay with the 15-reset limit and lowest-row rule, hard drop, soft drop. Done when tracing the section 5 sanity checks through the code gives the results stated there, and a grounded piece stops resetting its lock timer after 15 moves.'
+  - 'Step 4, input polish: event queue, DAS/ARR, direction priority, DAS carry-over, hold, pause, key bindings, blur handling. Done when the code path for a single tap moves exactly one cell, and a held key shifts after 170 ms then every 50 ms.'
+  - 'Step 5, scoring: T-spin detection, B2B, combo, drop points, score/level/lines display with separators. Done when working through the scoring code by hand gives 800 for a Tetris at level 1, and 1,200 plus a combo bonus of 50 for a second Tetris from the very next piece.'
+  - 'Step 6, screens and states: title, pause (blurred board, hidden previews), game-over grey-out and overlay, high score, restart. Done when every transition in section 10 is in the state machine.'
+  - 'Step 7, visual style: cached glowing block sprites, palette, typography, synthwave background, panel styling. Done when every colour, size and draw-order rule in section 11 is in the code, and blocks are drawn from the cached sprites.'
+  - 'Step 8, effects: lock flash, line flash/dissolve, particles, Tetris shake and text, T-spin/B2B/combo text, hard-drop trail and bump, level-up sweep, score tween, reduced-motion handling.'
+  - 'Step 9, audio: the sound effects table, mute toggle and icon, persistence of mute, then the bassline.'
+  - 'Step 10, mobile: touch buttons with DAS/ARR, swipe gestures, and the mobile layout, checked by working the section 11 cell-size formula through for a 375x667 viewport.'
+  - 'Step 11, final pass: review the source against the section 15 acceptance checklist item by item, remove debug output, confirm there are no external URLs, then check the types with check_typescript and build the final index.html with bundle_typescript.'
+---
+
+# Neon Tetris — Low-Level Build Spec
+
+## 1. Role and deliverable
+
+You are writing a complete Tetris clone called NEON TETRIS. Every design decision has already been made in this document; your only job is to implement it exactly. Where this spec gives a number, use that number. Where it is silent, choose the simplest behaviour consistent with modern Tetris Guideline play.
+
+Output requirements:
+
+- Write the game in TypeScript, as the modules listed in section 14 under `src/`, with `src/main.ts` as the entry point.
+- Write the page as the template `src/index.html`: all the HTML and CSS, with the line `<!-- typescript-bundle -->` where the script goes. No `<script>` tags of your own.
+- Build the deliverable with `bundle_typescript`, which bundles the modules and writes `index.html` with the script inline. Never write `index.html` yourself, and build it again after every change.
+- The finished `index.html` is one self-contained file: no external libraries, fonts, images, audio files or network requests of any kind.
+- No frameworks and no npm packages: modules import only each other, which is all `bundle_typescript` can resolve.
+- Complete code only: no placeholders, no "rest of code here", no TODOs.
+- Give exported functions and shared state explicit types, and keep `check_typescript` free of errors.
+- Write it to run by opening `index.html` directly from disk in current Chrome, Firefox, Safari and Edge, desktop and mobile. You have no browser to try it in, so follow this spec exactly rather than relying on testing.
+- Only ONE next piece is shown (not five). This overrides any habit from other Tetris versions.
+
+Units used throughout: ms = milliseconds, px = CSS pixels, "cell" = one board square, "tick" = one fixed logic step of 1000/60 ms (≈16.667 ms).
+
+## 2. Timing model and frame rate
+
+Game logic runs on a fixed 60 Hz tick; rendering runs once per `requestAnimationFrame`. This makes speed identical on 60, 120 and 144 Hz displays.
+
+1. Logic tick length: TICK\_MS = 1000 / 60 (≈16.667 ms). All gameplay timers (gravity, DAS, ARR, lock delay, line-clear delay, animations) are advanced in fixed TICK\_MS steps inside the logic update, never by raw frame delta.
+2. Each animation frame: read `performance.now()`, compute delta since last frame, clamp delta to a maximum of 250 ms (prevents a huge catch-up after the tab was in the background), add it to an accumulator.
+3. While accumulator ≥ TICK\_MS: run one logic tick, subtract TICK\_MS. Cap at 8 ticks per frame; if still behind, discard the remainder.
+4. After ticks, render once. Rendering reads state only; it never changes game state.
+5. Purely cosmetic effects (particles, background grid scroll, screen shake, text pop-ups, score counter tween) may use real frame delta in ms, but must also freeze while paused.
+6. Write rendering for 60 fps on a mid-range phone: avoid per-frame allocations in hot paths (reuse arrays/objects, no new closures per frame).
+7. On `visibilitychange` to hidden, or window `blur`, auto-pause if currently playing.
+
+Input events are captured by listeners as they arrive and queued; the queue is drained at the start of each logic tick so no press is ever lost, even a press and release that both happen between two ticks.
+
+## 3. Tunable constants
+
+Declare every value below as a named, upper-case, exported constant in `src/constants.ts`, grouped by the headings shown. No magic numbers elsewhere.
+
+| Group | Constant | Value |
+| --- | --- | --- |
+| Timing | TICK\_MS | 1000/60 (≈16.667 ms) |
+| Timing | MAX\_FRAME\_DELTA\_MS | 250 |
+| Timing | MAX\_TICKS\_PER\_FRAME | 8 |
+| Board | COLS | 10 |
+| Board | VISIBLE\_ROWS | 20 |
+| Board | HIDDEN\_ROWS | 2 |
+| Board | TOTAL\_ROWS | 22 |
+| Input | DAS\_MS | 170 (≈10 ticks) |
+| Input | ARR\_MS | 50 (3 ticks) |
+| Drop | SOFT\_DROP\_FACTOR | 20 |
+| Drop | MIN\_DROP\_INTERVAL\_MS | 16.667 (1 tick) |
+| Lock | LOCK\_DELAY\_MS | 500 (30 ticks) |
+| Lock | MAX\_LOCK\_RESETS | 15 |
+| Clear | LINE\_FLASH\_MS | 100 |
+| Clear | LINE\_DISSOLVE\_MS | 200 |
+| Clear | LINE\_CLEAR\_TOTAL\_MS | 300 |
+| Spawn | ARE\_MS (delay before next spawn when no lines cleared) | 0 |
+| Levels | LINES\_PER\_LEVEL | 10 |
+| Levels | MAX\_SPEED\_LEVEL | 15 (speed stops increasing after this) |
+| Score | SCORE\_SINGLE / DOUBLE / TRIPLE / TETRIS | 100 / 300 / 500 / 800 |
+| Score | SCORE\_TSPIN\_ZERO / SINGLE / DOUBLE / TRIPLE | 400 / 800 / 1200 / 1600 |
+| Score | B2B\_MULTIPLIER | 1.5 |
+| Score | COMBO\_BONUS | 50 |
+| Score | SOFT\_DROP\_POINTS\_PER\_CELL | 1 |
+| Score | HARD\_DROP\_POINTS\_PER\_CELL | 2 |
+| FX | LOCK\_FLASH\_MS | 80 |
+| FX | SHAKE\_PX / SHAKE\_MS | 4 / 200 |
+| FX | HARD\_DROP\_BUMP\_PX / BUMP\_MS | 2 / 100 |
+| FX | HARD\_DROP\_TRAIL\_MS | 150 |
+| FX | GAME\_OVER\_GREY\_MS | 600 (30 ms per row) |
+| FX | SCORE\_TWEEN\_MS | 400 |
+| FX | MAX\_PARTICLES | 400 |
+| Layout | MOBILE\_BREAKPOINT\_PX | 700 |
+| Layout | SIDE\_PANEL\_WIDTH\_PX | 160 |
+| Layout | PREVIEW\_CELL\_PX (desktop / mobile) | 24 / 16 |
+| Layout | MIN\_CELL\_PX / MAX\_CELL\_PX | 16 / 40 |
+| Audio | MASTER\_VOLUME | 0.3 |
+| Storage | KEY\_HIGH\_SCORE | "neonTetris.highScore" |
+| Storage | KEY\_MUTED | "neonTetris.muted" |
+
+Colours and gravity values are also constants; they are listed in sections 6 and 11.
+
+## 4. Board, coordinates, pieces and spawn
+
+The board is a 10 × 22 grid stored as a flat or 2D array of cell values (0 = empty, otherwise a piece-type id). Rows 0–1 are hidden spawn rows; rows 2–21 are the 20 visible rows.
+
+**Coordinate system (use everywhere):** x = column, 0 at left, increasing right. y = row, 0 at top, increasing DOWN. All tables in this document already use y-down; do not flip anything.
+
+**Piece shapes in spawn orientation (state 0).** Each piece lives in a square bounding box. X = filled, . = empty, rows listed top to bottom.
+
+| Piece | Box | Row 0 | Row 1 | Row 2 | Row 3 |
+| --- | --- | --- | --- | --- | --- |
+| I | 4×4 | `....` | `XXXX` | `....` | `....` |
+| O | 2×2 | `XX` | `XX` |  |  |
+| T | 3×3 | `.X.` | `XXX` | `...` |  |
+| S | 3×3 | `.XX` | `XX.` | `...` |  |
+| Z | 3×3 | `XX.` | `.XX` | `...` |  |
+| J | 3×3 | `X..` | `XXX` | `...` |  |
+| L | 3×3 | `..X` | `XXX` | `...` |  |
+
+**Rotation states:** 0 = spawn, R = one clockwise turn, 2 = two turns, L = one counter-clockwise turn. State R is produced by rotating the bounding-box matrix 90° clockwise; L by rotating 90° counter-clockwise. Pre-compute all 4 states for every piece at startup as lists of (x, y) offsets within the box. O has one state and never rotates (rotation input on O does nothing and plays no sound).
+
+**Spawn position** (box top-left corner, board coordinates):
+
+- I: x = 3, y = 0 (blocks land in row 1, columns 3–6).
+- O: x = 4, y = 0 (rows 0–1, columns 4–5).
+- T, S, Z, J, L: x = 3, y = 0 (rows 0–1, columns 3–5).
+
+Spawn sequence for every new piece, in this order:
+
+1. Place the piece at its spawn position in state 0.
+2. If any of its cells overlap a filled cell → game over ("block out").
+3. Otherwise, immediately try to move it down one row; if that succeeds, keep the lower position (so pieces appear at the top edge of the visible field).
+4. Reset per-piece state: gravity accumulator = 0, lock timer = 0, lock reset count = 0, lowest row reached = current y, last action was rotation = false, last kick index = none.
+5. Held DAS charge carries over (see section 9), so a held direction immediately auto-shifts the new piece once DAS has charged.
+
+## 5. Rotation: Super Rotation System (SRS)
+
+Rotation uses SRS with the five-test wall-kick tables below. Offsets are (dx, dy) in this document's y-down coordinates and are ADDED to the piece's box position. They are already converted from the guideline's y-up tables; use them as written.
+
+Rotation procedure (clockwise or counter-clockwise):
+
+1. Compute the target state (0→R→2→L→0 for clockwise; reverse for counter-clockwise).
+2. Look up the 5 offsets for the transition "from→to" in the correct table (I table for I, JLSTZ table for J, L, S, T, Z).
+3. Try test 1 to test 5 in order. The first offset where every cell of the rotated piece is inside the board (x 0–9, y 0–21) and on an empty cell wins: apply the new state and position.
+4. If all five fail, the rotation fails: nothing changes, no sound, no lock-delay reset.
+5. On success, record last action was rotation = true and the index (1–5) of the test that succeeded (needed for T-spin rules).
+
+**JLSTZ kick table (y-down)**
+
+| Transition | Test 1 | Test 2 | Test 3 | Test 4 | Test 5 |
+| --- | --- | --- | --- | --- | --- |
+| 0→R | (0, 0) | (−1, 0) | (−1, −1) | (0, +2) | (−1, +2) |
+| R→0 | (0, 0) | (+1, 0) | (+1, +1) | (0, −2) | (+1, −2) |
+| R→2 | (0, 0) | (+1, 0) | (+1, +1) | (0, −2) | (+1, −2) |
+| 2→R | (0, 0) | (−1, 0) | (−1, −1) | (0, +2) | (−1, +2) |
+| 2→L | (0, 0) | (+1, 0) | (+1, −1) | (0, +2) | (+1, +2) |
+| L→2 | (0, 0) | (−1, 0) | (−1, +1) | (0, −2) | (−1, −2) |
+| L→0 | (0, 0) | (−1, 0) | (−1, +1) | (0, −2) | (−1, −2) |
+| 0→L | (0, 0) | (+1, 0) | (+1, −1) | (0, +2) | (+1, +2) |
+
+**I kick table (y-down)**
+
+| Transition | Test 1 | Test 2 | Test 3 | Test 4 | Test 5 |
+| --- | --- | --- | --- | --- | --- |
+| 0→R | (0, 0) | (−2, 0) | (+1, 0) | (−2, +1) | (+1, −2) |
+| R→0 | (0, 0) | (+2, 0) | (−1, 0) | (+2, −1) | (−1, +2) |
+| R→2 | (0, 0) | (−1, 0) | (+2, 0) | (−1, −2) | (+2, +1) |
+| 2→R | (0, 0) | (+1, 0) | (−2, 0) | (+1, +2) | (−2, −1) |
+| 2→L | (0, 0) | (+2, 0) | (−1, 0) | (+2, −1) | (−1, +2) |
+| L→2 | (0, 0) | (−2, 0) | (+1, 0) | (−2, +1) | (+1, −2) |
+| L→0 | (0, 0) | (+1, 0) | (−2, 0) | (+1, +2) | (−2, −1) |
+| 0→L | (0, 0) | (−1, 0) | (+2, 0) | (−1, −2) | (+2, +1) |
+
+Sanity check the implementation by tracing these through your rotation code and the tables (you cannot run it): a T piece in state 0 sitting flat on the floor, rotated clockwise, must succeed with test 1. An I piece in state 0 against the left wall (box x = 0) rotated clockwise must succeed (test 1 places it in column 2).
+
+## 6. Gravity, drops and lock delay
+
+**Gravity.** The piece falls one row every gravity interval. Interval in seconds = (0.8 − (level − 1) × 0.007) ^ (level − 1). Store the pre-computed table below as a constant (do not compute at runtime). Levels above 15 use the level 15 value. Any interval below one tick is clamped to one tick (16.667 ms), i.e. never more than one row of gravity per tick.
+
+| Level | Interval (ms) | Ticks @ 60 Hz | Soft-drop interval (ms) |
+| --- | --- | --- | --- |
+| 1 | 1000 | 60.0 | 50 |
+| 2 | 793 | 47.6 | 39.7 |
+| 3 | 618 | 37.1 | 30.9 |
+| 4 | 473 | 28.4 | 23.7 |
+| 5 | 355 | 21.3 | 17.8 |
+| 6 | 262 | 15.7 | 16.667 |
+| 7 | 190 | 11.4 | 16.667 |
+| 8 | 135 | 8.1 | 16.667 |
+| 9 | 94 | 5.6 | 16.667 |
+| 10 | 64 | 3.9 | 16.667 |
+| 11 | 43 | 2.6 | 16.667 |
+| 12 | 28 | 1.7 | 16.667 |
+| 13 | 16.667 (18, clamped) | 1.0 | 16.667 |
+| 14 | 16.667 (11, clamped) | 1.0 | 16.667 |
+| 15+ | 16.667 (7, clamped) | 1.0 | 16.667 |
+
+Implementation: keep a gravity accumulator in ms. Each tick add TICK\_MS; while accumulator ≥ current interval, subtract the interval and try to move down one row (stop the loop after one successful row per tick). If the move fails, the piece is grounded; set accumulator to 0.
+
+**Soft drop.** While soft drop is held, the current interval becomes max(gravity interval ÷ 20, 16.667 ms) (right-hand column above). Award 1 point per row moved by soft drop (not for rows moved by normal gravity). Soft drop does NOT lock the piece early; when grounded, the normal lock delay applies. Pressing soft drop takes effect on the very tick the key goes down (move one row immediately, then continue at the soft-drop interval).
+
+**Hard drop.** Move the piece straight down to the lowest valid position (same as the ghost), award 2 points per row travelled, and lock it immediately on the same tick, ignoring lock delay. Hard drop with zero rows travelled still locks.
+
+**Lock delay** (extended placement, max 15 resets):
+
+1. A piece is grounded when moving it down one row would collide.
+2. While grounded, a lock timer counts up by TICK\_MS each tick. When it reaches 500 ms, the piece locks.
+3. When not grounded, the lock timer is 0 and does not count.
+4. Every successful move left/right or rotation while the piece is grounded (or that leaves it grounded) resets the lock timer to 0 and adds 1 to the reset counter, but only while the counter is below 15. Once the counter reaches 15, moves and rotations still work but no longer reset the timer.
+5. Whenever the piece reaches a row lower than any it has reached before (lowest row reached increases), set the reset counter back to 0 and the timer to 0. This covers sliding off a ledge and falling.
+6. Failed moves and failed rotations never reset anything.
+
+## 7. Randomiser, next, hold, line clears, levels, game over
+
+**7-bag randomiser.** Keep a queue of upcoming piece types. Whenever the queue holds fewer than 2 pieces, append a freshly shuffled bag of all seven (I, O, T, S, Z, J, L) using a Fisher–Yates shuffle with `Math.random`. Never generate pieces independently at random.
+
+**Next preview.** Show exactly ONE next piece: the front of the queue. Taking a piece from the queue updates the preview the same tick.
+
+**Hold.**
+
+1. Hold is available once per piece. It becomes unavailable when used and available again only after the next piece locks.
+2. Using hold with an empty hold slot: put the active piece's type in hold, then spawn the next piece from the queue.
+3. Using hold with a filled slot: swap: the held type spawns as the new active piece, the active type goes into hold.
+4. The held piece is always stored and shown in spawn orientation (state 0). The swapped-in piece goes through the full spawn sequence in section 4 (including block-out check).
+5. Hold input while unavailable does nothing and plays no sound.
+
+**Locking and line clears.** When a piece locks:
+
+1. Write its cells into the board.
+2. Lock out check: if every cell of the locked piece is in rows 0–1 (hidden), the game ends.
+3. Run T-spin detection (section 8) using the piece's final state.
+4. Find all full rows. If none: score, reset combo, re-enable hold, spawn next piece after ARE\_MS (0).
+5. If 1–4 rows are full: score them, enter the clearing state for 300 ms (100 ms white flash, then 200 ms dissolve, see section 12). No active piece exists during this time; gravity and lock timers do not run; move, rotate and hold inputs are ignored, but held keys keep charging DAS. After 300 ms, remove the rows, shift everything above down, re-enable hold and spawn the next piece.
+
+**Levels.** Level starts at 1. After each clear, level = floor(total lines ÷ 10) + 1. The score for a clear uses the level BEFORE the clear is added. If the level changes, trigger the level-up effects and sound. There is no level cap; gravity stops getting faster at level 15.
+
+**Game over** happens on block out (spawn overlap) or lock out (piece locks entirely above the visible field). On game over: stop gravity and input, update the high score if beaten, save it, play the game-over sound and start the grey-out animation (section 10).
+
+## 8. Scoring, T-spins, back-to-back and combos
+
+**T-spin detection** (run at lock, T piece only; there is no T-spin Mini distinction in this game):
+
+1. Last action was rotation must be true. This flag is set by a successful rotation and cleared by any successful movement that changes the piece's position afterwards: left/right moves, gravity rows, soft-drop rows, and hard drop that travels 1 or more rows.
+2. The T's centre is the middle cell of its 3×3 box. Check the four diagonal corners: box offsets (0,0), (2,0), (0,2), (2,2). A corner counts as occupied if it is a filled cell OR outside the board (left wall, right wall, below the floor).
+3. If at least 3 of the 4 corners are occupied, the lock is a T-spin.
+
+**Base points** (multiply by level before the clear):
+
+| Clear | Normal | T-spin | Difficult? |
+| --- | --- | --- | --- |
+| 0 lines | 0 | 400 | No (does not break or start B2B) |
+| 1 line | 100 (Single) | 800 | Normal: no. T-spin: yes |
+| 2 lines | 300 (Double) | 1200 | Normal: no. T-spin: yes |
+| 3 lines | 500 (Triple) | 1600 | Normal: no. T-spin: yes |
+| 4 lines | 800 (Tetris) | n/a | Yes |
+
+**Score for one lock**, in this order:
+
+1. base = table value × level.
+2. Back-to-back: keep a flag "last clear was difficult". If this lock clears 1+ lines and is difficult and the flag is already true, base × 1.5 (round down) and show the BACK-TO-BACK label. Then, if this lock cleared 1+ lines, set the flag to whether this clear was difficult. A lock that clears 0 lines leaves the flag unchanged.
+3. Combo: keep a combo counter starting at −1. If the lock cleared 1+ lines, add 1 to it; if the counter is now 1 or more, add 50 × combo × level and show "COMBO x{combo}". If the lock cleared 0 lines, set the counter to −1.
+4. Add base (after B2B) and combo bonus to the score. Drop points (1 per soft-drop row, 2 per hard-drop row) are added the moment the rows are travelled and never multiplied.
+
+Score, B2B flag, combo, lines and level reset when a new game starts. Display the score with comma thousand separators (e.g. 1,234,567).
+
+## 9. Input handling
+
+**Key bindings** (match on `event.code`, not `event.key`, so layouts and Shift don't interfere):
+
+| Action | Keys (event.code) | Repeats when held? |
+| --- | --- | --- |
+| Move left / right | ArrowLeft / ArrowRight | Yes, DAS/ARR |
+| Soft drop | ArrowDown | Continuous while held |
+| Hard drop | Space | No |
+| Rotate clockwise | ArrowUp, KeyX | No |
+| Rotate counter-clockwise | KeyZ, ControlLeft, ControlRight | No |
+| Hold | KeyC, ShiftLeft, ShiftRight | No |
+| Pause / resume | KeyP, Escape | No |
+| Mute toggle | KeyM | No |
+| Start / restart | Enter, NumpadEnter | No |
+
+- Call `preventDefault` on keydown for every bound key (stops arrow/space scrolling and Ctrl shortcuts reaching the page).
+- Ignore keydown events where `event.repeat` is true; all repetition is done by the game's own DAS/ARR.
+- Non-repeating actions fire once per physical press. A key must be released before it can fire again.
+- On window blur, clear all held-key state so nothing gets stuck.
+
+**DAS / ARR for left and right:**
+
+1. On press: move one cell immediately (same tick), set that direction as active, DAS timer = 0.
+2. While held: DAS timer counts up by TICK\_MS. When it reaches 170 ms, move one cell, then every 50 ms after that (ARR), move one more cell. Each auto-repeat move that fails (wall) just does nothing; timers keep running.
+3. Both left and right held: the most recently pressed direction wins. Releasing it hands control back to the other, which starts a fresh DAS (moves immediately, then waits 170 ms).
+4. DAS charge persists across piece spawns and line-clear delays: if the key is still held and DAS had charged, the new piece starts auto-repeating straight away.
+
+**Order of processing within one tick:** queued presses (hold → rotate → move → hard drop) → DAS/ARR → soft drop/gravity → lock delay. Hard drop ends the tick's piece processing.
+
+**Touch buttons (mobile only).** Seven buttons in two rows under the board:
+
+- Row 1: HOLD, ⟲ (rotate CCW), ⟳ (rotate CW), ⤓ (hard drop).
+- Row 2: ◀ (left), ▼ (soft drop), ▶ (right).
+- Each button at least 56×56 px, 10 px gap, 14 px border radius, background rgba(18,18,42,0.6), 1.5 px border in cyan #00f0ff, glow on press (box-shadow 0 0 12px #00f0ff, background brightens).
+- Use Pointer Events (`pointerdown` / `pointerup` / `pointercancel` / `pointerleave`) with pointer capture. Left/right/soft-drop go through the same held-key code path as the keyboard, so DAS/ARR applies. Add `touch-action: none` and suppress the context menu and text selection on the controls.
+
+**Swipe gestures on the board canvas:**
+
+- Horizontal drag: move one cell for every 30 px of horizontal travel since the last move (continuous drag, not DAS).
+- Downward flick: if the pointer travels ≥ 60 px down within 250 ms with vertical speed ≥ 0.8 px/ms → hard drop (once per gesture).
+- Slow downward drag: soft drop one row per 30 px of travel (awarding soft-drop points).
+- Upward flick (≥ 60 px up, ≥ 0.8 px/ms) → hold.
+- Tap (released within 200 ms and moved under 10 px) → rotate clockwise.
+- During START or GAME OVER screens, any tap starts a new game; during PAUSE, a tap resumes.
+
+## 10. Game states and screens
+
+The game is a state machine with exactly these states: TITLE, PLAYING, CLEARING, PAUSED, GAME\_OVER\_ANIM, GAME\_OVER.
+
+| From | Trigger | To |
+| --- | --- | --- |
+| TITLE | Enter or tap | PLAYING (new game) |
+| PLAYING | Lock with 1+ full rows | CLEARING |
+| CLEARING | 300 ms elapsed | PLAYING (next piece spawns) |
+| PLAYING or CLEARING | P, Esc, window blur, tab hidden | PAUSED (remember which state to return to) |
+| PAUSED | P, Esc or tap | The remembered state |
+| PLAYING | Block out or lock out | GAME\_OVER\_ANIM |
+| GAME\_OVER\_ANIM | 600 ms elapsed | GAME\_OVER |
+| GAME\_OVER | Enter or tap, at least 500 ms after entering | PLAYING (new game) |
+
+The first Enter/tap on TITLE also creates/resumes the AudioContext (browsers require a user gesture).
+
+**Overlays** are HTML elements positioned exactly over the playfield canvas, with a backdrop of rgba(10,10,26,0.75). Text centred, uppercase.
+
+- **TITLE:** "NEON TETRIS" (gradient title style, font size 2.2 × cell size), below it "PRESS ENTER / TAP TO START" in cyan at 0.55 × cell size, pulsing opacity between 0.35 and 1.0 on a 1.2 s cycle, then "HIGH SCORE" label and the saved high score with separators.
+- **PAUSED:** "PAUSED" in pink at 1.6 × cell size, "Press P / Esc to resume" in secondary text. The board canvas gets CSS `filter: blur(14px)` and the hold and next previews are hidden (visibility hidden) so the player cannot plan. All timers, animations and music stop; the AudioContext is suspended.
+- **GAME\_OVER\_ANIM:** no overlay. Locked cells turn grey (#3a3a5c, no glow) one visible row at a time from row 21 up to row 2, one row every 30 ms (20 rows × 30 ms = 600 ms).
+- **GAME\_OVER:** "GAME OVER" in pink at 1.6 × cell size; then SCORE, LEVEL, LINES as label/value pairs; "NEW HIGH SCORE!" in pink with glow, shown only if the high score was beaten this game; then "Press Enter / Tap to play again" pulsing like the title prompt.
+
+Starting a new game: clear the board, hold, queue, particles and pop-ups; reset score, lines, level 1, combo −1, B2B false; fill the bag; spawn the first piece.
+
+## 11. Layout, palette, typography and rendering
+
+**Colour constants**
+
+| Name | Value | Use |
+| --- | --- | --- |
+| BG\_OUTER | #0a0a1a | Page background edge |
+| BG\_INNER | #1a0b2e | Centre of radial gradient |
+| FIELD\_BG | #0d0d22 at 90% opacity | Playfield fill |
+| GRID\_LINE | #1f1f3d, 1 px | Playfield grid |
+| PANEL\_BG / PANEL\_BORDER | #12122a / #2a2a55 (1 px) | Side panels |
+| TEXT | #e8e8ff | Values |
+| TEXT\_DIM | #8a8ac0 | Labels, controls list |
+| ACCENT | #ff2e88 | Pink: titles, highlights |
+| ACCENT\_2 | #00f0ff | Cyan: board border, buttons |
+| GREY\_OUT | #3a3a5c | Game-over grey cells |
+| I / O / T / S / Z / J / L | #00f0ff / #ffe600 / #b14dff / #39ff6a / #ff3b5c / #3d7bff / #ff9a1f | Piece colours |
+
+**Typography.** Headings and labels: system bold sans-serif (`system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`), weight 800, uppercase, letter-spacing 0.2em. Numbers: `"Courier New", Courier, monospace`, weight 700. Title style: `linear-gradient(90deg, #ff2e88, #00f0ff)` clipped to text, plus `filter: drop-shadow(0 0 8px rgba(255,46,136,0.7))`. Panel labels 12 px TEXT\_DIM; stat values 26 px TEXT; controls list 12 px TEXT\_DIM, line-height 1.7.
+
+**Desktop layout (viewport width ≥ 700 px).** The whole game sits in a flex row centred horizontally and vertically in the viewport (100vw × 100dvh, no page scroll), 24 px gap between columns.
+
+- Left column, 160 px wide: HOLD panel (label, 4×4 preview at 24 px cells = 96×96 px canvas), then 16 px gap, then STATS panel with SCORE, LEVEL, LINES stacked (label above value, 14 px between pairs).
+- Centre: playfield canvas, 10 × 20 visible cells. Border: 2 px solid cyan with `box-shadow: 0 0 12px #00f0ff, 0 0 32px rgba(0,240,255,0.35)`.
+- Right column, 160 px wide: NEXT panel (label, one piece in a 4×4 preview at 24 px cells), then 16 px gap, then CONTROLS panel listing every binding from section 9, then a speaker button (mute toggle, 36×36 px, inline SVG speaker icon, shows a slash when muted).
+- Panels: PANEL\_BG, 1 px PANEL\_BORDER, 10 px radius, 14 px padding.
+
+**Cell size.** Desktop: cell = floor(window.innerHeight × 0.68 ÷ 20), clamped to 16–40 px (≈32 px at a 950 px-tall browser window on a 1080p screen). Mobile: cell = min(floor((innerWidth − 32) ÷ 10), floor((innerHeight − 330) ÷ 20)), clamped to 12–40. Recalculate on `resize` and `orientationchange` (debounced 100 ms), resize canvases, and rebuild cached block sprites.
+
+**Mobile layout (width < 700 px).** Single column, 16 px side padding: (1) a compact row with HOLD on the left and NEXT on the right, previews at 16 px cells, mute button between them; (2) a single row of SCORE, LEVEL, LINES, each label/value pair side by side, values 18 px; (3) the board; (4) touch buttons (section 9). CONTROLS panel hidden.
+
+**Canvas rendering.**
+
+- Scale every canvas by `devicePixelRatio` (canvas pixel size = CSS size × DPR, then scale the context) so blocks stay crisp.
+- Draw order each frame: field background → grid lines → locked cells → ghost → hard-drop trail → active piece → line-clear flash/dissolve → particles → pop-up text. Only visible rows 2–21 are drawn; the active piece is clipped to the visible area.
+- Block style: inset 1 px from the cell edge. Fill with the piece colour. Top and left edges: a 3 px band of the colour mixed 45% toward white. Bottom and right edges: a 3 px band mixed 35% toward black. Outer glow: shadow in the piece colour, blur 8 px for the active piece and 4 px for locked cells.
+- Performance rule: `shadowBlur` is expensive, so pre-render each colour × {active, locked, greyed} block to a small offscreen canvas (cell size + glow padding) whenever the cell size changes, and draw blocks with `drawImage`.
+- Ghost piece: same colour as the active piece, outline only, 2 px stroke inset 2 px, 35% opacity, no glow, no fill. Hidden if it would overlap the active piece entirely (piece already grounded).
+- Previews (hold, next): centre the piece by its filled cells (not its bounding box) in the 4×4 area. Hold preview drawn at 40% opacity when hold is unavailable.
+
+**Synthwave background.** A full-viewport canvas behind everything (z-index below the game, `pointer-events: none`):
+
+- Radial gradient BG\_INNER (centre) to BG\_OUTER (edges).
+- Horizon line at 58% of viewport height, a faint pink line (ACCENT at 25% opacity) with a 20 px glow.
+- Floor below the horizon: 24 vertical lines converging to a vanishing point at the horizon centre, and horizontal lines whose spacing grows with perspective (line n at depth z: screenY = horizonY + K ÷ z, with z evenly spaced and decreasing over time). Line colour ACCENT at 18% opacity, fading to 0% at the horizon.
+- Scroll speed: horizontal lines move toward the viewer by one depth step every 2 s. Level-up boost: 4× speed and opacity up to 40% for 1 s, easing back over 0.5 s.
+- Redraw at most 30 fps (skip alternate frames) to save battery. With `prefers-reduced-motion: reduce`, draw it once, static.
+
+## 12. Effects and animation timings
+
+Every effect is cosmetic: it reads state, never blocks input, and freezes while paused. Pop-up text is drawn on the board canvas (or a transparent canvas layered exactly over it) in the heading font with a matching-colour glow (shadowBlur 12).
+
+| Effect | Trigger | Exact behaviour | Duration |
+| --- | --- | --- | --- |
+| Lock flash | Any piece locks | Locked cells drawn with brightness boosted (white overlay at 60% fading to 0%) | 80 ms |
+| Line flash | Rows clear | Cleared rows filled solid white at 90% opacity | 0–100 ms of clear |
+| Line dissolve | After flash | Cells vanish outward from the centre: columns 4 and 5 at 0 ms, 3 and 6 at 40 ms, 2 and 7 at 80 ms, 1 and 8 at 120 ms, 0 and 9 at 160 ms (fully gone by 200 ms). Each cell spawns 3 particles as it vanishes | 100–300 ms of clear |
+| Particles | Dissolving cells | Square, 2–4 px, colour of the cell's piece. Velocity: random angle, 60–240 px/s, extra upward bias −80 px/s. Gravity 600 px/s². Life 400–700 ms, alpha fades linearly. Pool capped at 400; oldest replaced | ≤ 700 ms |
+| Tetris | 4 lines | Full-board cyan overlay at 35% fading to 0 over 250 ms; screen shake; "TETRIS!" in cyan at 1.8 × cell size, scale 0.5 → 1.3 and alpha 1 → 0 with ease-out | Text 900 ms |
+| Screen shake | Tetris | Board wrapper CSS translate by random x/y in ±4 px, amplitude decaying linearly to 0 | 200 ms |
+| T-spin text | T-spin lock | "T-SPIN" in purple #b14dff at 1.4 × cell size, with "SINGLE" / "DOUBLE" / "TRIPLE" beneath at 0.8 × cell size when lines cleared; pops scale 0.6 → 1.1 → 1.0 in the first 150 ms, holds, fades out in the last 300 ms | 1000 ms |
+| Line text | Single/Double/Triple | Same pop style as T-spin, text "SINGLE" etc. in white, 1.0 × cell size | 800 ms |
+| Back-to-back | B2B applied | "BACK-TO-BACK" in pink at 0.6 × cell size, placed above the clear text | Same as clear text |
+| Combo | Combo ≥ 1 | HTML label beside the board's right edge, vertically centred: "COMBO x{n}" in pink. Font size 18 px + 2 px per step, max 32 px. Each new step restarts a pop (scale 1.3 → 1.0, 120 ms). Fades out 1200 ms after the last combo step or immediately when the combo breaks | Variable |
+| Hard-drop trail | Hard drop of ≥ 1 row | For each column the piece occupies: a vertical rect one cell wide from the piece's start top to its landing top, gradient from transparent (top) to piece colour at 50% (bottom), fading to 0 | 150 ms |
+| Board bump | Hard drop | Board wrapper translateY 0 → +2 px → 0 (ease-out) | 100 ms |
+| Level up | Level increases | "LEVEL {n}" in pink at 1.6 × cell size sweeps horizontally across the board from fully off the left edge to fully off the right edge, easing in-out; background grid boost (section 11) | 900 ms |
+| Score tween | Score changes | Displayed score animates from current displayed value to the new value with ease-out cubic. If a new change arrives mid-tween, restart from the currently displayed value | 400 ms |
+| Title pulse | Title/game-over prompt | Opacity 0.35 ↔ 1.0, sine | 1.2 s cycle |
+
+Only one clear-text pop-up is shown at a time (a new one replaces the old). Text is centred horizontally on the board, vertically at 40% of board height.
+
+**Reduced motion.** If `matchMedia("(prefers-reduced-motion: reduce)")` matches: no screen shake, no board bump, no particles (dissolve still happens), static background, level-up text fades in place instead of sweeping. Re-check on the media query's change event.
+
+## 13. Audio (Web Audio API only)
+
+Create one AudioContext lazily on the first Enter/tap. Route everything: sound → per-sound gain envelope → master gain (0.3, or 0 when muted) → destination. If AudioContext is unavailable, the game runs silently without errors.
+
+Envelope rule for every sound: gain starts at 0.0001, ramps linearly to the peak over 5 ms (attack), then exponentially to 0.0001 by the end time; stop the oscillator 20 ms after that. This prevents clicks.
+
+| Sound | Trigger | Synthesis | Peak gain | Length |
+| --- | --- | --- | --- | --- |
+| Move | Successful left/right move | Square wave, 1200 Hz | 0.03 | 15 ms |
+| Rotate | Successful rotation | Triangle, sweep 600 → 900 Hz | 0.08 | 40 ms |
+| Lock | Piece locks (not hard drop) | Sine, sweep 150 → 90 Hz | 0.15 | 80 ms |
+| Hard drop | Hard drop | Sine 120 → 40 Hz (0.35, 120 ms) plus white-noise burst through low-pass filter at 800 Hz (0.15, 40 ms) | 0.35 | 120 ms |
+| Line clear | 1–3 lines | Sawtooth through low-pass at 2000 Hz, sweep from base to 2 × base; base = 330 / 392 / 494 Hz for 1 / 2 / 3 lines | 0.12 | 150 ms |
+| Tetris | 4 lines | Four sawtooths together: 440, 554, 659, 880 Hz, through low-pass 3000 Hz | 0.07 each | 400 ms |
+| T-spin | T-spin lock | Triangle 523 Hz then 784 Hz, 60 ms each, back to back (plays in addition to any line sound) | 0.10 | 120 ms |
+| Level up | Level increases | Square arpeggio 523, 659, 784, 1047 Hz, 70 ms per note | 0.08 | 280 ms |
+| Game over | Game over | Sawtooth sweep 440 → 110 Hz, low-pass cutoff sweeping 3000 → 300 Hz | 0.15 | 1200 ms |
+| Hold | Successful hold | Sine, 700 Hz → 500 Hz | 0.06 | 50 ms |
+
+Noise: generate one 1-second white-noise AudioBuffer at startup and reuse it.
+
+**Background bassline (implement last).** An 8-step pattern of eighth notes, sawtooth through a low-pass filter at 400 Hz (Q 4), peak gain 0.06, each note 85% of the step length. Notes in Hz: 55, 55, 65.41, 55, 49, 49, 41.2, 49 (A1 A1 C2 A1 G1 G1 E1 G1), looping. Tempo = 100 BPM at level 1, +3 BPM per level, max 160 BPM. Schedule with a lookahead scheduler: a 25 ms `setTimeout` loop that schedules every note starting within the next 100 ms using the AudioContext clock. Runs only in PLAYING/CLEARING; stops on pause and game over; tempo change takes effect on the next note.
+
+**Mute.** M key or the speaker button toggles mute: set master gain to 0 or 0.3 (ramp over 30 ms), update the icon, save to storage. Mute state is loaded at startup and applied before any sound plays.
+
+## 14. Persistence and code structure
+
+**Persistence.** Store the high score (integer) under `neonTetris.highScore` and mute ("1" or "0") under `neonTetris.muted` in localStorage. Wrap every read and write in try/catch; on any failure fall back to in-memory values (high score 0, unmuted) and never show an error. Validate loaded values (non-negative finite integer for score).
+
+**Code organisation:** one TypeScript module per area under `src/`, each exporting only what other modules need, with no module reaching into another's internals:
+
+1. `constants.ts`: section 3 values, colours, gravity table, piece shapes, kick tables.
+2. `storage.ts`: storage helpers (safe get/set).
+3. `logic.ts`: board, piece, bag, collision, movement, rotation, gravity, lock delay, hold, line detection, T-spin, scoring, levels, game state machine. Pure state + functions; no DOM, canvas or audio calls. Logic emits events (e.g. "moved", "rotated", "locked", "cleared" with line count/T-spin/B2B/combo, "hardDrop" with start/end rows, "levelUp", "gameOver") into an event list that the rendering and audio layers consume after each tick. Split it into further modules (for example `rotation.ts`, `scoring.ts`) if it grows large.
+4. `input.ts`: keyboard, touch buttons, swipe; translates raw events into the action queue and held-key state.
+5. `audio.ts`: context setup, sound functions, bassline scheduler, mute.
+6. `render.ts`: block sprite cache, board canvas, previews, background canvas, effects/particles, HTML panel updates (only touch the DOM when a displayed value actually changes).
+7. `layout.ts`: cell-size calculation and resize handling.
+8. `main.ts`: main loop and boot; the entry point `bundle_typescript` builds from.
+
+Keep each module small enough to write in one go, and change existing modules with edits rather than rewriting them.
+
+**HTML structure** (in `src/index.html`, with `<!-- typescript-bundle -->` just before `</body>`, so the script runs after the elements it looks up exist): a root container holding the background canvas, the game layout (left panel, board wrapper containing the board canvas, effects layer, overlays and combo label, right panel), and the touch-control container. Set the viewport meta to `width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover`. Body: margin 0, overflow hidden, `user-select: none`, `-webkit-tap-highlight-color: transparent`.
+
+## 15. Acceptance checklist
+
+The finished game must meet every item. You cannot run it, so before finishing, go through the source item by item and confirm each one from the code, tracing the logic by hand where an item gives numbers.
+
+- [ ] `check_typescript` reports no errors, and `index.html` was built by `bundle_typescript` from the latest source.
+- [ ] Single `index.html`, works from disk: no external URLs anywhere in the source, and every element ID the code looks up exists in `src/index.html`.
+- [ ] Exactly one next piece is shown.
+- [ ] Every 7 consecutive pieces from a fresh bag contain each piece type once.
+- [ ] Level 1 gravity is 1 row per second; level 10 is 64 ms per row; speed is identical on 60 Hz and 144 Hz displays.
+- [ ] A single tap of left/right moves exactly one cell; holding moves after 170 ms, then every 50 ms.
+- [ ] Space hard drops and locks instantly; down arrow soft drops at 20× gravity without locking early.
+- [ ] A grounded piece locks 500 ms after its last reset; after 15 resets it no longer resets.
+- [ ] SRS kicks work in both directions, including I-piece wall kicks; O never rotates.
+- [ ] Hold works once per piece and the preview greys to 40% when used.
+- [ ] Scores: Single 100, Double 300, Triple 500, Tetris 800, T-spin 400/800/1200/1600, all × level; B2B × 1.5; combo +50 × combo × level; soft 1/cell, hard 2/cell.
+- [ ] Pause blurs the board and hides previews; nothing moves or plays while paused; tab switch auto-pauses.
+- [ ] Game over greys the stack bottom-up in 600 ms, then shows stats and NEW HIGH SCORE when beaten.
+- [ ] High score and mute survive a reload, and the game still works with storage blocked.
+- [ ] Arrow keys and space never scroll the page.
+- [ ] Mobile (< 700 px): hold/next row, stats row, board, touch buttons; controls panel hidden; swipes work.
+- [ ] Reduced-motion setting disables shake, bump and particles.
+- [ ] All tunables are named constants in `src/constants.ts`.

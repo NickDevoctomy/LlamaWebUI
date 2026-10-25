@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Check, ChevronDown, ChevronRight, Code, Copy, Download, Eye, FileText, LoaderCircle, Maximize2, Play, RotateCcw, Square, Timer, Trash2, X } from 'lucide-react'
+import { AlertCircle, Check, ChevronDown, ChevronRight, Code, Copy, Download, Eye, FileText, LoaderCircle, Maximize2, Play, RotateCcw, Square, SquareCheck, SquareX, Timer, Trash2, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { api, type BenchmarkRun, type BenchmarkRunDetail, type BenchmarkStage, type Profile, type RouterState, type TimelineEntry } from './api'
+import { api, type BenchmarkRun, type BenchmarkRunDetail, type BenchmarkStage, type BenchmarkTask, type BenchmarkTool, type Profile, type RouterState, type TimelineEntry } from './api'
 import { formatRate, formatSeconds, formatWhen, reasoningLabel } from './benchmarkFormat'
 import { Sparkline } from './Dashboard'
 import { Dialog } from './SetupPanels'
@@ -59,9 +59,37 @@ function formatDuration(entry: TimelineEntry, elapsed?: number | null) {
 function currentActivity(run: BenchmarkRunDetail) {
   const entry = run.state === 'running' ? run.timeline?.at(-1) : undefined
   if (!entry || entry.end != null) return undefined
-  const doing = activityName(entry)
+  const writing = entry.kind === 'tool_call' ? liveToolCall(run) : ''
+  const doing = `${activityName(entry)}${writing ? ` (${writing})` : ''}`
   const soFar = formatDuration(entry, run.live?.elapsed)
   return soFar ? `${doing}… ${soFar}` : `${doing}…`
+}
+
+/** The tool call being streamed, such as "write_file, 12.4 KB", so a long write visibly advances. */
+function liveToolCall(run: BenchmarkRunDetail) {
+  const call = run.live?.tool_call
+  if (!call) return ''
+  return [call.name, formatSize(call.bytes)].filter(Boolean).join(', ')
+}
+
+/** Why generation ended, in words; the token limit and the context are told apart. */
+function finishLabel(run: BenchmarkRun) {
+  switch (run.stats.finish_reason) {
+    case undefined: return undefined
+    case 'length': return run.max_tokens != null ? 'Hit the token limit' : 'Ran out of context'
+    case 'context': return 'Ran out of context'
+    case 'tool_round_limit': return 'Hit the tool round limit'
+    case 'finish_job': return 'Agent called finish_job'
+    case 'task_complete': return 'Agent called task_complete'
+    default: return `Finished: ${run.stats.finish_reason}`
+  }
+}
+
+/** Whether a tool-using agent said it finished the task; runs from before outcomes were kept show none. */
+function OutcomeTag({ run }: { run: BenchmarkRun }) {
+  if (!run.stats.outcome || run.state === 'running' || run.state === 'cancelled') return null
+  const completed = run.stats.outcome === 'completed'
+  return <span className={`state-pill ${completed ? 'ready' : 'warning'}`} title={completed ? 'The agent called finish_job.' : 'The agent never finished the job: it stopped, ran out of tokens or context, or failed.'}>{completed ? 'Job finished' : 'Unfinished'}</span>
 }
 
 function activityName(entry: TimelineEntry) {
@@ -117,8 +145,12 @@ function timelineRow(run: BenchmarkRunDetail, entry: TimelineEntry, index: numbe
     </li>
   }
   if (entry.kind === 'tool_call') {
-    const names = entry.names?.join(', ')
-    return <li data-kind="tool_call" key={index}><div className="timeline-row">{head(`Writing tool ${entry.names && entry.names.length > 1 ? 'calls' : 'call'}${names ? `: ${names}` : ''}`, tokenCount(entry.tokens).replace(/^ · /, ''))}</div></li>
+    // While it streams the call has no names yet; the live figures stand in for them.
+    const live = entry.end == null ? run.live?.tool_call : undefined
+    const names = entry.names?.join(', ') ?? live?.name
+    const bytes = entry.bytes ?? live?.bytes
+    const detail = [bytes != null ? formatSize(bytes) : '', tokenCount(entry.tokens).replace(/^ · /, '')].filter(Boolean).join(' · ')
+    return <li data-kind="tool_call" key={index}><div className="timeline-row">{head(`Writing tool ${entry.names && entry.names.length > 1 ? 'calls' : 'call'}${names ? `: ${names}` : ''}`, detail)}</div></li>
   }
   const read = entry.kind === 'reading' ? entry.prompt_tokens : undefined
   return <li data-kind="reading" key={index}><div className="timeline-row">{head(activityName(entry), read ? `${read.toLocaleString()} tokens` : '')}</div></li>
@@ -283,32 +315,153 @@ function ArtifactViewer({ runId, path, files, onClose }: { runId: string; path: 
   </Dialog>
 }
 
+/** The share of the context a run filled at most; while running, what it holds now. */
+function contextUse(run: BenchmarkRun) {
+  const live = run.state === 'running' ? run.live?.context : undefined
+  const used = live?.used ?? run.stats.context_peak
+  const size = live?.size ?? run.stats.context_size
+  return used != null && size ? { used, size, percent: Math.round(used / size * 100), live: Boolean(live) } : undefined
+}
+
+function ContextFigure({ run }: { run: BenchmarkRun }) {
+  const use = contextUse(run)
+  if (!use) return <dd>—</dd>
+  return <dd data-full={use.percent >= 95 || undefined} title={`${use.used.toLocaleString()} of ${use.size.toLocaleString()} tokens${use.live ? ' now' : ' at most'}`}>{use.percent}%</dd>
+}
+
+/** The same benchmark and settings as an earlier run; the profile is whatever it is now. */
+function retryRequest(run: BenchmarkRun) {
+  // Runs from before tools could be chosen had them all, which null asks for.
+  return { profile_id: run.profile_id, benchmark_id: run.benchmark_id, max_tokens: run.max_tokens, tools: run.tools, tool_names: run.tools ? run.tool_names ?? null : [], system_prompt_id: run.system_prompt_id, reasoning_level: run.reasoning_level, verbose_log: Boolean(run.verbose_log) }
+}
+
+function RetryButton({ run, profile, blocker, pending, onRetry }: { run: BenchmarkRun; profile?: Profile; blocker?: string; pending: boolean; onRetry: () => void }) {
+  const reason = blocker ?? (!profile ? 'This profile has been deleted.' : !profile.enabled ? 'Enable the profile to run it again.' : undefined)
+  const version = profile && profile.version !== run.profile_version ? `v${profile.version}, this run used v${run.profile_version}` : `v${run.profile_version}`
+  return <button aria-label={`Retry run ${run.benchmark_title} on ${run.profile_alias}`} className="icon-button small" disabled={Boolean(reason) || pending || run.state === 'running'} onClick={onRetry} title={reason ?? `Run again with the same settings on the profile as it is now (${version})`} type="button"><RotateCcw size={15} /></button>
+}
+
+// Offered only on a TypeScript benchmark, once an install that carries them is in place.
+const TYPESCRIPT_TOOLS = ['check_typescript', 'bundle_typescript']
+
+/** Why a tool can't be chosen: the benchmark isn't TypeScript, or what it needs isn't installed. */
+type PickerTool = BenchmarkTool & { reason?: string }
+
+function toolsFor(tools: BenchmarkTool[], typescript: boolean): PickerTool[] {
+  return tools.map((tool) => {
+    if (!TYPESCRIPT_TOOLS.includes(tool.name)) return tool.available ? tool : { ...tool, reason: 'Needs ESLint: download it in Settings, under Benchmark.' }
+    if (!typescript) return { ...tool, available: false, reason: 'Only for TypeScript benchmarks.' }
+    return tool.available ? tool : { ...tool, reason: 'Needs the TypeScript tools: download or update ESLint in Settings, under Benchmark.' }
+  })
+}
+
+/** File tools for a run: all on or off at once, or chosen one by one when expanded. */
+function ToolPicker({ tools, chosen, onChange }: { tools: PickerTool[]; chosen: string[]; onChange: (names: string[]) => void }) {
+  const [open, setOpen] = useState(false)
+  const all = useRef<HTMLInputElement>(null)
+  // Tools whose requirements are not installed can't be chosen, so "all" means all usable.
+  const usable = tools.filter((tool) => tool.available).map((tool) => tool.name)
+  const some = chosen.length > 0 && chosen.length < usable.length
+  useEffect(() => { if (all.current) all.current.indeterminate = some }, [some])
+  const toggle = (name: string, on: boolean) => onChange(usable.filter((item) => item === name ? on : chosen.includes(item)))
+  const summary = !chosen.length ? 'Off: the model can only answer in text.'
+    : some ? `${chosen.length} of ${usable.length} tools: ${chosen.join(', ')}. Files stay inside this run's own folder.`
+      : `All ${usable.length} tools. The model works on files only inside this run's own folder, and they appear as artifacts on the run.`
+  return <div className="benchmark-tools">
+    <div className="benchmark-tools-head">
+      <label className="benchmark-option"><input aria-label="File tools" checked={chosen.length > 0 && !some} onChange={(event) => onChange(event.target.checked ? usable : [])} ref={all} type="checkbox" /><span><strong>File tools</strong><small>{summary}</small></span></label>
+      <button aria-controls="benchmark-tool-list" aria-expanded={open} className="button secondary compact" onClick={() => setOpen(!open)} type="button">Choose tools<ChevronDown aria-hidden="true" className="benchmark-tools-chevron" size={14} /></button>
+    </div>
+    {open && <ul className="benchmark-tool-list" id="benchmark-tool-list">
+      {tools.map((tool) => <li key={tool.name}><label className="benchmark-option" data-disabled={!tool.available || undefined}><input checked={tool.available && chosen.includes(tool.name)} disabled={!tool.available} onChange={(event) => toggle(tool.name, event.target.checked)} type="checkbox" /><span><code>{tool.name}</code><small>{tool.summary}{tool.reason && ` ${tool.reason}`}</small></span></label></li>)}
+    </ul>}
+  </div>
+}
+
+// The tool an agent finishes with; older runs called it task_complete.
+const FINISH_TOOLS = ['finish_job', 'task_complete']
+
+/** What the agent said it finished on: the message from its accepted finish_job call. */
+function completionMessage(run: BenchmarkRunDetail) {
+  const done = run.tool_calls.filter((call) => FINISH_TOOLS.includes(call.name) && call.ok).at(-1)
+  return done?.result.replace(/^(Job marked finished|Task marked complete)\.\s*/, '').trim() || undefined
+}
+
+/** A verbose log's tool arguments, one field at a time, with the text exactly as the model sent it. */
+function ToolArguments({ sent }: { sent: string }) {
+  let fields: [string, string][] | undefined
+  try {
+    const parsed: unknown = JSON.parse(sent)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) fields = Object.entries(parsed).map(([key, value]) => [key, typeof value === 'string' ? value : JSON.stringify(value, null, 2)])
+  } catch { /* shown as sent below */ }
+  return <details className="tool-call-arguments">
+    <summary>Arguments ({sent.length.toLocaleString()} characters)</summary>
+    {fields ? <>
+      <dl>{fields.map(([key, value]) => <div key={key}><dt>{key}</dt><dd><pre>{value}</pre></dd></div>)}</dl>
+      <details><summary>As sent</summary><pre>{sent}</pre></details>
+    </> : <><p>Not a JSON object, as sent:</p><pre>{sent}</pre></>}
+  </details>
+}
+
+const TASK_ICONS = { open: Square, done: SquareCheck, deleted: SquareX }
+
+/** The agent's task list, ticked off as it went; deleted tasks stay, struck through. */
+function TaskList({ run }: { run: BenchmarkRunDetail }) {
+  const tasks = run.tasks ?? []
+  if (!tasks.length) return null
+  const kept = tasks.filter((task) => task.status !== 'deleted')
+  const done = kept.filter((task) => task.status === 'done').length
+  const deleted = tasks.length - kept.length
+  return <section className="benchmark-text">
+    <h3>Tasks <span className="benchmark-task-count">{done} of {kept.length} done{deleted ? ` · ${deleted} deleted` : ''}</span></h3>
+    <ul className="benchmark-task-list">
+      {tasks.map((task: BenchmarkTask) => {
+        const Icon = TASK_ICONS[task.status]
+        return <li data-status={task.status} key={task.id}>
+          <Icon aria-hidden="true" size={16} />
+          <span className="sr-only">{task.status === 'done' ? 'Done: ' : task.status === 'deleted' ? 'Deleted: ' : 'Open: '}</span>
+          <span className="benchmark-task-title">{task.title}</span>
+          {task.source === 'agent' && <small>Added by the agent</small>}
+        </li>
+      })}
+    </ul>
+  </section>
+}
+
 function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpenArtifact: (path: string) => void }) {
+  const offered = useQuery({ queryKey: ['benchmarks'], queryFn: api.benchmarks }).data?.tools
   const { stats } = run
   const decode = run.samples.filter((sample) => sample.phase === 'decode').map((sample) => sample.rate)
   const prefill = run.samples.filter((sample) => sample.phase === 'prefill').map((sample) => sample.rate)
+  const context = contextUse(run)
   const facts: [string, string][] = [
     ['Server start', formatSeconds(stats.server_start_seconds)],
     ['Model load', formatSeconds(stats.load_seconds)],
     ['First token', formatSeconds(stats.first_token_seconds)],
     ['Prompt', stats.prompt_tokens != null ? `${stats.prompt_tokens.toLocaleString()} tokens` : '—'],
     ['Prefill', formatRate(stats.prompt_tokens_per_second)],
-    ['Tokens / limit', stats.generated_tokens != null ? `${stats.generated_tokens.toLocaleString()} / ${run.max_tokens.toLocaleString()}` : '—'],
+    ['Tokens / limit', stats.generated_tokens != null ? `${stats.generated_tokens.toLocaleString()} / ${run.max_tokens?.toLocaleString() ?? 'context'}` : '—'],
     ['Decode average', formatRate(stats.decode_tokens_per_second)],
     ['Decode peak (3 s)', formatRate(stats.decode_peak_tokens_per_second)],
     ['Decode at end (3 s)', formatRate(stats.decode_final_tokens_per_second)],
+    [context?.live ? 'Context (now)' : 'Context (most used)', context ? `${context.used.toLocaleString()} / ${context.size.toLocaleString()} (${context.percent}%)` : '—'],
     ['Reasoning', reasoningLabel(run.reasoning_level)],
+    ...(run.verbose_log ? [['Log', 'Verbose'] as [string, string]] : []),
+    ...(run.typescript_strict != null ? [['TypeScript', run.typescript_strict ? 'Strict checks' : 'Non-strict checks'] as [string, string]] : []),
     ['Total', formatSeconds(stats.total_seconds)],
+    ...(run.tools && run.tool_names ? [['Tools', offered && run.tool_names.length === offered.length ? 'All' : run.tool_names.join(', ')] as [string, string]] : []),
     ...(run.tools ? [['Tool calls', `${stats.tool_calls ?? run.tool_calls.length} in ${stats.rounds ?? 1} ${stats.rounds === 1 ? 'request' : 'requests'}`] as [string, string]] : []),
   ]
   const refused = run.tool_calls.filter((call) => !call.ok).length
+  const completion = completionMessage(run)
   return <>
     {run.error && run.state !== 'cancelled' && <div className="form-error" role="alert"><AlertCircle size={15} /> {run.error}</div>}
-    <div className="benchmark-detail-head"><StatePill run={run} />{stats.finish_reason && <span className="profile-tag" title="Why generation ended">{stats.finish_reason === 'length' ? 'Hit the token limit' : `Finished: ${stats.finish_reason}`}</span>}</div>
+    <div className="benchmark-detail-head"><StatePill run={run} /><OutcomeTag run={run} />{finishLabel(run) && <span className="profile-tag" title="Why generation ended">{finishLabel(run)}</span>}</div>
     <RunSteps detail={run} run={run} />
     <dl className="benchmark-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
     {decode.length > 1 && <div className="benchmark-chart"><span>Decode speed over the run (3 s windows)</span><Sparkline ceiling={stats.decode_peak_tokens_per_second} values={decode} /></div>}
     {prefill.length > 1 && <div className="benchmark-chart"><span>Prefill speed</span><Sparkline values={prefill} /></div>}
+    <TaskList run={run} />
     {run.tools && <section className="benchmark-text">
       <h3>Artifacts</h3>
       {run.artifacts.length ? <ul className="artifact-list">
@@ -317,12 +470,14 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
         </li>)}
       </ul> : <p className="benchmark-empty">{run.state === 'running' ? 'No files written yet.' : 'The model did not write any files.'}</p>}
     </section>}
+    {completion && <section className="benchmark-text"><h3>Completion message</h3><pre>{completion}</pre></section>}
     {run.tool_calls.length > 0 && <details className="benchmark-text">
       <summary>Tool calls ({run.tool_calls.length}{refused ? `, ${refused} refused` : ''})</summary>
       <ol className="tool-call-list">
         {run.tool_calls.map((call, index) => <li data-ok={call.ok} key={index}>
           <span className="tool-call-name">{call.name}{call.path ? <code>{call.path}</code> : null}</span>
           <span className="tool-call-result">{call.result}</span>
+          {call.arguments != null && <ToolArguments sent={call.arguments} />}
         </li>)}
       </ol>
     </details>}
@@ -345,21 +500,31 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   const [profileId, setProfileId] = useState('')
   const [benchmarkId, setBenchmarkId] = useState('')
   const [maxTokens, setMaxTokens] = useState('')
-  const [tools, setTools] = useState(true)
+  // Undefined until chosen, so every tool the catalog offers is on.
+  const [toolNames, setToolNames] = useState<string[]>()
   // Undefined until chosen, so the catalog's default applies; '' means no system prompt.
   const [systemPromptId, setSystemPromptId] = useState<string>()
   // '' sends no level, so the model's chat template picks its own default.
   const [reasoningLevel, setReasoningLevel] = useState('')
+  const [verboseLog, setVerboseLog] = useState(false)
   const [viewing, setViewing] = useState<string>()
   const [deleting, setDeleting] = useState<BenchmarkRun>()
+  const runPanel = useRef<HTMLElement>(null)
   const enabled = profiles.filter((profile) => profile.enabled)
   const profile = profiles.find((item) => item.id === profileId) ?? enabled[0]
   const benchmarks = catalog.data?.benchmarks ?? []
   const benchmark = benchmarks.find((item) => item.id === benchmarkId) ?? benchmarks[0]
   const systemPrompts = catalog.data?.system_prompts ?? []
+  const allTools = toolsFor(catalog.data?.tools ?? [], Boolean(benchmark?.typescript))
+  // A TypeScript benchmark without its tools would run as a plain one, so say so.
+  const typescriptMissing = Boolean(benchmark?.typescript) && allTools.some((tool) => TYPESCRIPT_TOOLS.includes(tool.name) && !tool.available)
+  const usableTools = allTools.filter((tool) => tool.available).map((tool) => tool.name)
+  // A tool chosen earlier drops out if what it needs is removed in the meantime.
+  const chosenTools = (toolNames ?? usableTools).filter((name) => usableTools.includes(name))
   const chosenSystemPrompt = systemPromptId ?? catalog.data?.default_system_prompt_id ?? ''
   const systemPrompt = systemPrompts.find((item) => item.id === chosenSystemPrompt)
-  const tokens = Number(maxTokens || catalog.data?.default_max_tokens || 32768)
+  // Blank means no limit: generation may use the profile's whole context.
+  const tokens = maxTokens ? Number(maxTokens) : catalog.data?.default_max_tokens ?? null
   const active = runs.data?.find((run) => run.state === 'running')
   // The running benchmark's full detail, so its steps can show what generation is doing.
   const activeDetail = useQuery({
@@ -383,7 +548,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   }, [activeId, queryClient, watched])
 
   const start = useMutation({
-    mutationFn: () => api.startBenchmark({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools, system_prompt_id: systemPrompt?.id ?? null, reasoning_level: reasoningLevel || null }),
+    mutationFn: (body: Parameters<typeof api.startBenchmark>[0]) => api.startBenchmark(body),
     onSettled: async () => {
       await Promise.all([queryClient.invalidateQueries({ queryKey: ['benchmark-runs'] }), queryClient.invalidateQueries({ queryKey: ['benchmarks'] })])
     },
@@ -406,22 +571,24 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
         : !enabled.length ? 'Enable a profile to benchmark it.'
           : !benchmarks.length ? 'No benchmark prompts are installed.'
             : undefined
-  const tokensValid = Number.isInteger(tokens) && tokens >= 16 && tokens <= 131072
+  const tokensValid = tokens == null || (Number.isInteger(tokens) && tokens >= 16 && tokens <= 1048576)
 
   return <>
-    <section className="data-panel benchmark-run-panel">
+    <section className="data-panel benchmark-run-panel" ref={runPanel}>
       <div className="panel-heading"><div><h2>Run a benchmark</h2><p>Starts the server, loads one profile, sends the prompt and measures it, then stops the server again.</p></div><Timer size={18} /></div>
-      <form className="benchmark-form" onSubmit={(event) => { event.preventDefault(); start.mutate() }}>
+      <form className="benchmark-form" onSubmit={(event) => { event.preventDefault(); start.mutate({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools: chosenTools.length > 0, tool_names: chosenTools, system_prompt_id: systemPrompt?.id ?? null, reasoning_level: reasoningLevel || null, verbose_log: chosenTools.length > 0 && verboseLog }) }}>
         <label className="compare-pick"><span>Profile</span><select aria-label="Profile" onChange={(event) => setProfileId(event.target.value)} value={profile?.id ?? ''}>
           {profiles.map((item) => <option disabled={!item.enabled} key={item.id} value={item.id}>{item.alias}{item.enabled ? '' : ' (disabled)'}</option>)}
         </select></label>
         <label className="compare-pick"><span>Benchmark</span><select aria-label="Benchmark" onChange={(event) => setBenchmarkId(event.target.value)} value={benchmark?.id ?? ''}>
           {benchmarks.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
         </select></label>
-        <label className="compare-pick benchmark-tokens"><span>Max tokens</span><input aria-label="Max tokens" max={131072} min={16} onChange={(event) => setMaxTokens(event.target.value)} placeholder={String(catalog.data?.default_max_tokens ?? 32768)} type="number" value={maxTokens} /></label>
+        <label className="compare-pick benchmark-tokens"><span>Max tokens</span><input aria-label="Max tokens" max={1048576} min={16} onChange={(event) => setMaxTokens(event.target.value)} placeholder={catalog.data?.default_max_tokens != null ? String(catalog.data.default_max_tokens) : 'Full context'} title="Leave blank to let the run use the profile's whole context" type="number" value={maxTokens} /></label>
         <button className="button primary" disabled={Boolean(blocker) || !tokensValid || start.isPending || !profile || !benchmark} type="submit">{start.isPending ? <LoaderCircle className="spin" size={15} /> : <Play size={14} fill="currentColor" />} Run benchmark</button>
       </form>
-      <label className="benchmark-option"><input checked={tools} onChange={(event) => setTools(event.target.checked)} type="checkbox" /><span><strong>File tools</strong><small>The model can write, read and list files, only inside this run&apos;s own folder. They appear as artifacts on the run.</small></span></label>
+      {allTools.length > 0 && <ToolPicker chosen={chosenTools} onChange={setToolNames} tools={allTools} />}
+      {chosenTools.length > 0 && <label className="benchmark-option"><input aria-label="Verbose log" checked={verboseLog} onChange={(event) => setVerboseLog(event.target.checked)} type="checkbox" /><span><strong>Verbose log</strong><small>Keeps the arguments of every tool call and its whole result, so you can see why a call failed. Runs take more space.</small></span></label>}
+      {typescriptMissing && <p className="benchmark-note" role="status"><AlertCircle size={15} /> {benchmark?.title} is a TypeScript benchmark, but the TypeScript tools are not installed, so it would run without them. Download or update ESLint in Settings, under Benchmark, to add them.</p>}
       <div className="benchmark-choices">
         {systemPrompts.length > 0 && <label className="compare-pick"><span>System prompt</span><select aria-label="System prompt" onChange={(event) => setSystemPromptId(event.target.value)} value={chosenSystemPrompt}>
           <option value="">None: the prompt on its own</option>
@@ -452,7 +619,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
       {runs.data?.length ? <ul className="benchmark-runs">
         {runs.data.map((run) => <li key={run.id}>
           <span className="benchmark-run-copy">
-            <strong>{run.benchmark_title} · {run.profile_alias} <span className="profile-tag">v{run.profile_version}</span></strong>
+            <strong><button aria-label={`View run ${run.benchmark_title} on ${run.profile_alias}`} className="benchmark-run-title" onClick={() => setViewing(run.id)} type="button">{run.benchmark_title} · {run.profile_alias}</button> <span className="profile-tag">v{run.profile_version}</span> <OutcomeTag run={run} /></strong>
             <span>{formatWhen(run.started_at)}{run.system_prompt_id ? ` · ${run.system_prompt_id}` : ''}{run.reasoning_level ? ` · reasoning ${reasoningLabel(run.reasoning_level).toLowerCase()}` : ''}{run.stats.files_written ? ` · ${run.stats.files_written} ${run.stats.files_written === 1 ? 'file' : 'files'}` : ''}{run.error && run.state === 'failed' ? ` · ${run.error}` : ''}</span>
           </span>
           <dl className="benchmark-run-figures">
@@ -462,10 +629,15 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
             <div><dt>Decode avg</dt><dd>{formatRate(run.stats.decode_tokens_per_second ?? run.live?.decode?.rate)}</dd></div>
             <div><dt>Peak</dt><dd>{formatRate(run.stats.decode_peak_tokens_per_second)}</dd></div>
             <div><dt>Tokens</dt><dd>{run.stats.generated_tokens?.toLocaleString() ?? run.live?.decode?.tokens?.toLocaleString() ?? '—'}</dd></div>
+            <div><dt>Context</dt><ContextFigure run={run} /></div>
           </dl>
           <span className="row-actions">
             <StatePill run={run} />
-            <button aria-label={`View run ${run.benchmark_title} on ${run.profile_alias}`} className="button row-button" onClick={() => setViewing(run.id)} type="button"><Eye size={13} /> View</button>
+            <RetryButton blocker={blocker} onRetry={() => {
+              start.mutate(retryRequest(run))
+              // Progress and any error show in the run panel, above the list.
+              runPanel.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+            }} pending={start.isPending} profile={profiles.find((item) => item.id === run.profile_id)} run={run} />
             <button aria-label={`Delete run ${run.benchmark_title} on ${run.profile_alias}`} className="icon-button small danger-icon" disabled={run.state === 'running' || !canRun} onClick={() => setDeleting(run)} title="Delete run" type="button"><Trash2 size={15} /></button>
           </span>
         </li>)}

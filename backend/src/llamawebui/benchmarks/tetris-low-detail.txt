@@ -1,0 +1,11 @@
+Build a Tetris clone as a single self-contained HTML file (HTML, CSS and JS together, no external dependencies).
+
+Gameplay: Make it play like real modern Tetris — all seven pieces, rotation, soft and hard drop, line clears, increasing speed as the player levels up, and a game over state. Add the quality-of-life touches players expect, like a next-piece preview, a hold slot, and a ghost piece showing where the current piece will land.
+
+Look and feel: Give it a strong, cohesive visual identity rather than a plain grid. Pick a theme (neon/synthwave, retro arcade, minimalist glass, etc.) and commit to it across the board, pieces, UI and background. It should feel alive: satisfying feedback when lines clear, smooth motion, and some visual flair for big moments like a four-line clear or leveling up.
+
+UI: Show score, level, and lines cleared clearly. Include a start screen, pause, and a game-over screen with a restart option. Show the controls somewhere unobtrusive.
+
+Controls: Keyboard controls that feel responsive, with sensible key repeat for moving sideways. Bonus if it's playable on mobile with touch controls.
+
+Polish: Keep the code clean and organized so it's easy to tweak later. Optional extras if they fit naturally: a saved high score and simple sound effects (with a mute toggle).

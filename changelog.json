@@ -1,6 +1,32 @@
 {
   "versions": [
     {
+      "version": "0.4.0",
+      "release_date": "2026-10-25",
+      "changes": [
+        {
+          "type": "feat",
+          "description": "UI Overhall, more responsive. Fixed various layour issues, tidied up pages etc."
+        },
+        {
+          "type": "feat",
+          "description": "Benchmarking of profiles to allow for easier evaluation of speed and capability."
+        },
+        {
+          "type": "feat",
+          "description": "Profile comparrison to easily compare 2 profiles side by side."
+        },
+        {
+          "type": "feat",
+          "description": "Recommended profiles so you can easily find a profile that suits your machine. Although these need to be curated."
+        },
+        {
+          "type": "feat",
+          "description": "Dynamic runtime attribute configuration allows for a more user friendly way of configuring a profile."
+        }              
+      ]
+    },
+    {
       "version": "0.3.1",
       "release_date": "2026-09-27",
       "changes": [

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
@@ -13,7 +13,7 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 from test_server_api import FakeProcess, available_port
 
-from llamawebui.app import create_app
+from llamawebui.app import create_app, slot_context
 from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.domain.argument_catalog import default_catalog
@@ -87,8 +87,11 @@ class FakeBenchmarkClient:
         self.block_after_first_chunk = False
         # Each request's messages and tools, and scripted replies, one list per request.
         self.requests: list[tuple[list[dict[str, object]], list[str]]] = []
-        self.replies: list[list[dict[str, object]]] = []
+        # A scripted reply may instead be an error the request raises.
+        self.replies: list[list[dict[str, object]] | Exception] = []
         self.options: list[dict[str, object]] = []
+        # Called after each chunk is handed over, to look at the run mid-stream.
+        self.on_chunk: Callable[[], None] | None = None
 
     async def list_models(self, *, reload: bool = False) -> tuple[RouterModel, ...]:
         if self._unanswered_polls:
@@ -107,7 +110,7 @@ class FakeBenchmarkClient:
         model: str,
         messages: Sequence[Mapping[str, object]],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         tools: Sequence[Mapping[str, object]] = (),
         options: Mapping[str, object] | None = None,
     ) -> AsyncIterator[dict[str, object]]:
@@ -117,8 +120,12 @@ class FakeBenchmarkClient:
         names = [cast(dict[str, str], tool["function"])["name"] for tool in tools]
         self.requests.append(([dict(item) for item in messages], names))
         chunks = self.replies.pop(0) if self.replies else _chunks()
+        if isinstance(chunks, Exception):
+            raise chunks
         for index, chunk in enumerate(chunks):
             yield chunk
+            if self.on_chunk is not None:
+                self.on_chunk()
             if self.block_after_first_chunk and index == 2:
                 await self.hold.wait()
 
@@ -172,8 +179,13 @@ def _runner(
 
 def test_load_benchmarks_reads_prompts_and_rejects_bad_files(tmp_path: Path) -> None:
     bundled = {item.id: item for item in load_benchmarks()}
-    assert bundled["tetris"].prompt == "make a single page html/js tetris clone, make it look cool."
-    assert bundled["tetris"].title == "Tetris"
+    assert bundled["tetris-no-details"].prompt == (
+        "make a single page html/js tetris clone, make it look cool."
+    )
+    assert bundled["tetris-no-details"].title == "Tetris no details"
+    assert bundled["tetris-no-details"].tasks == ()
+    assert len(bundled["tetris-ultra-high-detailed"].tasks) == 11
+    assert bundled["tetris-ultra-high-detailed"].prompt.startswith("# Neon Tetris")
 
     assert load_benchmarks(tmp_path / "missing") == ()
     (tmp_path / "long-context.txt").write_text("  summarise this  \n", encoding="utf-8")
@@ -254,6 +266,55 @@ async def test_a_benchmark_times_each_step_and_writes_its_result_to_the_profile(
         runs.delete(record.id)
     kept = ProfileRegistry(engine, default_catalog()).get(profile.id).benchmark_results
     assert kept == result
+
+
+@pytest.mark.asyncio
+async def test_a_run_keeps_the_most_context_it_used(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    runner, runs, _ = _runner(engine, client)
+    readings = iter([(1000, 65536), (52000, 65536), (30000, 65536)])
+    seen: list[str] = []
+
+    def context(alias: str) -> tuple[int, int] | None:
+        seen.append(alias)
+        return next(readings, (30000, 65536))
+
+    runner._context = context
+    record = runner.start(profile, BENCHMARK, 256)
+    await runner.wait()
+
+    stats = runs.get(record.id).stats
+    assert (stats["context_peak"], stats["context_size"]) == (52000, 65536)
+    assert set(seen) == {profile.alias}
+    result = ProfileRegistry(engine, default_catalog()).get(profile.id).benchmark_results
+    assert cast(dict[str, dict[str, object]], result)["tetris"]["context_peak"] == 52000
+
+
+@pytest.mark.asyncio
+async def test_a_run_without_context_readings_keeps_none(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    runner, runs, _ = _runner(engine, FakeBenchmarkClient())
+    record = runner.start(profile, BENCHMARK, 256)
+    await runner.wait()
+    assert "context_peak" not in runs.get(record.id).stats
+
+
+def test_slot_context_reads_the_busiest_slot_against_its_size() -> None:
+    slots = [{"id": 0, "used": 900, "total": 16384}, {"id": 1, "used": 4000, "total": 16384}]
+    assert slot_context([{"model": "qwen", "shared_capacity": None, "slots": slots}], "qwen") == (
+        4000,
+        16384,
+    )
+    # A unified cache shares its whole size between the slots.
+    assert slot_context(
+        [{"model": "qwen", "shared_capacity": 65536, "slots": slots}], "qwen"
+    ) == (4000, 65536)
+    # A router serving one model itself logs without a model name.
+    assert slot_context([{"model": None, "slots": slots}], "qwen") == (4000, 16384)
+    assert slot_context([{"model": "other", "slots": slots}], "qwen") is None
+    assert slot_context([{"model": "qwen", "slots": [{"id": 0, "used": 5}]}], "qwen") is None
+    assert slot_context([], "qwen") is None
 
 
 @pytest.mark.asyncio
@@ -445,6 +506,10 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
             "/api/benchmarks/runs",
             json={"profile_id": profile_id, "benchmark_id": "tetris", "reasoning_level": "huge"},
         )
+        unknown_tool = client.post(
+            "/api/benchmarks/runs",
+            json={"profile_id": profile_id, "benchmark_id": "tetris", "tool_names": ["nope"]},
+        )
         started = client.post(
             "/api/benchmarks/runs",
             json={
@@ -452,6 +517,8 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
                 "benchmark_id": "tetris",
                 "max_tokens": 128,
                 "system_prompt_id": "coding-agent",
+                "tool_names": ["write_file", "task_complete"],
+                "verbose_log": True,
             },
         )
         run_id = started.json()["id"]
@@ -480,7 +547,8 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
         )
 
     assert listed["benchmarks"] == [BENCHMARK.to_payload()]
-    assert listed["default_max_tokens"] == 32768
+    # No default limit: a run may use the profile's whole context.
+    assert listed["default_max_tokens"] is None
     assert listed["default_system_prompt_id"] == "coding-agent"
     assert "coding-agent" in [item["id"] for item in listed["system_prompts"]]
     assert unknown_system_prompt.status_code == 404
@@ -488,8 +556,33 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
     assert listed["reasoning_levels"] == ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
     assert run["reasoning_level"] is None
     assert run["system_prompt_id"] == "coding-agent"
-    assert str(run["system_prompt"]).startswith("You are an AI coding agent")
+    assert "finish_job" in str(run["system_prompt"])
     assert run["tools"] is True
+    assert run["verbose_log"] is True
+    # The old name for finish_job still works, so an old run can be run again.
+    assert run["tool_names"] == ["write_file", "finish_job"]
+    assert unknown_tool.status_code == 422
+    assert unknown_tool.json()["detail"] == "unknown tools: nope"
+    assert [item["name"] for item in listed["tools"]] == [
+        "write_file",
+        "edit_file",
+        "read_file",
+        "delete_file",
+        "list_files",
+        "check_file",
+        "check_typescript",
+        "bundle_typescript",
+        "list_tasks",
+        "create_task",
+        "complete_task",
+        "delete_task",
+        "finish_job",
+    ]
+    assert listed["tools"][0] == {
+        "name": "write_file",
+        "summary": "Create or replace a whole file.",
+        "available": True,
+    }
     assert detail["artifacts"] == [{"path": "game/index.html", "size": 25}]
     # Files come back as text inside JSON, never as a page the browser would run.
     assert artifact.headers["content-type"].startswith("application/json")

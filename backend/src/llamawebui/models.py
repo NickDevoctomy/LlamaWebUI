@@ -88,10 +88,14 @@ class BenchmarkRunRecord(Base):
     benchmark_id: Mapped[str] = mapped_column(String(64))
     benchmark_title: Mapped[str] = mapped_column(String(200))
     prompt: Mapped[str] = mapped_column(Text)
-    max_tokens: Mapped[int] = mapped_column(Integer)
+    # None leaves generation bounded only by the profile's context size.
+    max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Whether the model could read and write files in the run's own folder, and each
     # call it made, in order.
     tools: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # The tools it was given, by name; None for runs from before they could be chosen,
+    # which had every tool.
+    tool_names: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     # The system prompt the run was sent with, if any, and its text at the time.
     system_prompt_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -100,6 +104,17 @@ class BenchmarkRunRecord(Base):
     tool_calls: Mapped[list[dict[str, object]]] = mapped_column(
         JSON, default=list, server_default=text("'[]'")
     )
+    # The agent's task list from the planning tools: each task's number, title, status
+    # (open, done or deleted) and whether the prompt or the agent added it.
+    tasks: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON, default=list, server_default=text("'[]'")
+    )
+    # For a run with the TypeScript tools, whether check_typescript was strict; None
+    # for every other run.
+    typescript_strict: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Whether each tool call kept the arguments the model sent and its whole result,
+    # rather than a short excerpt, so failed calls can be looked into afterwards.
+    verbose_log: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     # What generation spent its time on: reading, thinking, answering and tool calls.
     timeline: Mapped[list[dict[str, object]]] = mapped_column(
         JSON, default=list, server_default=text("'[]'")

@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, BadgeCheck, Cpu, Download, FolderCog, LoaderCircle, MemoryStick, MonitorCog } from 'lucide-react'
+import { AlertCircle, BadgeCheck, CircleArrowUp, Cpu, Download, FolderCog, LoaderCircle, MemoryStick, MonitorCog, Plus } from 'lucide-react'
 import { useState } from 'react'
-import { api, type ArgumentCatalog, type Profile, type Recommendation, type Runtime, type StoredArgument } from './api'
+import { api, type ArgumentCatalog, type DownloadJob, type Profile, type Recommendation, type Runtime, type StoredArgument } from './api'
 import { groupByCategory } from './argumentCatalog'
 import { formatBytes } from './Dashboard'
 import { EffectPills } from './ProfileArgumentEditor'
+import { Field } from './SetupPanels'
 
 const fitLabels = {
   fits: 'Enough memory',
@@ -54,14 +55,20 @@ function LaunchSettings({ catalog, settings }: { catalog?: ArgumentCatalog; sett
   </div>
 }
 
+type DownloadProgress = { state: string; completed_bytes: number; total_bytes: number }
+
+function DownloadBar({ download, label }: { download: DownloadProgress; label?: string }) {
+  const percent = download.total_bytes ? Math.min(100, Math.round(download.completed_bytes / download.total_bytes * 100)) : 0
+  return <div className="recommendation-progress">
+    <div><span style={{ width: `${percent}%` }} /></div>
+    <small>{label && `${label} · `}{download.state === 'paused' ? 'Paused' : download.state === 'queued' ? 'Queued' : 'Downloading'} · {formatBytes(download.completed_bytes)} of {formatBytes(download.total_bytes)} · {percent}%</small>
+  </div>
+}
+
 function ProfileState({ profile, onOpenProfiles }: { profile?: Profile; onOpenProfiles: () => void }) {
   if (profile?.validation_state === 'pending' && profile.download) {
-    const percent = profile.download.total_bytes ? Math.min(100, Math.round(profile.download.completed_bytes / profile.download.total_bytes * 100)) : 0
     return <div className="recommendation-status">
-      <div className="recommendation-progress">
-        <div><span style={{ width: `${percent}%` }} /></div>
-        <small>{profile.download.state === 'paused' ? 'Paused' : 'Downloading'} · {formatBytes(profile.download.completed_bytes)} of {formatBytes(profile.download.total_bytes)} · {percent}%</small>
-      </div>
+      <DownloadBar download={profile.download} />
       <p>The profile <strong className="mono">{profile.alias}</strong> switches on by itself when the download finishes.</p>
     </div>
   }
@@ -76,12 +83,14 @@ function ProfileState({ profile, onOpenProfiles }: { profile?: Profile; onOpenPr
   </div>
 }
 
-function RecommendationCard({ recommendation, catalog, runtimes, profile, canApply, onOpenProfiles, onOpenRuntimes }: {
+function RecommendationCard({ recommendation, catalog, runtimes, profiles, downloads, canApply, running, onOpenProfiles, onOpenRuntimes }: {
   recommendation: Recommendation
   catalog?: ArgumentCatalog
   runtimes: Runtime[]
-  profile?: Profile
+  profiles: Profile[]
+  downloads: DownloadJob[]
   canApply: boolean
+  running: boolean
   onOpenProfiles: () => void
   onOpenRuntimes: () => void
 }) {
@@ -95,22 +104,39 @@ function RecommendationCard({ recommendation, catalog, runtimes, profile, canApp
   const selectedRuntime = runtimeId || usable[0]?.id || ''
   const selected = usable.find((runtime) => runtime.id === selectedRuntime)
   const untested = selected !== undefined && !tested.has(selected.id)
+  const [aliasText, setAliasText] = useState<string>()
+  const refresh = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['recommendations'] }),
+    queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+    queryClient.invalidateQueries({ queryKey: ['downloads'] }),
+  ])
+  // The recommended alias is taken by a profile with other settings: name the new copy.
+  const aliasTaken = recommendation.suggested_alias !== recommendation.profile.alias
+  const alias = aliasText ?? recommendation.suggested_alias
+  const aliasValid = /^[a-z0-9][a-z0-9._-]{0,63}$/.test(alias)
   const apply = useMutation({
-    mutationFn: () => api.applyRecommendation(recommendation.id, selectedRuntime),
-    onSuccess: () => Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['recommendations'] }),
-      queryClient.invalidateQueries({ queryKey: ['profiles'] }),
-      queryClient.invalidateQueries({ queryKey: ['downloads'] }),
-    ]),
+    mutationFn: (addProfile: boolean) => api.applyRecommendation(recommendation.id, selectedRuntime, { alias: aliasTaken && addProfile ? alias : undefined, addProfile }),
+    onSuccess: () => { setAliasText(undefined); return refresh() },
   })
+  const upgrade = useMutation({ mutationFn: (profile: Profile) => api.upgradeProfile(profile.id), onSuccess: refresh })
   const { assessment } = recommendation
-  const added = Boolean(recommendation.profile_id)
+  const matchedId = recommendation.matches[selectedRuntime]?.[0]
+  const matched = profiles.find((profile) => profile.id === matchedId)
+  const upgradable = profiles.filter((profile) => recommendation.profile_ids.includes(profile.id) && profile.recommendation?.upgradable)
+  // Live progress from the polled downloads list, falling back to the state at page load.
+  const download = downloads.find((job) => job.id === recommendation.download?.id) ?? recommendation.download
+  const draft = downloads.find((job) => job.id === recommendation.draft_download?.id) ?? recommendation.draft_download ?? null
+  const hasDraft = Boolean(recommendation.model.draft_group)
+  // Every file is on disk or on its way, so adding the profile downloads nothing new.
+  const haveFiles = download !== null && (!hasDraft || draft !== null)
+  const active = (job: DownloadProgress | null): job is DownloadProgress => job !== null && job.state !== 'completed'
+  const error = apply.error ?? upgrade.error
 
   return <article className="data-panel recommendation-card" data-fit={assessment.fit} data-match={assessment.hardware_match}>
     <header className="recommendation-head">
       <div>
         <h2>{recommendation.title}</h2>
-        <p className="mono">{recommendation.model.repo_id} · {recommendation.model.quantization}</p>
+        <p className="mono">{recommendation.model.repo_id} · {recommendation.model.quantization}{recommendation.model.draft_group && <> · draft {recommendation.model.draft_group}</>}</p>
       </div>
       <div className="recommendation-badges">
         {assessment.hardware_match ? <span className="state-pill ready">Tuned on hardware like yours</span> : <span className="state-pill">Tuned for different hardware</span>}
@@ -126,7 +152,7 @@ function RecommendationCard({ recommendation, catalog, runtimes, profile, canApp
     </dl>
     <LaunchSettings catalog={catalog} settings={recommendation.profile.arguments} />
     <footer className="recommendation-actions">
-      {added ? <ProfileState onOpenProfiles={onOpenProfiles} profile={profile} />
+      {matchedId ? <ProfileState onOpenProfiles={onOpenProfiles} profile={matched} />
         : !usable.length ? <div className="recommendation-status">
           <p className="recommendation-note"><AlertCircle size={15} /> Register a llama-server build to use this profile. It was tested with {backendList(recommendation.requirements.backends)}.</p>
           <button className="button secondary compact" onClick={onOpenRuntimes} type="button"><Cpu size={14} /> Open runtimes</button>
@@ -138,19 +164,35 @@ function RecommendationCard({ recommendation, catalog, runtimes, profile, canApp
               : `Tuned with ${backendList(recommendation.requirements.backends)}. The settings carry over to ${selected.backend ? backendList([selected.backend.toLowerCase()]) : 'this runtime'}, but speed and memory use will differ from the tested machine.`}</p>}
             {usable.length > 1 && <label className="form-field"><span>Runtime</span><select onChange={(event) => setRuntimeId(event.target.value)} value={selectedRuntime}>{usable.map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.name} · {runtime.build ?? 'unknown build'}{tested.has(runtime.id) ? ' · tested backend' : ''}</option>)}</select></label>}
             {usable.length === 1 && <p className="recommendation-runtime">Runs on <strong>{usable[0].name}</strong>{usable[0].build && <span className="mono"> · {usable[0].build}</span>}</p>}
-            <button className="button primary" disabled={!canApply || apply.isPending || !selectedRuntime} onClick={() => apply.mutate()} title={canApply ? undefined : 'Requires profile and download write access'} type="button">
-              {apply.isPending ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />} Download & add profile
-            </button>
+            {active(download) && <DownloadBar download={download} label={hasDraft ? 'Model' : undefined} />}
+            {active(draft) && <DownloadBar download={draft} label="Draft model" />}
+            {upgradable.map((profile) => <p className="recommendation-note info" key={profile.id}><CircleArrowUp size={15} /> <span><strong className="mono">{profile.alias}</strong> is unchanged from version {profile.version ?? 1}. Upgrade it to version {recommendation.version}, or add version {recommendation.version} as another profile.</span></p>)}
+            {aliasTaken && <Field className="recommendation-alias" hint={`${recommendation.profile.alias} is already used by a profile with different settings.`} label="Profile alias">
+              <input aria-invalid={!aliasValid} onChange={(event) => setAliasText(event.target.value.toLowerCase().replace(/\s+/g, '-'))} value={alias} />
+            </Field>}
+            <div className="recommendation-buttons">
+              {upgradable.map((profile) => <button className="button secondary" disabled={!canApply || running || upgrade.isPending} key={profile.id} onClick={() => upgrade.mutate(profile)} title={running ? 'Stop the router to upgrade a profile' : `Replace the settings of ${profile.alias} with version ${recommendation.version}. Its alias, model location and enabled state are kept.`} type="button">
+                {upgrade.isPending && upgrade.variables?.id === profile.id ? <LoaderCircle className="spin" size={15} /> : <CircleArrowUp size={15} />} Upgrade {profile.alias}
+              </button>)}
+              {!haveFiles && <button className="button secondary" disabled={!canApply || apply.isPending || !selectedRuntime} onClick={() => apply.mutate(false)} title={canApply ? 'Download the model without adding a profile' : 'Requires profile and download write access'} type="button">
+                {apply.isPending && apply.variables === false ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />} Download model
+              </button>}
+              <button className="button primary" disabled={!canApply || apply.isPending || !selectedRuntime || (aliasTaken && !aliasValid)} onClick={() => apply.mutate(true)} title={canApply ? undefined : 'Requires profile and download write access'} type="button">
+                {apply.isPending && apply.variables ? <LoaderCircle className="spin" size={15} /> : haveFiles ? <Plus size={15} /> : <Download size={15} />} {haveFiles ? 'Add profile' : 'Download model and add profile'}
+              </button>
+            </div>
           </div>}
-      {apply.error && <div className="form-error" role="alert"><AlertCircle size={15} /> {apply.error.message}</div>}
+      {error && <div className="form-error" role="alert"><AlertCircle size={15} /> {error.message}</div>}
     </footer>
   </article>
 }
 
-export function RecommendationsPanel({ runtimes, profiles, canApply, onOpenProfiles, onOpenRuntimes }: {
+export function RecommendationsPanel({ runtimes, profiles, downloads, canApply, running, onOpenProfiles, onOpenRuntimes }: {
   runtimes: Runtime[]
   profiles: Profile[]
+  downloads: DownloadJob[]
   canApply: boolean
+  running: boolean
   onOpenProfiles: () => void
   onOpenRuntimes: () => void
 }) {
@@ -171,11 +213,13 @@ export function RecommendationsPanel({ runtimes, profiles, canApply, onOpenProfi
           .map((recommendation) => <RecommendationCard
           canApply={canApply}
           catalog={catalog.data}
+          downloads={downloads}
           key={recommendation.id}
           onOpenProfiles={onOpenProfiles}
           onOpenRuntimes={onOpenRuntimes}
-          profile={profiles.find((profile) => profile.id === recommendation.profile_id)}
+          profiles={profiles}
           recommendation={recommendation}
+          running={running}
           runtimes={runtimes}
         />)
           : <div className="data-panel empty"><BadgeCheck size={26} /><strong>No recommended profiles</strong><span>This build does not include any recommended profiles.</span></div>}

@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import sys
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -81,9 +81,12 @@ from llamawebui.services.auth_service import (
     UserAlreadyExistsError,
 )
 from llamawebui.services.authorization import privilege_for_request
+from llamawebui.services.benchmark_linter import BenchmarkLinter, LinterError
 from llamawebui.services.benchmark_runner import (
     DEFAULT_MAX_TOKENS,
     REASONING_LEVELS,
+    TOOL_NAMES,
+    TOOL_SUMMARIES,
     BenchmarkBusyError,
     BenchmarkClient,
     BenchmarkRunner,
@@ -137,9 +140,17 @@ from llamawebui.services.profile_registry import (
 )
 from llamawebui.services.recommendations import (
     ProfileUpgradeError,
+    RecommendationAlreadyAddedError,
     apply_recommendation,
+    find_download,
+    find_draft_download,
+    identical_profiles,
     link_unchanged_profiles,
+    next_free_alias,
+    profile_files,
+    profile_hash,
     recommendation_status,
+    recommended_profile,
     upgrade_recommended_profile,
 )
 from llamawebui.services.router_client import (
@@ -328,15 +339,20 @@ class ProfileEnabledRequest(BaseModel):
 class BenchmarkRunRequest(BaseModel):
     profile_id: str = Field(min_length=1, max_length=36)
     benchmark_id: str = Field(min_length=1, max_length=64)
-    max_tokens: int = Field(default=DEFAULT_MAX_TOKENS, ge=16, le=131072)
+    # None generates until the model stops or the profile's context is full.
+    max_tokens: int | None = Field(default=DEFAULT_MAX_TOKENS, ge=16, le=1048576)
     # Let the model read and write files, confined to the run's own folder.
     tools: bool = True
+    # Which tools it gets, by name; None gives every tool.
+    tool_names: list[str] | None = Field(default=None, max_length=32)
     # A bundled system prompt to send first, by id; none sends the prompt on its own.
     system_prompt_id: str | None = Field(default=None, max_length=64)
     # "off" or an effort level for the chat template; none keeps the model's own default.
     reasoning_level: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = (
         None
     )
+    # Keep each tool call's arguments and whole result in its log, not a short excerpt.
+    verbose_log: bool = False
 
 
 class LoginRequest(BaseModel):
@@ -364,6 +380,10 @@ class RoleCreateRequest(BaseModel):
 
 class RecommendationApplyRequest(BaseModel):
     runtime_id: str = Field(min_length=1, max_length=36)
+    # A name for another copy when the recommendation's own alias is taken.
+    alias: str | None = Field(default=None, min_length=1, max_length=64)
+    # False downloads the model without adding a profile.
+    add_profile: bool = True
 
 
 class UserUpdateRequest(BaseModel):
@@ -465,6 +485,48 @@ def _locate_command_model(request: Request, parsed: ParsedCommand) -> ModelLocat
     )
 
 
+def _primary_path(artifacts: ModelArtifactRegistry, job: DownloadJobRecord | None) -> Path | None:
+    if job is None:
+        return None
+    with suppress(ModelArtifactError):
+        return artifacts.primary_path(job)
+    return None
+
+
+def _download_progress(job: DownloadJobRecord | None) -> dict[str, object] | None:
+    if job is None:
+        return None
+    return {
+        "id": job.id,
+        "state": job.state,
+        "completed_bytes": job.completed_bytes,
+        "total_bytes": job.total_bytes,
+    }
+
+
+def _unfinished_download(
+    record: ModelProfileRecord,
+    catalog: ArgumentCatalog,
+    downloads: DownloadRegistry,
+    artifacts: ModelArtifactRegistry,
+) -> str | None:
+    """A download still under way for one of the profile's files, such as its draft model."""
+    files = {path.resolve() for path in profile_files(record, catalog)}
+    for job in downloads.list(include_hidden=True):
+        if DownloadState(job.state) not in _ACTIVE_DOWNLOAD_STATES:
+            continue
+        with suppress(ModelArtifactError):
+            if artifacts.primary_path(job) in files:
+                return job.id
+    return None
+
+
+def _runtime_executables(request: Request) -> dict[str, Path]:
+    """Each registered runtime's llama-server executable, by runtime id."""
+    registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+    return {runtime.id: Path(runtime.executable_path) for runtime in registry.list()}
+
+
 def _saved_profile_payload(
     request: Request, record: ModelProfileRecord, profile: ModelProfile
 ) -> dict[str, object]:
@@ -472,7 +534,11 @@ def _saved_profile_payload(
     catalog = _argument_catalog(request)
     artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
     payload = _profile_payload(
-        record, artifacts, catalog=catalog, recommendations=request.app.state.recommendations
+        record,
+        artifacts,
+        catalog=catalog,
+        recommendations=request.app.state.recommendations,
+        executables=_runtime_executables(request),
     )
     registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
     runtime = registry.get(record.runtime_id)
@@ -487,8 +553,10 @@ def _profile_payload(
     *,
     catalog: ArgumentCatalog,
     recommendations: Sequence[Recommendation] = (),
+    executables: Mapping[str, Path] | None = None,
 ) -> dict[str, object]:
     source = artifacts.source_for_profile(profile) if artifacts is not None else None
+    executable = (executables or {}).get(profile.runtime_id)
     validation_state = "available"
     download: dict[str, object] | None = None
     if artifacts is not None:
@@ -526,6 +594,8 @@ def _profile_payload(
         "exclusive": profile.exclusive,
         "description": profile.description,
         "version": profile.version,
+        # Equal for profiles that launch the same llama-server command under any alias.
+        "hash": profile_hash(profile, catalog, executable) if executable is not None else None,
         "recommendation": recommendation_status(profile, recommendations, catalog),
         "benchmark_results": profile.benchmark_results or {},
         "validation_state": validation_state,
@@ -751,6 +821,22 @@ def _require_session(request: Request) -> AuthenticatedUser:
         ) from error
 
 
+def slot_context(models: list[dict[str, object]], alias: str) -> tuple[int, int] | None:
+    """The busiest slot's tokens in use for a model, and the context size it can grow to.
+
+    A unified KV cache shares one size between all slots; otherwise each slot has its own.
+    """
+    model = next((item for item in models if item.get("model") in (alias, None)), None)
+    if model is None:
+        return None
+    slots = cast(list[dict[str, object]], model.get("slots") or [])
+    used = max((cast(int, slot.get("used") or 0) for slot in slots), default=0)
+    shared = model.get("shared_capacity")
+    sizes = [cast(int, slot["total"]) for slot in slots if isinstance(slot.get("total"), int)]
+    size = shared if isinstance(shared, int) else max(sizes, default=0)
+    return (used, size) if size else None
+
+
 def _require_privilege(
     request: Request, user: AuthenticatedUser | None = None
 ) -> AuthenticatedUser:
@@ -827,6 +913,7 @@ def create_app(
     recommendations: tuple[Recommendation, ...] | None = None,
     benchmarks: tuple[Benchmark, ...] | None = None,
     system_prompts: tuple[SystemPrompt, ...] | None = None,
+    benchmark_linter: BenchmarkLinter | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
     packaged_static_dir = static_dir or Path(__file__).parent / "static"
@@ -894,6 +981,18 @@ def create_app(
         token = app_settings.hf_token.get_secret_value() if app_settings.hf_token else None
         app.state.huggingface_catalog = catalog or HuggingFaceCatalog(token)
         transfer = file_transfer or HuggingFaceFileTransfer(token)
+
+        def enable_ready(download_id: str) -> object:
+            return app.state.profile_registry.enable_ready(
+                download_id,
+                lambda record: _unfinished_download(
+                    record,
+                    app.state.argument_catalog,
+                    app.state.download_registry,
+                    app.state.model_artifact_registry,
+                ),
+            )
+
         app.state.download_coordinator = DownloadCoordinator(
             app.state.download_registry,
             DownloadWorker(
@@ -902,7 +1001,7 @@ def create_app(
                 stall_timeout_seconds=app_settings.download_stall_timeout_seconds,
             ),
             event_broker=app.state.event_broker,
-            on_completed=app.state.profile_registry.enable_ready,
+            on_completed=enable_ready,
         )
         app.state.download_coordinator.start_pending()
         # Catch up on profiles whose download finished while the app was not watching.
@@ -910,7 +1009,7 @@ def create_app(
             with suppress(DownloadJobNotFoundError):
                 job = app.state.download_registry.get(download_id)
                 if DownloadState(job.state) is DownloadState.COMPLETED:
-                    app.state.profile_registry.enable_ready(download_id)
+                    enable_ready(download_id)
         app.state.hardware_detector = hardware_detector
         app.state.recommendations = (
             recommendations if recommendations is not None else load_recommendations()
@@ -965,6 +1064,7 @@ def create_app(
                 await app.state.router_supervisor.stop()
                 app.state.token_registry.remove_materialized_tokens()
 
+        app.state.benchmark_linter = benchmark_linter or BenchmarkLinter(app_settings.data_dir)
         app.state.benchmark_runner = BenchmarkRunner(
             app.state.benchmark_runs,
             cast(BenchmarkClient, app.state.router_client),
@@ -972,6 +1072,10 @@ def create_app(
             stop_router=stop_router_after_benchmark,
             router_stopped=lambda: app.state.router_supervisor.state
             in {RouterState.STOPPED, RouterState.CRASHED},
+            linter=app.state.benchmark_linter,
+            context=lambda alias: slot_context(
+                cast(RouterSupervisor, app.state.router_supervisor).context, alias
+            ),
         )
 
         def record_router_state(
@@ -1713,8 +1817,11 @@ def create_app(
             "benchmark_title": record.benchmark_title,
             "max_tokens": record.max_tokens,
             "tools": record.tools,
+            "tool_names": record.tool_names,
             "system_prompt_id": record.system_prompt_id,
             "reasoning_level": record.reasoning_level,
+            "typescript_strict": record.typescript_strict,
+            "verbose_log": record.verbose_log,
             "state": record.state,
             "stage": progress["stage"] if progress else record.stage,
             "error": record.error,
@@ -1726,6 +1833,10 @@ def create_app(
             payload["live"] = {
                 "prefill": progress.get("prefill"),
                 "decode": progress.get("decode"),
+                # The tool call being written: its name and bytes of arguments so far.
+                "tool_call": progress.get("tool_call"),
+                # Tokens in the model's context now, and its size.
+                "context": progress.get("context"),
                 # Lets open timeline steps show how long they have been going.
                 "elapsed": runner.generation_elapsed(record.id),
             }
@@ -1740,6 +1851,11 @@ def create_app(
                 if progress
                 else record.tool_calls
             )
+            payload["tasks"] = (
+                [dict(task) for task in cast(list[dict[str, object]], progress["tasks"])]
+                if progress
+                else record.tasks
+            )
             payload["timeline"] = (
                 [dict(entry) for entry in cast(list[dict[str, object]], progress["timeline"])]
                 if progress
@@ -1749,11 +1865,48 @@ def create_app(
             payload["artifacts"] = runs.workspace(record.id).files()
         return payload
 
+    @app.get("/api/settings/benchmark-tools")
+    async def benchmark_tools(request: Request) -> dict[str, object]:
+        linter = cast(BenchmarkLinter, request.app.state.benchmark_linter)
+        return {"eslint": linter.status()}
+
+    @app.post("/api/settings/benchmark-tools/eslint", status_code=status.HTTP_202_ACCEPTED)
+    async def install_eslint(request: Request) -> dict[str, object]:
+        linter = cast(BenchmarkLinter, request.app.state.benchmark_linter)
+        runner = cast(BenchmarkRunner, request.app.state.benchmark_runner)
+        if linter.installed and runner.active_run_id is not None:
+            # Updating replaces the install, which the running benchmark may be using.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="wait for the running benchmark to finish before updating ESLint",
+            )
+        try:
+            linter.start_install()
+        except LinterError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return {"eslint": linter.status()}
+
+    @app.delete("/api/settings/benchmark-tools/eslint")
+    async def remove_eslint(request: Request) -> dict[str, object]:
+        linter = cast(BenchmarkLinter, request.app.state.benchmark_linter)
+        runner = cast(BenchmarkRunner, request.app.state.benchmark_runner)
+        if runner.active_run_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="wait for the running benchmark to finish before removing ESLint",
+            )
+        try:
+            linter.remove()
+        except LinterError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return {"eslint": linter.status()}
+
     @app.get("/api/benchmarks")
     async def list_benchmarks(request: Request) -> dict[str, object]:
         runner = cast(BenchmarkRunner, request.app.state.benchmark_runner)
         benchmarks = cast(tuple[Benchmark, ...], request.app.state.benchmarks)
         system_prompts = cast(tuple[SystemPrompt, ...], request.app.state.system_prompts)
+        available = runner.available_tools()
         return {
             "benchmarks": [item.to_payload() for item in benchmarks],
             "system_prompts": [item.to_payload() for item in system_prompts],
@@ -1764,6 +1917,14 @@ def create_app(
             ),
             "default_max_tokens": DEFAULT_MAX_TOKENS,
             "reasoning_levels": list(REASONING_LEVELS),
+            "tools": [
+                {
+                    "name": name,
+                    "summary": TOOL_SUMMARIES[name],
+                    "available": name in available,
+                }
+                for name in TOOL_NAMES
+            ],
             "active_run_id": runner.active_run_id,
         }
 
@@ -1819,11 +1980,17 @@ def create_app(
                 benchmark,
                 run_request.max_tokens,
                 tools=run_request.tools,
+                tool_names=run_request.tool_names,
                 system_prompt=system_prompt,
                 reasoning_level=run_request.reasoning_level,
+                verbose_log=run_request.verbose_log,
             )
         except BenchmarkBusyError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
         return benchmark_run_payload(runner, record, detail=True)
 
     @app.get("/api/benchmarks/runs/{run_id}")
@@ -2085,13 +2252,10 @@ def create_app(
             if _runtime_payload(runtime)["usable"]
         ]
         profiles = cast(ProfileRegistry, request.app.state.profile_registry).list()
-        aliases = {profile.alias: profile.id for profile in profiles}
-        # A profile linked to a recommendation stays its profile even after a rename.
-        linked = {
-            profile.recommendation_id: profile.id
-            for profile in profiles
-            if profile.recommendation_id is not None
-        }
+        jobs = cast(DownloadRegistry, request.app.state.download_registry).list(include_hidden=True)
+        artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
+        catalog = _argument_catalog(request)
+        executables = _runtime_executables(request)
         items: list[dict[str, object]] = []
         for recommendation in cast(
             tuple[Recommendation, ...], request.app.state.recommendations
@@ -2103,6 +2267,22 @@ def create_app(
                 discrete_vram_bytes=hardware.discrete_vram_bytes,
                 gpus=hardware.gpus,
             )
+            job = find_download(recommendation, jobs)
+            draft_job = find_draft_download(
+                recommendation, jobs, job.revision if job is not None else None
+            )
+            primary = _primary_path(artifacts, job)
+            draft = _primary_path(artifacts, draft_job)
+            # Per runtime, the profiles that launch exactly what this recommendation would.
+            matches: dict[str, list[str]] = {}
+            if primary is not None and (recommendation.model.draft_group is None or draft):
+                wanted = recommended_profile(recommendation, catalog, primary, draft_path=draft)
+                for runtime in runtimes:
+                    same = identical_profiles(
+                        wanted, Path(runtime.executable_path), profiles, catalog, executables
+                    )
+                    if same:
+                        matches[runtime.id] = [profile.id for profile in same]
             items.append(
                 {
                     **recommendation.to_payload(),
@@ -2116,8 +2296,18 @@ def create_app(
                         for runtime in runtimes
                         if (runtime.backend or "").lower() in recommendation.backends
                     ],
-                    "profile_id": linked.get(recommendation.id)
-                    or aliases.get(recommendation.alias),
+                    "download": _download_progress(job),
+                    "draft_download": _download_progress(draft_job),
+                    "matches": matches,
+                    # Profiles added from this recommendation, under any alias.
+                    "profile_ids": [
+                        profile.id
+                        for profile in profiles
+                        if profile.recommendation_id == recommendation.id
+                    ],
+                    "suggested_alias": next_free_alias(
+                        recommendation.alias, (profile.alias for profile in profiles)
+                    ),
                 }
             )
         return {"host": hardware.to_payload(), "recommendations": items}
@@ -2156,10 +2346,13 @@ def create_app(
                 downloads=cast(DownloadRegistry, request.app.state.download_registry),
                 artifacts=artifacts,
                 coordinator=cast(DownloadCoordinator, request.app.state.download_coordinator),
+                executables=_runtime_executables(request),
+                alias=apply_request.alias,
+                add_profile=apply_request.add_profile,
             )
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        except ProfileAliasExistsError as error:
+        except (ProfileAliasExistsError, RecommendationAlreadyAddedError) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except ProfileValidationError as error:
             raise HTTPException(
@@ -2176,11 +2369,16 @@ def create_app(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
             ) from error
         return {
-            "profile": _profile_payload(
-                applied.profile,
-                artifacts,
-                catalog=catalog,
-                recommendations=request.app.state.recommendations,
+            "profile": (
+                _profile_payload(
+                    applied.profile,
+                    artifacts,
+                    catalog=catalog,
+                    recommendations=request.app.state.recommendations,
+                    executables=_runtime_executables(request),
+                )
+                if applied.profile is not None
+                else None
             ),
             "download": _download_payload(applied.download),
             "ready": applied.ready,
@@ -2191,12 +2389,14 @@ def create_app(
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
         catalog = _argument_catalog(request)
+        executables = _runtime_executables(request)
         return [
             _profile_payload(
                 profile,
                 artifacts,
                 catalog=catalog,
                 recommendations=request.app.state.recommendations,
+                executables=executables,
             )
             for profile in registry.list()
         ]
@@ -2316,6 +2516,7 @@ def create_app(
             artifacts,
             catalog=_argument_catalog(request),
             recommendations=request.app.state.recommendations,
+            executables=_runtime_executables(request),
         )
 
     @app.post("/api/profiles/{profile_id}/upgrade")
@@ -2359,7 +2560,12 @@ def create_app(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
             ) from error
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-        return _profile_payload(profile, artifacts, catalog=_argument_catalog(request))
+        return _profile_payload(
+            profile,
+            artifacts,
+            catalog=_argument_catalog(request),
+            executables=_runtime_executables(request),
+        )
 
     @app.delete("/api/profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def remove_profile(profile_id: str, request: Request) -> None:
@@ -2412,7 +2618,12 @@ def create_app(
         except ProfileValidationError as error:
             raise HTTPException(status_code=422, detail=list(error.errors)) from error
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-        return _profile_payload(profile, artifacts, catalog=_argument_catalog(request))
+        return _profile_payload(
+            profile,
+            artifacts,
+            catalog=_argument_catalog(request),
+            executables=_runtime_executables(request),
+        )
 
     @app.get("/api/profiles/{profile_id}/export", response_class=PlainTextResponse)
     async def export_profile(profile_id: str, request: Request) -> PlainTextResponse:
@@ -2518,7 +2729,12 @@ def create_app(
                     version=version,
                 )
                 artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-                return _profile_payload(record, artifacts, catalog=catalog)
+                return _profile_payload(
+                    record,
+                    artifacts,
+                    catalog=catalog,
+                    executables=_runtime_executables(request),
+                )
             profile = ModelProfile(
                 alias=alias,
                 model_path=Path(imported_model_path),
@@ -2804,7 +3020,12 @@ def create_app(
         except ProfileValidationError as error:
             raise HTTPException(status_code=422, detail=list(error.errors)) from error
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
-        return _profile_payload(created, artifacts, catalog=_argument_catalog(request))
+        return _profile_payload(
+            created,
+            artifacts,
+            catalog=_argument_catalog(request),
+            executables=_runtime_executables(request),
+        )
 
     @app.delete("/api/library/{download_id}")
     async def delete_library_model(download_id: str, request: Request) -> dict[str, object]:

@@ -281,18 +281,62 @@ must never silently replace an installed or in-use llama.cpp runtime.
 
 ## Publish a GitHub release
 
-Releases are tag-driven. Update `changelog.json` first, adding exactly one
-entry whose `version` matches the tag without the leading `v`, then commit and
-push the tag from `main`:
+Releases are tag-driven, and a release is two steps in this order: bump the
+version, then tag `main`. Tagging before every step of the bump is committed
+publishes a release whose version files disagree, and CI fails it.
+
+### 1. Bump the version
+
+The root `VERSION` file is the single version source, but five other files
+carry a copy that must match it, and CI's `test_version.py` fails when any of
+them differs. Editing `VERSION` by hand does not update them. From the
+repository root, with `0.4.0` standing for the new version:
+
+1. Set the new version in `VERSION`, as `MAJOR.MINOR.PATCH` without a leading
+   `v`, for example `0.4.0`.
+2. Copy it into the other version files:
+
+   ```powershell
+   & .\.venv\Scripts\python.exe .\packaging\sync-version.py --version 0.4.0
+   ```
+
+   This rewrites `backend/pyproject.toml`, `backend/src/llamawebui/version.py`,
+   `frontend/package.json`, `frontend/package-lock.json` and
+   `frontend/src/version.ts`.
+3. Add exactly one entry for the version at the top of the `versions` list in
+   `changelog.json`. Its `version` is the same `0.4.0`, its `release_date` is
+   the day you release in `yyyy-MM-dd` form, and it lists at least one change,
+   each with a `type` and a `description`. Separate it from the entry below it
+   with a comma, then check the file is still valid JSON:
+
+   ```powershell
+   & .\.venv\Scripts\python.exe -m json.tool .\changelog.json > $null
+   ```
+
+4. Rebuild the frontend, which compiles the version into the committed bundle
+   in `backend/src/llamawebui/static/`:
+
+   ```powershell
+   Set-Location frontend; npm run build; Set-Location ..
+   ```
+
+5. Run the quality gates (see AGENTS.md), or run `.\packaging\release.ps1`
+   without `-Publish`. That script repeats step 2, checks the changelog entry is
+   dated today, runs every gate, generates the release notes and builds the
+   Windows package, without committing anything.
+6. Commit `VERSION`, `changelog.json`, the five files from step 2 and the
+   rebuilt `backend/src/llamawebui/static/`, and get the commit onto `main`.
+
+### 2. Tag `main`
+
+Once the version bump is on `main`, tag that commit with the same version and
+a leading `v`, and push the tag:
 
 ```powershell
 git switch main
 git pull --ff-only
-# Edit changelog.json and set the release date and typed changes.
-git add changelog.json
-git commit -m "docs: prepare release v0.1.0"
-git tag -a v0.1.0 -m "Release v0.1.0"
-git push origin main --follow-tags
+git tag -a v0.4.0 -m "Release v0.4.0"
+git push origin v0.4.0
 ```
 
 Only when a version tag is pushed does the `Release` workflow start. It checks
@@ -300,7 +344,7 @@ that the tag points to a commit reachable from `main`, calls the same reusable
 CI matrix used for ordinary branch and pull-request validation, and makes the
 packaging job depend on that CI job. After CI succeeds it builds the Windows
 one-folder package and creates
-`llamawebui-v0.1.0-windows-x64.zip`, generates release notes from the matching
+`llamawebui-v0.4.0-windows-x64.zip`, generates release notes from the matching
 `changelog.json` entry, and publishes the GitHub release. The package contains
 the application only; user data, models, access keys, backups, and registered
 runtimes remain external.

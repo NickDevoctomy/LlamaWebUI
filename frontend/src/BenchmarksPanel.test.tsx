@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { api, type BenchmarkRun, type BenchmarkRunDetail, type Profile, type RouterState } from './api'
+import { api, type Benchmark, type BenchmarkRun, type BenchmarkRunDetail, type BenchmarkTool, type Profile, type RouterState } from './api'
 import { BenchmarksPanel } from './BenchmarksPanel'
 
 const profiles = [
@@ -38,8 +38,14 @@ const running: BenchmarkRun = {
   finished_at: null,
 }
 
-function mockApi(runs: BenchmarkRun[]) {
-  vi.spyOn(api, 'benchmarks').mockResolvedValue({ benchmarks: [{ id: 'tetris', title: 'Tetris', prompt: 'make tetris' }], system_prompts: [{ id: 'coding-agent', title: 'Coding agent', text: 'You are an AI agent running in a coding agent harness.' }], default_system_prompt_id: 'coding-agent', reasoning_levels: ['off', 'low', 'medium', 'high', 'xhigh'], default_max_tokens: 32768, active_run_id: null })
+// check_file waits for ESLint, which these tests have not installed.
+const TOOLS = ['write_file', 'edit_file', 'read_file', 'delete_file', 'list_files', 'check_file', 'finish_job'].map((name) => ({ name, summary: `What ${name} does.`, available: name !== 'check_file' }))
+const ALL_TOOLS = TOOLS.filter((tool) => tool.available).map((tool) => tool.name)
+
+const TETRIS: Benchmark = { id: 'tetris', title: 'Tetris', prompt: 'make tetris', tasks: [], typescript: null }
+
+function mockApi(runs: BenchmarkRun[], { benchmarks = [TETRIS], tools = TOOLS }: { benchmarks?: Benchmark[]; tools?: BenchmarkTool[] } = {}) {
+  vi.spyOn(api, 'benchmarks').mockResolvedValue({ benchmarks, system_prompts: [{ id: 'coding-agent', title: 'Coding agent', text: 'You are an AI agent running in a coding agent harness.' }], default_system_prompt_id: 'coding-agent', reasoning_levels: ['off', 'low', 'medium', 'high', 'xhigh'], default_max_tokens: null, tools, active_run_id: null })
   vi.spyOn(api, 'benchmarkRuns').mockResolvedValue(runs)
 }
 
@@ -56,7 +62,7 @@ afterEach(() => {
 describe('BenchmarksPanel', () => {
   it('starts a benchmark for an enabled profile from a stopped router', async () => {
     mockApi([finished])
-    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [] })
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
     renderPanel()
 
     const run = await screen.findByRole('button', { name: 'Run benchmark' })
@@ -65,12 +71,164 @@ describe('BenchmarksPanel', () => {
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Max tokens' }), { target: { value: '2048' } })
     fireEvent.click(run)
 
-    await waitFor(() => expect(start).toHaveBeenCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: 2048, tools: true, system_prompt_id: 'coding-agent', reasoning_level: null }))
+    await waitFor(() => expect(start).toHaveBeenCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: 2048, tools: true, tool_names: ALL_TOOLS, system_prompt_id: 'coding-agent', reasoning_level: null, verbose_log: false }))
+  })
+
+  it('keeps a verbose log when asked, and shows each call\'s arguments as sent', async () => {
+    const body = 'function a() {\n  return 1\n}'
+    const sent = JSON.stringify({ path: 'src/render.ts', old_string: body, new_string: 'b' })
+    const verbose: BenchmarkRun = { ...finished, tools: true, tool_names: ALL_TOOLS, verbose_log: true }
+    mockApi([verbose])
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
+    vi.spyOn(api, 'benchmarkRun').mockResolvedValue({ ...verbose, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [{ round: 1, name: 'edit_file', path: 'src/render.ts', ok: false, result: 'Error: Could not find old_string', arguments: sent }, { round: 2, name: 'write_file', path: 'a', ok: false, result: 'Error: the tool arguments were not a JSON object.', arguments: '{"path": "a' }], tasks: [], artifacts: [], timeline: [] })
+    renderPanel()
+
+    const run = await screen.findByRole('button', { name: 'Run benchmark' })
+    await waitFor(() => expect(run).toBeEnabled())
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Verbose log' }))
+    fireEvent.click(run)
+    await waitFor(() => expect(start).toHaveBeenCalledWith(expect.objectContaining({ verbose_log: true })))
+
+    // Without tools there is nothing to log, so the option goes.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'File tools' }))
+    expect(screen.queryByRole('checkbox', { name: 'Verbose log' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry run Tetris on qwen-24gb' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ verbose_log: true })))
+
+    fireEvent.click(screen.getByRole('button', { name: 'View run Tetris on qwen-24gb' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
+    expect(await within(dialog).findByText('Verbose')).toBeInTheDocument()
+    expect(within(dialog).getByText('old_string')).toBeInTheDocument()
+    expect(within(dialog).getByText((_, element) => element?.tagName === 'PRE' && element.textContent === body)).toBeInTheDocument()
+    expect(within(dialog).getByText('Not a JSON object, as sent:')).toBeInTheDocument()
+  })
+
+  it('shows how much of the context each run filled, and opens a run from its title', async () => {
+    const full: BenchmarkRun = { ...finished, stats: { ...finished.stats, context_peak: 64900, context_size: 65536 } }
+    const live: BenchmarkRun = { ...running, live: { ...running.live, context: { used: 16384, size: 65536 } } }
+    const older: BenchmarkRun = { ...finished, id: 'run-old', benchmark_title: 'Snake' }
+    mockApi([live, full, older])
+    vi.spyOn(api, 'benchmarkRun').mockResolvedValue({ ...full, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
+    renderPanel()
+
+    const percent = await screen.findByText('99%')
+    expect(percent).toHaveAttribute('title', '64,900 of 65,536 tokens at most')
+    expect(percent).toHaveAttribute('data-full', 'true')
+    expect(screen.getByText('25%')).toHaveAttribute('title', '16,384 of 65,536 tokens now')
+    expect(screen.queryByRole('button', { name: /^View$/ })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'View run Tetris on qwen-24gb' })[1])
+    const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
+    expect(await within(dialog).findByText('64,900 / 65,536 (99%)')).toBeInTheDocument()
+  })
+
+  it('retries a run with its settings on the profile as it is now', async () => {
+    const chosen: BenchmarkRun = { ...finished, profile_version: 1, tools: true, tool_names: ['write_file', 'finish_job'], max_tokens: null, system_prompt_id: 'coding-agent', reasoning_level: 'high' }
+    const legacy: BenchmarkRun = { ...finished, id: 'run-legacy', benchmark_title: 'Snake', tools: true }
+    const gone: BenchmarkRun = { ...finished, id: 'run-gone', benchmark_title: 'Pong', profile_id: 'deleted', profile_alias: 'old-profile' }
+    const off: BenchmarkRun = { ...finished, id: 'run-off', benchmark_title: 'Off', profile_id: 'p2', profile_alias: 'qwen-off' }
+    mockApi([chosen, legacy, gone, off])
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
+    renderPanel()
+
+    const retry = await screen.findByRole('button', { name: 'Retry run Tetris on qwen-24gb' })
+    await waitFor(() => expect(retry).toBeEnabled())
+    expect(retry).toHaveAttribute('title', 'Run again with the same settings on the profile as it is now (v2, this run used v1)')
+    fireEvent.click(retry)
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: null, tools: true, tool_names: ['write_file', 'finish_job'], system_prompt_id: 'coding-agent', reasoning_level: 'high', verbose_log: false }))
+
+    // A run from before tools could be chosen had them all.
+    fireEvent.click(screen.getByRole('button', { name: 'Retry run Snake on qwen-24gb' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ tools: true, tool_names: null, max_tokens: 4096 })))
+    expect(screen.getByRole('button', { name: 'Retry run Pong on old-profile' })).toHaveAttribute('title', 'This profile has been deleted.')
+    expect(screen.getByRole('button', { name: 'Retry run Pong on old-profile' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Retry run Off on qwen-off' })).toHaveAttribute('title', 'Enable the profile to run it again.')
+  })
+
+  it('waits for the router to stop before retrying', async () => {
+    mockApi([finished])
+    renderPanel('ready')
+    const retry = await screen.findByRole('button', { name: 'Retry run Tetris on qwen-24gb' })
+    expect(retry).toBeDisabled()
+    expect(retry.getAttribute('title')).toMatch(/^Stop the router first/)
+  })
+
+  it('turns every file tool on or off at once, or chooses them one by one', async () => {
+    mockApi([])
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
+    renderPanel()
+
+    const all = await screen.findByRole('checkbox', { name: 'File tools' })
+    expect(all).toBeChecked()
+    const expand = screen.getByRole('button', { name: 'Choose tools' })
+    expect(expand).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('checkbox', { name: /delete_file/ })).not.toBeInTheDocument()
+    fireEvent.click(expand)
+    expect(expand).toHaveAttribute('aria-expanded', 'true')
+    const lint = screen.getByRole('checkbox', { name: /check_file/ })
+    expect(lint).toBeDisabled()
+    expect(lint).not.toBeChecked()
+    expect(screen.getByText(/Needs ESLint: download it in Settings, under Benchmark\./)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /delete_file/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /edit_file/ }))
+    expect(all).not.toBeChecked()
+    expect((all as HTMLInputElement).indeterminate).toBe(true)
+    expect(screen.getByText(/^4 of 6 tools: write_file, read_file, list_files, finish_job\./)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ tools: true, tool_names: ['write_file', 'read_file', 'list_files', 'finish_job'] })))
+
+    // Ticking the partly chosen box turns them all on; clicking again turns them all off.
+    fireEvent.click(all)
+    expect(all).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /delete_file/ })).toBeChecked()
+    fireEvent.click(all)
+    expect(screen.getAllByRole('checkbox', { name: /_/ }).every((box) => !(box as HTMLInputElement).checked)).toBe(true)
+    fireEvent.click(all)
+    expect(lint).not.toBeChecked()
+    fireEvent.click(all)
+    expect(screen.getByText('Off: the model can only answer in text.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ tools: false, tool_names: [] })))
+  })
+
+  it('offers the TypeScript tools only on a TypeScript benchmark', async () => {
+    const typed = ['check_typescript', 'bundle_typescript'].map((name) => ({ name, summary: `What ${name} does.`, available: true }))
+    const tools = [...TOOLS.slice(0, 6), ...typed, TOOLS[6]]
+    const neon: Benchmark = { ...TETRIS, id: 'neon', title: 'Neon', typescript: { strict: false } }
+    mockApi([], { benchmarks: [TETRIS, neon], tools })
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
+    renderPanel()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Choose tools' }))
+    const bundle = screen.getByRole('checkbox', { name: /bundle_typescript/ })
+    expect(bundle).toBeDisabled()
+    expect(screen.getAllByText(/Only for TypeScript benchmarks\./)).toHaveLength(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ benchmark_id: 'tetris', tool_names: ALL_TOOLS })))
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Benchmark' }), { target: { value: 'neon' } })
+    expect(bundle).toBeEnabled()
+    expect(bundle).toBeChecked()
+    expect(screen.queryByText(/Only for TypeScript benchmarks\./)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ benchmark_id: 'neon', tool_names: [...ALL_TOOLS.slice(0, 5), 'check_typescript', 'bundle_typescript', 'finish_job'] })))
+  })
+
+  it('warns when a TypeScript benchmark would run without its tools', async () => {
+    const typed = ['check_typescript', 'bundle_typescript'].map((name) => ({ name, summary: `What ${name} does.`, available: false }))
+    mockApi([], { benchmarks: [{ ...TETRIS, typescript: { strict: true } }], tools: [...TOOLS, ...typed] })
+    renderPanel()
+
+    expect(await screen.findByText(/Tetris is a TypeScript benchmark, but the TypeScript tools are not installed/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Choose tools' }))
+    expect(screen.getAllByText(/Needs the TypeScript tools: download or update ESLint in Settings/)).toHaveLength(2)
   })
 
   it('sends the coding agent system prompt by default, or none when chosen', async () => {
     mockApi([])
-    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [] })
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
     renderPanel()
 
     const choice = await screen.findByRole('combobox', { name: 'System prompt' })
@@ -80,13 +238,72 @@ describe('BenchmarksPanel', () => {
 
     fireEvent.change(choice, { target: { value: '' } })
     expect(screen.queryByLabelText('System prompt text')).not.toBeInTheDocument()
+    // Max tokens is left blank, so the run may use the profile's whole context.
+    expect(screen.getByRole('spinbutton', { name: 'Max tokens' })).toHaveAttribute('placeholder', 'Full context')
     fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
-    await waitFor(() => expect(start).toHaveBeenCalledWith(expect.objectContaining({ system_prompt_id: null, max_tokens: 32768 })))
+    await waitFor(() => expect(start).toHaveBeenCalledWith(expect.objectContaining({ system_prompt_id: null, max_tokens: null })))
+  })
+
+  it('shows the size of a tool call while it is being written', async () => {
+    mockApi([running])
+    const detail: BenchmarkRunDetail = {
+      ...running,
+      tools: true,
+      live: { ...running.live, elapsed: 700, tool_call: { name: 'write_file', bytes: 12700 } },
+      prompt: 'make tetris',
+      system_prompt: null,
+      samples: [],
+      output: '',
+      reasoning: '',
+      tool_calls: [],
+      tasks: [],
+      artifacts: [],
+      timeline: [
+        { kind: 'reading', round: 1, start: 0, end: 5, prompt_tokens: 529 },
+        { kind: 'tool_call', round: 1, start: 100, end: null },
+      ],
+    }
+    vi.spyOn(api, 'benchmarkRun').mockResolvedValue(detail)
+    renderPanel()
+
+    const toggle = await screen.findByRole('button', { name: /^Generate/ })
+    await waitFor(() => expect(toggle).toHaveTextContent('Generate(Writing tool call (write_file, 12.4 KB)… 10m 0s)'))
+    fireEvent.click(toggle)
+    const steps = screen.getByRole('list', { name: 'Generation steps' })
+    expect(within(steps).getAllByRole('listitem')[1]).toHaveTextContent('Writing tool call: write_file…12.4 KB10m 0s')
+  })
+
+  it('says whether a tool-using agent finished its task, and why generation ended', async () => {
+    const unfinished: BenchmarkRun = { ...finished, id: 'run-3', tools: true, max_tokens: null, stats: { ...finished.stats, finish_reason: 'length', outcome: 'unfinished' } }
+    const done: BenchmarkRun = { ...finished, id: 'run-4', benchmark_title: 'Snake', tools: true, stats: { ...finished.stats, finish_reason: 'finish_job', outcome: 'completed' } }
+    // A tool run from before outcomes were recorded.
+    const older: BenchmarkRun = { ...finished, id: 'run-5', tools: true }
+    mockApi([unfinished, done, finished, older])
+    const detail: BenchmarkRunDetail = { ...unfinished, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [{ kind: 'tool_call', round: 1, start: 1, end: 9, tokens: 900, names: ['write_file'], bytes: 1300 }] }
+    vi.spyOn(api, 'benchmarkRun').mockResolvedValue(detail)
+    renderPanel()
+
+    const rows = await screen.findAllByRole('button', { name: /^View run/ })
+    expect(rows).toHaveLength(4)
+    expect(within(rows[0].closest('li')!).getByText('Unfinished')).toBeInTheDocument()
+    expect(within(rows[1].closest('li')!).getByText('Job finished')).toBeInTheDocument()
+    // Neither a run without tools nor one from before outcomes were kept claims either.
+    expect(within(rows[2].closest('li')!).queryByText(/Unfinished|Job finished/)).not.toBeInTheDocument()
+    expect(within(rows[3].closest('li')!).queryByText(/Unfinished|Job finished/)).not.toBeInTheDocument()
+
+    fireEvent.click(rows[0])
+    const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
+    // With no token limit, running out means the context was full.
+    expect(await within(dialog).findByText('Ran out of context')).toBeInTheDocument()
+    expect(within(dialog).getByText('Unfinished')).toBeInTheDocument()
+    expect(within(dialog).getByText('Tokens / limit').nextSibling).toHaveTextContent('3,001 / context')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Generate' }))
+    expect(within(dialog).getByRole('list', { name: 'Generation steps' })).toHaveTextContent('1.3 KB · 900 tokens')
   })
 
   it('asks for a reasoning level, or leaves it to the model', async () => {
     mockApi([{ ...finished, reasoning_level: 'low' }])
-    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [] })
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
     renderPanel()
 
     const reasoning = await screen.findByRole('combobox', { name: 'Reasoning' })
@@ -129,7 +346,7 @@ describe('BenchmarksPanel', () => {
   })
 
   it('lists the files a run wrote and opens one in a read-only editor', async () => {
-    const withTools: BenchmarkRun = { ...finished, tools: true, stats: { ...finished.stats, rounds: 3, tool_calls: 2, files_written: 1 } }
+    const withTools: BenchmarkRun = { ...finished, tools: true, tool_names: ['write_file', 'read_file'], typescript_strict: true, stats: { ...finished.stats, rounds: 3, tool_calls: 2, files_written: 1 } }
     mockApi([withTools])
     const detail: BenchmarkRunDetail = {
       ...withTools,
@@ -141,6 +358,13 @@ describe('BenchmarksPanel', () => {
       tool_calls: [
         { round: 1, name: 'write_file', path: 'tetris/index.html', ok: true, result: 'Wrote 25 bytes to tetris/index.html' },
         { round: 1, name: 'write_file', path: 'C:/test.py', ok: false, result: "Error: 'C:/test.py' is outside your workspace." },
+        { round: 2, name: 'finish_job', path: null, ok: false, result: 'Error: final_message is required.' },
+        { round: 3, name: 'finish_job', path: null, ok: true, result: 'Job marked finished. Built Tetris in tetris/index.html.\nI had every tool I needed.' },
+      ],
+      tasks: [
+        { id: 1, title: 'Draw the board', status: 'done', source: 'prompt' },
+        { id: 2, title: 'Add the pieces', status: 'open', source: 'prompt' },
+        { id: 3, title: 'Add a bassline', status: 'deleted', source: 'agent' },
       ],
       artifacts: [{ path: 'tetris/index.html', size: 25 }, { path: 'tetris/game.js', size: 30 }],
       timeline: [],
@@ -154,7 +378,22 @@ describe('BenchmarksPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'View run Tetris on qwen-24gb' }))
     const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
     expect(await within(dialog).findByText('2 in 3 requests')).toBeInTheDocument()
-    expect(within(dialog).getByText('Tool calls (2, 1 refused)')).toBeInTheDocument()
+    expect(within(dialog).getByText('write_file, read_file')).toBeInTheDocument()
+    expect(within(dialog).getByText('Strict checks')).toBeInTheDocument()
+    expect(within(dialog).getByText('Tool calls (4, 2 refused)')).toBeInTheDocument()
+    // The accepted final message sits under the artifacts, without the tool's own preamble.
+    const completion = within(dialog).getByRole('heading', { name: 'Completion message' }).closest('section')!
+    expect(completion.querySelector('pre')).toHaveTextContent(/^Built Tetris in tetris\/index\.html\. I had every tool I needed\.$/)
+    expect(completion.previousElementSibling).toHaveTextContent(/^Artifacts/)
+    // The task list shows what was ticked off, and keeps what the agent deleted.
+    const tasks = within(dialog).getByRole('heading', { name: /^Tasks/ }).closest('section')!
+    expect(within(tasks).getByText('1 of 2 done · 1 deleted')).toBeInTheDocument()
+    expect([...tasks.querySelectorAll('li')].map((item) => [item.dataset.status, item.textContent])).toEqual([
+      ['done', 'Done: Draw the board'],
+      ['open', 'Open: Add the pieces'],
+      ['deleted', 'Deleted: Add a basslineAdded by the agent'],
+    ])
+    expect(tasks.nextElementSibling).toBe(completion.previousElementSibling)
     expect(within(dialog).getByText('C:/test.py').closest('li')).toHaveAttribute('data-ok', 'false')
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Open tetris/index.html' }))
@@ -207,6 +446,7 @@ describe('BenchmarksPanel', () => {
         { round: 1, name: 'write_file', path: 'tetris/index.html', ok: true, result: 'Wrote 25 bytes to tetris/index.html' },
         { round: 1, name: 'write_file', path: 'C:/test.py', ok: false, result: "Error: 'C:/test.py' is outside your workspace." },
       ],
+      tasks: [],
       artifacts: [{ path: 'tetris/index.html', size: 25 }],
       timeline: [
         { kind: 'reading', round: 1, start: 0, end: 4.2, prompt_tokens: 529 },
@@ -254,6 +494,7 @@ describe('BenchmarksPanel', () => {
       output: '',
       reasoning: 'Plan the board.',
       tool_calls: [],
+      tasks: [],
       artifacts: [],
       timeline: [
         { kind: 'reading', round: 1, start: 0, end: 5.2, prompt_tokens: 529 },
@@ -274,7 +515,7 @@ describe('BenchmarksPanel', () => {
 
   it('shows a finished run with its output, and deletes it after confirming', async () => {
     mockApi([finished])
-    const detail: BenchmarkRunDetail = { ...finished, prompt: 'make tetris', system_prompt: null, samples: [{ t: 3, phase: 'decode', tokens: 10, rate: 20 }, { t: 4, phase: 'decode', tokens: 30, rate: 21 }], output: '<html>tetris</html>', reasoning: 'Plan the grid', tool_calls: [], artifacts: [], timeline: [] }
+    const detail: BenchmarkRunDetail = { ...finished, prompt: 'make tetris', system_prompt: null, samples: [{ t: 3, phase: 'decode', tokens: 10, rate: 20 }, { t: 4, phase: 'decode', tokens: 30, rate: 21 }], output: '<html>tetris</html>', reasoning: 'Plan the grid', tool_calls: [], tasks: [], artifacts: [], timeline: [] }
     vi.spyOn(api, 'benchmarkRun').mockResolvedValue(detail)
     const remove = vi.spyOn(api, 'deleteBenchmarkRun').mockResolvedValue(undefined)
     renderPanel()

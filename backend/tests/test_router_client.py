@@ -313,6 +313,10 @@ async def test_router_client_streams_a_chat_with_tools_and_extra_options(
     assert sent[0]["tools"] == [{"type": "function", "function": {"name": "list_files"}}]
     assert sent[0]["timings_per_token"] is True
 
+    # Without a limit nothing is sent, so llama.cpp generates until the context is full.
+    _ = [chunk async for chunk in client.chat_stream("qwen", [], max_tokens=None)]
+    assert "max_tokens" not in sent[1]
+
 
 @pytest.mark.parametrize(
     ("response", "message"),
