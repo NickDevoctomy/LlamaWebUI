@@ -7,7 +7,7 @@
 ## Resolution
 
 - While a tool call streams, `_take_delta` keeps the call's name and argument bytes in the run's progress (`live.tool_call`). The run view shows them on the open "Writing tool call" step and beside Generate, and each closed step keeps its total as `bytes`.
-- `task_complete` is offered beside the file tools, and the tool system prompt asks for it. Calling it ends the run, with `finish_reason` `task_complete` and `outcome` `completed`. Every other end of a tool run, including failure and cancellation, records `outcome` `unfinished`. The outcome shows on the run, in its list row and in the result written to the profile.
+- `finish_job` (called `task_complete` before) is offered beside the file tools, and the tool system prompt asks for it. Calling it ends the run, with `finish_reason` `finish_job` and `outcome` `completed`. Every other end of a tool run, including failure and cancellation, records `outcome` `unfinished`. The outcome shows on the run, in its list row and in the result written to the profile.
 - Benchmark runs no longer default to a token limit; llama.cpp generates until the model stops or the context is full. A request llama.cpp refuses because the conversation no longer fits the context ends the run with `finish_reason` `context` instead of failing it.
 - Covered by `backend/tests/test_benchmark_tools.py` and `frontend/src/BenchmarksPanel.test.tsx`. Context compaction is still to come; until then a run that fills its context ends unfinished.
 

@@ -22,6 +22,7 @@ from sqlalchemy.orm import sessionmaker
 
 from llamawebui.domain.benchmark import Benchmark, SystemPrompt
 from llamawebui.models import BenchmarkRunRecord, ModelProfileRecord
+from llamawebui.services import benchmark_tasks
 from llamawebui.services.benchmark_linter import BenchmarkLinter, LinterError
 from llamawebui.services.benchmark_workspace import (
     BenchmarkWorkspace,
@@ -55,10 +56,22 @@ def reasoning_options(level: str | None) -> dict[str, object]:
 # Rounds of tool calls a single run may make before it is stopped.
 MAX_TOOL_ROUNDS = 24
 # The tool an agent calls to say it is done. Only a run that calls it counts as completed.
-COMPLETE_TOOL = "task_complete"
+COMPLETE_TOOL = "finish_job"
+# Tools renamed since runs were recorded, so an old run can still be run again.
+RENAMED_TOOLS = {"task_complete": COMPLETE_TOOL}
+# The planning tools, for the agent's own task list. With complete_task, a run starts
+# with its benchmark's tasks, and finish_job is refused while any are still open.
+PLANNING_TOOLS = ("list_tasks", "create_task", "complete_task", "delete_task")
+# What finish_job's final message must cover, as the tool and its refusal say it.
+FINAL_MESSAGE_PARTS = (
+    "a summary of what you built, the files you created, and your answer to: did you have "
+    "all the tools you needed to do the job properly, and if not, what other tools would "
+    "have helped?"
+)
 # The tool that lints a file; offered only once ESLint is installed.
 CHECK_TOOL = "check_file"
 _PATH = {"type": "string", "description": "Relative path inside the workspace."}
+_TASK_ID = {"type": "integer", "description": "The task's number, from list_tasks."}
 FILE_TOOLS: tuple[dict[str, object], ...] = (
     {
         "type": "function",
@@ -157,20 +170,70 @@ FILE_TOOLS: tuple[dict[str, object], ...] = (
     {
         "type": "function",
         "function": {
+            "name": "list_tasks",
+            "description": (
+                "List your task list: each task's number, title and whether it is done. "
+                "Deleted tasks are left out."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_task",
+            "description": "Add a task to your task list. Returns its number.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "What the task is, in a sentence.",
+                    }
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "complete_task",
+            "description": "Mark a task on your task list as done, once its work is finished.",
+            "parameters": {"type": "object", "properties": {"id": _TASK_ID}, "required": ["id"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_task",
+            "description": (
+                "Delete an open task that is no longer needed. The deletion stays on the "
+                "record for whoever reviews the run."
+            ),
+            "parameters": {"type": "object", "properties": {"id": _TASK_ID}, "required": ["id"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": COMPLETE_TOOL,
             "description": (
-                "Say the task is finished. Call it once, after the last file is saved, with a "
-                "summary of what you built. Ending with a text reply instead leaves the task "
-                "unfinished."
+                "Say the job is finished. Call it once, after the last file is saved and every "
+                "task on your task list is done, with your whole final message in "
+                "final_message. It is refused while tasks are still open. Ending with a text "
+                "reply instead leaves the job unfinished."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "summary": {
+                    "final_message": {
                         "type": "string",
-                        "description": "What you built and the files you created, briefly.",
+                        "description": f"Your whole final message, in one go: "
+                        f"{FINAL_MESSAGE_PARTS}",
                     }
                 },
+                "required": ["final_message"],
             },
         },
     },
@@ -189,6 +252,10 @@ TOOL_PURPOSES: dict[str, str] = {
     "delete_file": "delete_file to remove a file",
     "list_files": "list_files to see what is there",
     CHECK_TOOL: "check_file to lint a JavaScript or HTML file for mistakes",
+    "list_tasks": "list_tasks to see your task list",
+    "create_task": "create_task to add a task to it",
+    "complete_task": "complete_task to mark a task done",
+    "delete_task": "delete_task to drop a task that is no longer needed",
 }
 # What each tool does, for the person choosing a run's tools.
 TOOL_SUMMARIES: dict[str, str] = {
@@ -198,14 +265,25 @@ TOOL_SUMMARIES: dict[str, str] = {
     "delete_file": "Delete a file; never a folder.",
     "list_files": "List the files and their sizes.",
     CHECK_TOOL: "Lint a .js or .html file with ESLint and list the problems.",
+    "list_tasks": "List the agent's task list and what is done.",
+    "create_task": "Add a task to the agent's task list.",
+    "complete_task": (
+        "Mark a task done. With it, the run starts with the prompt's tasks and finish_job "
+        "waits until none are open."
+    ),
+    "delete_task": "Drop an open task; it stays on the run, marked deleted.",
     COMPLETE_TOOL: (
-        "Say the task is finished. Without it, a run is not marked completed or unfinished."
+        "Say the job is finished. Without it, a run is not marked completed or unfinished."
     ),
 }
 
 
-def tool_system_prompt(names: Sequence[str] = TOOL_NAMES) -> str:
-    """The workspace note for a run, naming only the tools it was given."""
+def tool_system_prompt(names: Sequence[str] = TOOL_NAMES, prepared: int = 0) -> str:
+    """The workspace note for a run, naming only the tools it was given.
+
+    prepared is how many tasks the run's task list starts with. They are stated as a
+    fact, since an agent told a list might exist tends to plan its own instead.
+    """
     purposes = [
         TOOL_PURPOSES[name] for name in TOOL_NAMES if name in names and name in TOOL_PURPOSES
     ]
@@ -217,11 +295,21 @@ def tool_system_prompt(names: Sequence[str] = TOOL_NAMES) -> str:
         "Paths are relative to the workspace, like 'tetris/index.html'. You cannot read "
         "or write anything outside it."
     )
+    if prepared and "list_tasks" in names:
+        count = "1 task" if prepared == 1 else f"{prepared} tasks"
+        parts.append(
+            f"Your task list already holds {count} prepared for this job. Call list_tasks "
+            "first to read them, follow them as your plan instead of making your own, and "
+            "mark each one done with complete_task as you finish it."
+        )
     if COMPLETE_TOOL in names:
         parts.append(
-            f"When the task is finished, call {COMPLETE_TOOL} with a summary. A reply without a "
-            "tool call ends the run, and a run that ends without it counts as unfinished."
+            f"When the job is finished, call {COMPLETE_TOOL} with your whole final message. A "
+            "reply without a tool call ends the run, and a run that ends without it counts as "
+            "unfinished."
         )
+        if "complete_task" in names:
+            parts.append(f"{COMPLETE_TOOL} is refused while any task on your list is still open.")
     return " ".join(parts)
 
 
@@ -231,6 +319,7 @@ def choose_tools(
     """The tools a run is given, in offer order; None gives every available tool."""
     if names is None:
         return [name for name in TOOL_NAMES if name in available]
+    names = [RENAMED_TOOLS.get(name, name) for name in names]
     unknown = sorted(set(names) - set(TOOL_NAMES))
     if unknown:
         raise ValueError(f"unknown tools: {', '.join(unknown)}")
@@ -263,7 +352,9 @@ def _history_arguments(arguments: str) -> str:
 
 def _given_tools(record: BenchmarkRunRecord) -> list[str]:
     """The tools a run was given; runs from before tools could be chosen had them all."""
-    return list(record.tool_names) if record.tool_names is not None else list(TOOL_NAMES)
+    if record.tool_names is None:
+        return list(TOOL_NAMES)
+    return [RENAMED_TOOLS.get(name, name) for name in record.tool_names]
 
 
 def _offered(names: Sequence[str]) -> tuple[dict[str, object], ...]:
@@ -292,8 +383,10 @@ def _call_tool(
     arguments: str,
     allowed: Sequence[str] = TOOL_NAMES,
     linter: BenchmarkLinter | None = None,
+    tasks: list[dict[str, object]] | None = None,
 ) -> tuple[str, dict[str, object]]:
-    """Run one file tool; return the reply for the model and a log entry."""
+    """Run one tool; return the reply for the model and a log entry."""
+    tasks = tasks if tasks is not None else []
     entry: dict[str, object] = {"name": name, "path": None, "ok": False}
     try:
         parsed = json.loads(arguments or "{}")
@@ -329,18 +422,36 @@ def _call_tool(
             if linter is None:
                 raise WorkspaceError("the linter is not installed")
             result = linter.check(workspace.read(path), cast(str, path))
+        elif name == "list_tasks":
+            result = benchmark_tasks.list_tasks(tasks)
+        elif name == "create_task":
+            result = benchmark_tasks.create_task(tasks, parsed.get("title"))
+        elif name == "complete_task":
+            result = benchmark_tasks.complete_task(tasks, parsed.get("id"))
+        elif name == "delete_task":
+            result = benchmark_tasks.delete_task(tasks, parsed.get("id"))
         elif name == COMPLETE_TOOL:
-            summary = parsed.get("summary")
-            result = "Task marked complete."
-            if isinstance(summary, str) and summary.strip():
-                result += f" {summary.strip()}"
+            final = parsed.get("final_message")
+            if not isinstance(final, str) or not final.strip():
+                # Refused, so the agent calls again with the message rather than ending without it.
+                raise WorkspaceError(f"final_message is required. Give {FINAL_MESSAGE_PARTS}")
+            # Open tasks only hold the job up when the agent can mark them done.
+            unfinished = (
+                benchmark_tasks.unfinished_reason(tasks) if "complete_task" in allowed else None
+            )
+            if unfinished:
+                raise WorkspaceError(unfinished)
+            result = f"Job marked finished. {final.strip()}"
         else:
             raise WorkspaceError(f"there is no tool called '{name}'")
         entry["ok"] = True
-    except (WorkspaceError, LinterError) as error:
+    except (WorkspaceError, LinterError, benchmark_tasks.TaskError) as error:
         result = f"Error: {error}"
-    # File contents read back would bloat the log, so it keeps a short excerpt.
-    entry["result"] = result if len(result) <= 300 else result[:300] + "…"
+    # File contents read back would bloat the log, so it keeps a short excerpt. The final
+    # message is kept whole: it is the agent's report, read in the run's tool call log, and
+    # so is a refusal, which lists the tasks still open.
+    keep_whole = name == COMPLETE_TOOL
+    entry["result"] = result if keep_whole or len(result) <= 300 else result[:300] + "…"
     return result, entry
 
 
@@ -486,6 +597,7 @@ class BenchmarkRunRegistry:
         tool_names: Sequence[str] | None = None,
         system_prompt: SystemPrompt | None = None,
         reasoning_level: str | None = None,
+        tasks: Sequence[dict[str, object]] = (),
     ) -> BenchmarkRunRecord:
         with self._sessions() as session:
             record = BenchmarkRunRecord(
@@ -501,6 +613,7 @@ class BenchmarkRunRegistry:
                 tools=tools,
                 tool_names=list(tool_names) if tools and tool_names is not None else None,
                 tool_calls=[],
+                tasks=[dict(task) for task in tasks],
                 system_prompt_id=system_prompt.id if system_prompt else None,
                 system_prompt=system_prompt.text if system_prompt else None,
                 reasoning_level=reasoning_level,
@@ -674,6 +787,12 @@ class BenchmarkRunner:
             raise BenchmarkBusyError("stop the router before running a benchmark")
         if not profile.enabled:
             raise BenchmarkBusyError("enable the profile before benchmarking it")
+        # The prompt's tasks are the agent's to work through only when it can mark them done.
+        tasks = (
+            benchmark_tasks.seed_tasks(benchmark.tasks)
+            if tools and "complete_task" in chosen
+            else []
+        )
         record = self._runs.create(
             profile,
             benchmark,
@@ -682,6 +801,7 @@ class BenchmarkRunner:
             tool_names=chosen,
             system_prompt=system_prompt,
             reasoning_level=reasoning_level,
+            tasks=tasks,
         )
         self._active = record.id
         self._progress = {
@@ -691,6 +811,8 @@ class BenchmarkRunner:
             "output": "",
             "reasoning": "",
             "tool_calls": [],
+            # The agent's task list, changed in place by the planning tools.
+            "tasks": [dict(task) for task in tasks],
             "timeline": [],
             # The tool call being streamed: its name and bytes of arguments so far.
             "tool_call": None,
@@ -784,6 +906,7 @@ class BenchmarkRunner:
                 output=self._progress["output"],
                 reasoning=self._progress["reasoning"],
                 tool_calls=list(cast(list[dict[str, object]], self._progress["tool_calls"])),
+                tasks=list(cast(list[dict[str, object]], self._progress["tasks"])),
                 timeline=list(cast(list[dict[str, object]], self._progress["timeline"])),
                 finished_at=_now(),
             )
@@ -837,7 +960,12 @@ class BenchmarkRunner:
         # model has file tools, since it needs to know paths are relative either way.
         instructions = [
             text
-            for text in (record.system_prompt, tool_system_prompt(given) if workspace else None)
+            for text in (
+                record.system_prompt,
+                tool_system_prompt(given, len(cast(list[object], self._progress["tasks"])))
+                if workspace
+                else None,
+            )
             if text
         ]
         if instructions:
@@ -1028,7 +1156,13 @@ class BenchmarkRunner:
                 timeline.switch("tool", round_number, name=call["name"], call=len(calls_made))
                 # Off the event loop: linting starts Node.js, which takes a moment.
                 result, entry = await asyncio.to_thread(
-                    _call_tool, workspace, call["name"], call["arguments"], given, self._linter
+                    _call_tool,
+                    workspace,
+                    call["name"],
+                    call["arguments"],
+                    given,
+                    self._linter,
+                    cast(list[dict[str, object]], self._progress["tasks"]),
                 )
                 timeline.close(path=entry["path"], ok=entry["ok"])
                 calls_made.append({"round": round_number, **entry})

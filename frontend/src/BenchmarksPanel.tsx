@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Check, ChevronDown, ChevronRight, Code, Copy, Download, Eye, FileText, LoaderCircle, Maximize2, Play, RotateCcw, Square, Timer, Trash2, X } from 'lucide-react'
+import { AlertCircle, Check, ChevronDown, ChevronRight, Code, Copy, Download, Eye, FileText, LoaderCircle, Maximize2, Play, RotateCcw, Square, SquareCheck, SquareX, Timer, Trash2, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { api, type BenchmarkRun, type BenchmarkRunDetail, type BenchmarkStage, type BenchmarkTool, type Profile, type RouterState, type TimelineEntry } from './api'
+import { api, type BenchmarkRun, type BenchmarkRunDetail, type BenchmarkStage, type BenchmarkTask, type BenchmarkTool, type Profile, type RouterState, type TimelineEntry } from './api'
 import { formatRate, formatSeconds, formatWhen, reasoningLabel } from './benchmarkFormat'
 import { Sparkline } from './Dashboard'
 import { Dialog } from './SetupPanels'
@@ -79,6 +79,7 @@ function finishLabel(run: BenchmarkRun) {
     case 'length': return run.max_tokens != null ? 'Hit the token limit' : 'Ran out of context'
     case 'context': return 'Ran out of context'
     case 'tool_round_limit': return 'Hit the tool round limit'
+    case 'finish_job': return 'Agent called finish_job'
     case 'task_complete': return 'Agent called task_complete'
     default: return `Finished: ${run.stats.finish_reason}`
   }
@@ -88,7 +89,7 @@ function finishLabel(run: BenchmarkRun) {
 function OutcomeTag({ run }: { run: BenchmarkRun }) {
   if (!run.stats.outcome || run.state === 'running' || run.state === 'cancelled') return null
   const completed = run.stats.outcome === 'completed'
-  return <span className={`state-pill ${completed ? 'ready' : 'warning'}`} title={completed ? 'The agent called task_complete.' : 'The agent never called task_complete: it stopped, ran out of tokens or context, or failed.'}>{completed ? 'Task complete' : 'Unfinished'}</span>
+  return <span className={`state-pill ${completed ? 'ready' : 'warning'}`} title={completed ? 'The agent called finish_job.' : 'The agent never finished the job: it stopped, ran out of tokens or context, or failed.'}>{completed ? 'Job finished' : 'Unfinished'}</span>
 }
 
 function activityName(entry: TimelineEntry) {
@@ -363,6 +364,40 @@ function ToolPicker({ tools, chosen, onChange }: { tools: BenchmarkTool[]; chose
   </div>
 }
 
+// The tool an agent finishes with; older runs called it task_complete.
+const FINISH_TOOLS = ['finish_job', 'task_complete']
+
+/** What the agent said it finished on: the message from its accepted finish_job call. */
+function completionMessage(run: BenchmarkRunDetail) {
+  const done = run.tool_calls.filter((call) => FINISH_TOOLS.includes(call.name) && call.ok).at(-1)
+  return done?.result.replace(/^(Job marked finished|Task marked complete)\.\s*/, '').trim() || undefined
+}
+
+const TASK_ICONS = { open: Square, done: SquareCheck, deleted: SquareX }
+
+/** The agent's task list, ticked off as it went; deleted tasks stay, struck through. */
+function TaskList({ run }: { run: BenchmarkRunDetail }) {
+  const tasks = run.tasks ?? []
+  if (!tasks.length) return null
+  const kept = tasks.filter((task) => task.status !== 'deleted')
+  const done = kept.filter((task) => task.status === 'done').length
+  const deleted = tasks.length - kept.length
+  return <section className="benchmark-text">
+    <h3>Tasks <span className="benchmark-task-count">{done} of {kept.length} done{deleted ? ` · ${deleted} deleted` : ''}</span></h3>
+    <ul className="benchmark-task-list">
+      {tasks.map((task: BenchmarkTask) => {
+        const Icon = TASK_ICONS[task.status]
+        return <li data-status={task.status} key={task.id}>
+          <Icon aria-hidden="true" size={16} />
+          <span className="sr-only">{task.status === 'done' ? 'Done: ' : task.status === 'deleted' ? 'Deleted: ' : 'Open: '}</span>
+          <span className="benchmark-task-title">{task.title}</span>
+          {task.source === 'agent' && <small>Added by the agent</small>}
+        </li>
+      })}
+    </ul>
+  </section>
+}
+
 function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpenArtifact: (path: string) => void }) {
   const offered = useQuery({ queryKey: ['benchmarks'], queryFn: api.benchmarks }).data?.tools
   const { stats } = run
@@ -386,6 +421,7 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
     ...(run.tools ? [['Tool calls', `${stats.tool_calls ?? run.tool_calls.length} in ${stats.rounds ?? 1} ${stats.rounds === 1 ? 'request' : 'requests'}`] as [string, string]] : []),
   ]
   const refused = run.tool_calls.filter((call) => !call.ok).length
+  const completion = completionMessage(run)
   return <>
     {run.error && run.state !== 'cancelled' && <div className="form-error" role="alert"><AlertCircle size={15} /> {run.error}</div>}
     <div className="benchmark-detail-head"><StatePill run={run} /><OutcomeTag run={run} />{finishLabel(run) && <span className="profile-tag" title="Why generation ended">{finishLabel(run)}</span>}</div>
@@ -393,6 +429,7 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
     <dl className="benchmark-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
     {decode.length > 1 && <div className="benchmark-chart"><span>Decode speed over the run (3 s windows)</span><Sparkline ceiling={stats.decode_peak_tokens_per_second} values={decode} /></div>}
     {prefill.length > 1 && <div className="benchmark-chart"><span>Prefill speed</span><Sparkline values={prefill} /></div>}
+    <TaskList run={run} />
     {run.tools && <section className="benchmark-text">
       <h3>Artifacts</h3>
       {run.artifacts.length ? <ul className="artifact-list">
@@ -401,6 +438,7 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
         </li>)}
       </ul> : <p className="benchmark-empty">{run.state === 'running' ? 'No files written yet.' : 'The model did not write any files.'}</p>}
     </section>}
+    {completion && <section className="benchmark-text"><h3>Completion message</h3><pre>{completion}</pre></section>}
     {run.tool_calls.length > 0 && <details className="benchmark-text">
       <summary>Tool calls ({run.tool_calls.length}{refused ? `, ${refused} refused` : ''})</summary>
       <ol className="tool-call-list">

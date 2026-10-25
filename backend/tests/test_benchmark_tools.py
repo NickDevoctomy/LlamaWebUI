@@ -307,7 +307,11 @@ async def test_file_tools_write_only_inside_the_run_folder(tmp_path: Path) -> No
         "read_file",
         "delete_file",
         "list_files",
-        "task_complete",
+        "list_tasks",
+        "create_task",
+        "complete_task",
+        "delete_task",
+        "finish_job",
     ]
     # It stopped with an answer but never said it was done.
     assert stats["outcome"] == "unfinished"
@@ -534,14 +538,14 @@ async def test_a_malformed_call_is_refused_and_the_model_can_retry(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_calling_task_complete_ends_the_run_as_completed(tmp_path: Path) -> None:
+async def test_calling_finish_job_ends_the_run_as_completed(tmp_path: Path) -> None:
     engine, profile = _database(tmp_path)
     client = FakeBenchmarkClient()
     client.replies = [
         _round(
             [
                 _tool_call(0, "write_file", {"path": "index.html", "content": "<html>"}),
-                _tool_call(1, "task_complete", {"summary": "Wrote the game."}),
+                _tool_call(1, "finish_job", {"final_message": "Wrote the game."}),
             ],
             finish="tool_calls",
             generated=20,
@@ -559,10 +563,44 @@ async def test_calling_task_complete_ends_the_run_as_completed(tmp_path: Path) -
     assert finished.state == "completed", finished.error
     assert len(client.requests) == 1
     assert finished.stats["outcome"] == "completed"
-    assert finished.stats["finish_reason"] == "task_complete"
-    assert finished.tool_calls[-1]["result"] == "Task marked complete. Wrote the game."
+    assert finished.stats["finish_reason"] == "finish_job"
+    assert finished.tool_calls[-1]["result"] == "Job marked finished. Wrote the game."
     results = cast(dict[str, dict[str, object]], profile_results(engine, profile.id))
     assert results["tetris"]["outcome"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_finish_job_needs_the_final_message_and_keeps_it_whole(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    final = "Wrote index.html. " + "I had every tool I needed. " * 20
+    client.replies = [
+        _round(
+            [_tool_call(0, "finish_job", {"final_message": "  "})],
+            finish="tool_calls",
+            generated=5,
+            milliseconds=10.0,
+        ),
+        _round(
+            [_tool_call(0, "finish_job", {"final_message": final})],
+            finish="tool_calls",
+            generated=5,
+            milliseconds=10.0,
+        ),
+    ]
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, None, tools=True)
+    await runner.wait()
+
+    finished = runs.get(record.id)
+    assert finished.state == "completed", finished.error
+    refused, accepted = finished.tool_calls
+    assert refused["ok"] is False
+    assert str(refused["result"]).startswith("Error: final_message is required.")
+    assert "what other tools would have helped" in str(refused["result"])
+    assert accepted["result"] == f"Job marked finished. {final.strip()}"
+    assert finished.stats["outcome"] == "completed"
 
 
 # Every tool a run gets by default while ESLint is not installed.
@@ -572,15 +610,16 @@ UNLINTED = [name for name in TOOL_NAMES if name != "check_file"]
 def test_the_workspace_note_names_only_the_tools_a_run_was_given() -> None:
     every = tool_system_prompt()
     assert "Use write_file to save files you create, edit_file to change part" in every
-    assert "list_files to see what is there and check_file to lint" in every
-    assert "call task_complete" in every
+    assert "list_files to see what is there, check_file to lint" in every
+    assert "complete_task to mark a task done and delete_task to drop" in every
+    assert "call finish_job" in every
 
     assert tool_system_prompt(["read_file"]) == (
         "You have a workspace folder for this task. Use read_file to read a file back. "
         "Paths are relative to the workspace, like 'tetris/index.html'. You cannot read or "
         "write anything outside it."
     )
-    only_done = tool_system_prompt(["task_complete"])
+    only_done = tool_system_prompt(["finish_job"])
     assert "Use " not in only_done
     assert only_done.endswith("counts as unfinished.")
 
@@ -602,7 +641,7 @@ async def test_a_run_offers_only_its_chosen_tools_and_refuses_the_rest(tmp_path:
             [
                 _tool_call(0, "write_file", {"path": "index.html", "content": "<html>"}),
                 _tool_call(1, "delete_file", {"path": "index.html"}),
-                _tool_call(2, "task_complete", {}),
+                _tool_call(2, "finish_job", {"final_message": "Done."}),
             ],
             finish="tool_calls",
             generated=20,
@@ -625,15 +664,15 @@ async def test_a_run_offers_only_its_chosen_tools_and_refuses_the_rest(tmp_path:
     assert finished.tool_names == ["write_file"]
     messages, offered = client.requests[0]
     assert offered == ["write_file"]
-    assert "task_complete" not in str(messages[0]["content"])
+    assert "finish_job" not in str(messages[0]["content"])
     assert [(call["name"], call["ok"]) for call in finished.tool_calls] == [
         ("write_file", True),
         ("delete_file", False),
-        ("task_complete", False),
+        ("finish_job", False),
     ]
     assert finished.tool_calls[1]["result"] == "Error: there is no tool called 'delete_file'"
     assert (runs.workspace_root / record.id / "index.html").exists()
-    # Without task_complete the agent cannot say it is done, so no outcome is kept.
+    # Without finish_job the agent cannot say it is done, so no outcome is kept.
     assert "outcome" not in finished.stats
     assert finished.stats["finish_reason"] == "stop"
 
@@ -739,7 +778,7 @@ async def test_an_agent_writes_then_edits_a_file_by_line(tmp_path: Path) -> None
                     "edit_file",
                     {"path": "index.html", "old_string": "score", "new_string": "lines", "line": 2},
                 ),
-                _tool_call(2, "task_complete", {}),
+                _tool_call(2, "finish_job", {"final_message": "Done."}),
             ],
             finish="tool_calls",
             generated=10,
@@ -919,7 +958,7 @@ def test_startup_prunes_folders_of_runs_that_no_longer_exist(tmp_path: Path) -> 
 def test_system_prompts_are_bundled_files(tmp_path: Path) -> None:
     bundled = {item.id: item for item in load_system_prompts()}
     assert bundled["coding-agent"].title == "Coding agent"
-    assert "task_complete" in bundled["coding-agent"].text
+    assert "finish_job" in bundled["coding-agent"].text
     assert load_system_prompts(tmp_path / "missing") == ()
     (tmp_path / "terse.txt").write_text(" Answer briefly. \n", encoding="utf-8")
     assert load_system_prompts(tmp_path) == (

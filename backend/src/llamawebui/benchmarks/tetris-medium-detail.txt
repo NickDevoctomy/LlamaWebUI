@@ -41,7 +41,7 @@ Centre column:
   - A thin glowing border around the playfield in cyan, with a soft outer glow.
 
 Right column (~160px wide):
-  - NEXT panel: label "NEXT", showing the next 5 pieces stacked vertically. The first one larger, the following four progressively smaller (~70% size).
+  - NEXT panel: label "NEXT", showing the next piece ONLY.
   - Below it, a CONTROLS panel listing key bindings in small secondary text.
 
 A faint animated background behind everything: a perspective grid receding to a horizon line (classic synthwave floor), scrolling slowly toward the viewer. Keep it subtle so it doesn't distract.

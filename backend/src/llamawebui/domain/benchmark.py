@@ -1,13 +1,22 @@
-"""Bundled benchmark prompts: one plain-text prompt per file."""
+"""Bundled benchmark prompts: one plain-text prompt per file.
+
+A benchmark prompt may start with YAML frontmatter between ``---`` lines. Its
+``tasks`` key lists the tasks an agent with the planning tools starts with.
+"""
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+import yaml
 
 BENCHMARK_DIRECTORY = Path(__file__).resolve().parent.parent / "benchmarks"
 _ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+# Frontmatter: YAML between a first line of --- and the next line of ---.
+_FRONTMATTER = re.compile(r"\A---[ \t]*\r?\n(.*?)^---[ \t]*$", re.DOTALL | re.MULTILINE)
+FRONTMATTER_KEYS = frozenset({"tasks"})
 
 
 class BenchmarkError(ValueError):
@@ -19,9 +28,16 @@ class Benchmark:
     id: str
     title: str
     prompt: str
+    # Tasks an agent with the planning tools starts with, from the file's frontmatter.
+    tasks: tuple[str, ...] = field(default=())
 
     def to_payload(self) -> dict[str, object]:
-        return {"id": self.id, "title": self.title, "prompt": self.prompt}
+        return {
+            "id": self.id,
+            "title": self.title,
+            "prompt": self.prompt,
+            "tasks": list(self.tasks),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,12 +69,50 @@ def _read_prompts(directory: Path, kind: str) -> list[tuple[str, str, str]]:
     return prompts
 
 
+def _split_frontmatter(name: str, text: str) -> tuple[dict[str, object], str]:
+    """A prompt's frontmatter settings and the prompt after it; no frontmatter gives {}."""
+    match = _FRONTMATTER.match(text)
+    if match is None:
+        return {}, text
+    try:
+        settings = yaml.safe_load(match.group(1))
+    except yaml.YAMLError as error:
+        raise BenchmarkError(f"{name}: invalid frontmatter: {error}") from error
+    if settings is None:
+        settings = {}
+    if not isinstance(settings, dict):
+        raise BenchmarkError(f"{name}: frontmatter must be a mapping of settings")
+    unknown = sorted(str(key) for key in settings if key not in FRONTMATTER_KEYS)
+    if unknown:
+        raise BenchmarkError(f"{name}: unknown frontmatter settings: {', '.join(unknown)}")
+    body = text[match.end() :].strip()
+    if not body:
+        raise BenchmarkError(f"{name}: benchmark prompt is empty")
+    return settings, body
+
+
+def _tasks(name: str, value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.strip() for item in value
+    ):
+        raise BenchmarkError(f"{name}: tasks must be a list of task descriptions")
+    return tuple(" ".join(item.split()) for item in value)
+
+
 def load_benchmarks(directory: Path = BENCHMARK_DIRECTORY) -> tuple[Benchmark, ...]:
     """Load every ``*.txt`` prompt; the file name, without extension, is its id."""
-    return tuple(
-        Benchmark(id=identifier, title=title, prompt=text)
-        for identifier, title, text in _read_prompts(directory, "benchmark prompt")
-    )
+    benchmarks: list[Benchmark] = []
+    for identifier, title, text in _read_prompts(directory, "benchmark prompt"):
+        name = f"{identifier}.txt"
+        settings, prompt = _split_frontmatter(name, text)
+        benchmarks.append(
+            Benchmark(
+                id=identifier, title=title, prompt=prompt, tasks=_tasks(name, settings.get("tasks"))
+            )
+        )
+    return tuple(benchmarks)
 
 
 def load_system_prompts(

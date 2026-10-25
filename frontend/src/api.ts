@@ -114,6 +114,17 @@ export interface Benchmark {
   id: string
   title: string
   prompt: string
+  /** Tasks a run with complete_task starts with, from the prompt file's frontmatter. */
+  tasks: string[]
+}
+
+/** A task on the agent's task list; deleting one only marks it deleted. */
+export interface BenchmarkTask {
+  id: number
+  title: string
+  status: 'open' | 'done' | 'deleted'
+  /** Whether the benchmark prompt or the agent added it. */
+  source: 'prompt' | 'agent'
 }
 
 export interface SystemPrompt {
@@ -173,9 +184,9 @@ export interface BenchmarkStats {
   decode_final_tokens_per_second?: number
   generation_seconds?: number
   total_seconds?: number
-  /** stop, length, context (the conversation outgrew it), tool_round_limit or task_complete. */
+  /** stop, length, context (the conversation outgrew it), tool_round_limit or finish_job (task_complete on older runs). */
   finish_reason?: string
-  /** With file tools: completed only when the agent called task_complete. */
+  /** With file tools: completed only when the agent called finish_job. */
   outcome?: 'completed' | 'unfinished'
   /** Requests sent: one, plus one more after each round of tool calls. */
   rounds?: number
@@ -256,6 +267,8 @@ export interface BenchmarkRunDetail extends BenchmarkRun {
   reasoning: string
   /** Each file tool call, in order; results are cut short. */
   tool_calls: { round: number; name: string; path: string | null; ok: boolean; result: string }[]
+  /** The agent's task list from the planning tools, in the order tasks were added. */
+  tasks: BenchmarkTask[]
   /** Files the model wrote into the run's folder. */
   artifacts: { path: string; size: number }[]
 }

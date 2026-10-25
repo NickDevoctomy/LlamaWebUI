@@ -179,8 +179,13 @@ def _runner(
 
 def test_load_benchmarks_reads_prompts_and_rejects_bad_files(tmp_path: Path) -> None:
     bundled = {item.id: item for item in load_benchmarks()}
-    assert bundled["tetris"].prompt == "make a single page html/js tetris clone, make it look cool."
-    assert bundled["tetris"].title == "Tetris"
+    assert bundled["tetris-no-details"].prompt == (
+        "make a single page html/js tetris clone, make it look cool."
+    )
+    assert bundled["tetris-no-details"].title == "Tetris no details"
+    assert bundled["tetris-no-details"].tasks == ()
+    assert len(bundled["tetris-ultra-high-detailed"].tasks) == 11
+    assert bundled["tetris-ultra-high-detailed"].prompt.startswith("# Neon Tetris")
 
     assert load_benchmarks(tmp_path / "missing") == ()
     (tmp_path / "long-context.txt").write_text("  summarise this  \n", encoding="utf-8")
@@ -550,9 +555,10 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
     assert listed["reasoning_levels"] == ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
     assert run["reasoning_level"] is None
     assert run["system_prompt_id"] == "coding-agent"
-    assert "task_complete" in str(run["system_prompt"])
+    assert "finish_job" in str(run["system_prompt"])
     assert run["tools"] is True
-    assert run["tool_names"] == ["write_file", "task_complete"]
+    # The old name for finish_job still works, so an old run can be run again.
+    assert run["tool_names"] == ["write_file", "finish_job"]
     assert unknown_tool.status_code == 422
     assert unknown_tool.json()["detail"] == "unknown tools: nope"
     assert [item["name"] for item in listed["tools"]] == [
@@ -562,7 +568,11 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
         "delete_file",
         "list_files",
         "check_file",
-        "task_complete",
+        "list_tasks",
+        "create_task",
+        "complete_task",
+        "delete_task",
+        "finish_job",
     ]
     assert listed["tools"][0] == {
         "name": "write_file",

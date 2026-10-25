@@ -104,6 +104,11 @@ class BenchmarkRunRecord(Base):
     tool_calls: Mapped[list[dict[str, object]]] = mapped_column(
         JSON, default=list, server_default=text("'[]'")
     )
+    # The agent's task list from the planning tools: each task's number, title, status
+    # (open, done or deleted) and whether the prompt or the agent added it.
+    tasks: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON, default=list, server_default=text("'[]'")
+    )
     # What generation spent its time on: reading, thinking, answering and tool calls.
     timeline: Mapped[list[dict[str, object]]] = mapped_column(
         JSON, default=list, server_default=text("'[]'")

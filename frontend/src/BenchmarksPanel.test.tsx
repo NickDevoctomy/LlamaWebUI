@@ -39,11 +39,11 @@ const running: BenchmarkRun = {
 }
 
 // check_file waits for ESLint, which these tests have not installed.
-const TOOLS = ['write_file', 'edit_file', 'read_file', 'delete_file', 'list_files', 'check_file', 'task_complete'].map((name) => ({ name, summary: `What ${name} does.`, available: name !== 'check_file' }))
+const TOOLS = ['write_file', 'edit_file', 'read_file', 'delete_file', 'list_files', 'check_file', 'finish_job'].map((name) => ({ name, summary: `What ${name} does.`, available: name !== 'check_file' }))
 const ALL_TOOLS = TOOLS.filter((tool) => tool.available).map((tool) => tool.name)
 
 function mockApi(runs: BenchmarkRun[]) {
-  vi.spyOn(api, 'benchmarks').mockResolvedValue({ benchmarks: [{ id: 'tetris', title: 'Tetris', prompt: 'make tetris' }], system_prompts: [{ id: 'coding-agent', title: 'Coding agent', text: 'You are an AI agent running in a coding agent harness.' }], default_system_prompt_id: 'coding-agent', reasoning_levels: ['off', 'low', 'medium', 'high', 'xhigh'], default_max_tokens: null, tools: TOOLS, active_run_id: null })
+  vi.spyOn(api, 'benchmarks').mockResolvedValue({ benchmarks: [{ id: 'tetris', title: 'Tetris', prompt: 'make tetris', tasks: [] }], system_prompts: [{ id: 'coding-agent', title: 'Coding agent', text: 'You are an AI agent running in a coding agent harness.' }], default_system_prompt_id: 'coding-agent', reasoning_levels: ['off', 'low', 'medium', 'high', 'xhigh'], default_max_tokens: null, tools: TOOLS, active_run_id: null })
   vi.spyOn(api, 'benchmarkRuns').mockResolvedValue(runs)
 }
 
@@ -60,7 +60,7 @@ afterEach(() => {
 describe('BenchmarksPanel', () => {
   it('starts a benchmark for an enabled profile from a stopped router', async () => {
     mockApi([finished])
-    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [] })
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
     renderPanel()
 
     const run = await screen.findByRole('button', { name: 'Run benchmark' })
@@ -77,7 +77,7 @@ describe('BenchmarksPanel', () => {
     const live: BenchmarkRun = { ...running, live: { ...running.live, context: { used: 16384, size: 65536 } } }
     const older: BenchmarkRun = { ...finished, id: 'run-old', benchmark_title: 'Snake' }
     mockApi([live, full, older])
-    vi.spyOn(api, 'benchmarkRun').mockResolvedValue({ ...full, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [] })
+    vi.spyOn(api, 'benchmarkRun').mockResolvedValue({ ...full, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
     renderPanel()
 
     const percent = await screen.findByText('99%')
@@ -92,19 +92,19 @@ describe('BenchmarksPanel', () => {
   })
 
   it('retries a run with its settings on the profile as it is now', async () => {
-    const chosen: BenchmarkRun = { ...finished, profile_version: 1, tools: true, tool_names: ['write_file', 'task_complete'], max_tokens: null, system_prompt_id: 'coding-agent', reasoning_level: 'high' }
+    const chosen: BenchmarkRun = { ...finished, profile_version: 1, tools: true, tool_names: ['write_file', 'finish_job'], max_tokens: null, system_prompt_id: 'coding-agent', reasoning_level: 'high' }
     const legacy: BenchmarkRun = { ...finished, id: 'run-legacy', benchmark_title: 'Snake', tools: true }
     const gone: BenchmarkRun = { ...finished, id: 'run-gone', benchmark_title: 'Pong', profile_id: 'deleted', profile_alias: 'old-profile' }
     const off: BenchmarkRun = { ...finished, id: 'run-off', benchmark_title: 'Off', profile_id: 'p2', profile_alias: 'qwen-off' }
     mockApi([chosen, legacy, gone, off])
-    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [] })
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
     renderPanel()
 
     const retry = await screen.findByRole('button', { name: 'Retry run Tetris on qwen-24gb' })
     await waitFor(() => expect(retry).toBeEnabled())
     expect(retry).toHaveAttribute('title', 'Run again with the same settings on the profile as it is now (v2, this run used v1)')
     fireEvent.click(retry)
-    await waitFor(() => expect(start).toHaveBeenLastCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: null, tools: true, tool_names: ['write_file', 'task_complete'], system_prompt_id: 'coding-agent', reasoning_level: 'high' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: null, tools: true, tool_names: ['write_file', 'finish_job'], system_prompt_id: 'coding-agent', reasoning_level: 'high' }))
 
     // A run from before tools could be chosen had them all.
     fireEvent.click(screen.getByRole('button', { name: 'Retry run Snake on qwen-24gb' }))
@@ -124,7 +124,7 @@ describe('BenchmarksPanel', () => {
 
   it('turns every file tool on or off at once, or chooses them one by one', async () => {
     mockApi([])
-    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [] })
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
     renderPanel()
 
     const all = await screen.findByRole('checkbox', { name: 'File tools' })
@@ -143,9 +143,9 @@ describe('BenchmarksPanel', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: /edit_file/ }))
     expect(all).not.toBeChecked()
     expect((all as HTMLInputElement).indeterminate).toBe(true)
-    expect(screen.getByText(/^4 of 6 tools: write_file, read_file, list_files, task_complete\./)).toBeInTheDocument()
+    expect(screen.getByText(/^4 of 6 tools: write_file, read_file, list_files, finish_job\./)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
-    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ tools: true, tool_names: ['write_file', 'read_file', 'list_files', 'task_complete'] })))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ tools: true, tool_names: ['write_file', 'read_file', 'list_files', 'finish_job'] })))
 
     // Ticking the partly chosen box turns them all on; clicking again turns them all off.
     fireEvent.click(all)
@@ -163,7 +163,7 @@ describe('BenchmarksPanel', () => {
 
   it('sends the coding agent system prompt by default, or none when chosen', async () => {
     mockApi([])
-    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [] })
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
     renderPanel()
 
     const choice = await screen.findByRole('combobox', { name: 'System prompt' })
@@ -191,6 +191,7 @@ describe('BenchmarksPanel', () => {
       output: '',
       reasoning: '',
       tool_calls: [],
+      tasks: [],
       artifacts: [],
       timeline: [
         { kind: 'reading', round: 1, start: 0, end: 5, prompt_tokens: 529 },
@@ -209,21 +210,21 @@ describe('BenchmarksPanel', () => {
 
   it('says whether a tool-using agent finished its task, and why generation ended', async () => {
     const unfinished: BenchmarkRun = { ...finished, id: 'run-3', tools: true, max_tokens: null, stats: { ...finished.stats, finish_reason: 'length', outcome: 'unfinished' } }
-    const done: BenchmarkRun = { ...finished, id: 'run-4', benchmark_title: 'Snake', tools: true, stats: { ...finished.stats, finish_reason: 'task_complete', outcome: 'completed' } }
+    const done: BenchmarkRun = { ...finished, id: 'run-4', benchmark_title: 'Snake', tools: true, stats: { ...finished.stats, finish_reason: 'finish_job', outcome: 'completed' } }
     // A tool run from before outcomes were recorded.
     const older: BenchmarkRun = { ...finished, id: 'run-5', tools: true }
     mockApi([unfinished, done, finished, older])
-    const detail: BenchmarkRunDetail = { ...unfinished, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [{ kind: 'tool_call', round: 1, start: 1, end: 9, tokens: 900, names: ['write_file'], bytes: 1300 }] }
+    const detail: BenchmarkRunDetail = { ...unfinished, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [{ kind: 'tool_call', round: 1, start: 1, end: 9, tokens: 900, names: ['write_file'], bytes: 1300 }] }
     vi.spyOn(api, 'benchmarkRun').mockResolvedValue(detail)
     renderPanel()
 
     const rows = await screen.findAllByRole('button', { name: /^View run/ })
     expect(rows).toHaveLength(4)
     expect(within(rows[0].closest('li')!).getByText('Unfinished')).toBeInTheDocument()
-    expect(within(rows[1].closest('li')!).getByText('Task complete')).toBeInTheDocument()
+    expect(within(rows[1].closest('li')!).getByText('Job finished')).toBeInTheDocument()
     // Neither a run without tools nor one from before outcomes were kept claims either.
-    expect(within(rows[2].closest('li')!).queryByText(/Unfinished|Task complete/)).not.toBeInTheDocument()
-    expect(within(rows[3].closest('li')!).queryByText(/Unfinished|Task complete/)).not.toBeInTheDocument()
+    expect(within(rows[2].closest('li')!).queryByText(/Unfinished|Job finished/)).not.toBeInTheDocument()
+    expect(within(rows[3].closest('li')!).queryByText(/Unfinished|Job finished/)).not.toBeInTheDocument()
 
     fireEvent.click(rows[0])
     const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
@@ -237,7 +238,7 @@ describe('BenchmarksPanel', () => {
 
   it('asks for a reasoning level, or leaves it to the model', async () => {
     mockApi([{ ...finished, reasoning_level: 'low' }])
-    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], artifacts: [], timeline: [] })
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
     renderPanel()
 
     const reasoning = await screen.findByRole('combobox', { name: 'Reasoning' })
@@ -292,6 +293,13 @@ describe('BenchmarksPanel', () => {
       tool_calls: [
         { round: 1, name: 'write_file', path: 'tetris/index.html', ok: true, result: 'Wrote 25 bytes to tetris/index.html' },
         { round: 1, name: 'write_file', path: 'C:/test.py', ok: false, result: "Error: 'C:/test.py' is outside your workspace." },
+        { round: 2, name: 'finish_job', path: null, ok: false, result: 'Error: final_message is required.' },
+        { round: 3, name: 'finish_job', path: null, ok: true, result: 'Job marked finished. Built Tetris in tetris/index.html.\nI had every tool I needed.' },
+      ],
+      tasks: [
+        { id: 1, title: 'Draw the board', status: 'done', source: 'prompt' },
+        { id: 2, title: 'Add the pieces', status: 'open', source: 'prompt' },
+        { id: 3, title: 'Add a bassline', status: 'deleted', source: 'agent' },
       ],
       artifacts: [{ path: 'tetris/index.html', size: 25 }, { path: 'tetris/game.js', size: 30 }],
       timeline: [],
@@ -306,7 +314,20 @@ describe('BenchmarksPanel', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
     expect(await within(dialog).findByText('2 in 3 requests')).toBeInTheDocument()
     expect(within(dialog).getByText('write_file, read_file')).toBeInTheDocument()
-    expect(within(dialog).getByText('Tool calls (2, 1 refused)')).toBeInTheDocument()
+    expect(within(dialog).getByText('Tool calls (4, 2 refused)')).toBeInTheDocument()
+    // The accepted final message sits under the artifacts, without the tool's own preamble.
+    const completion = within(dialog).getByRole('heading', { name: 'Completion message' }).closest('section')!
+    expect(completion.querySelector('pre')).toHaveTextContent(/^Built Tetris in tetris\/index\.html\. I had every tool I needed\.$/)
+    expect(completion.previousElementSibling).toHaveTextContent(/^Artifacts/)
+    // The task list shows what was ticked off, and keeps what the agent deleted.
+    const tasks = within(dialog).getByRole('heading', { name: /^Tasks/ }).closest('section')!
+    expect(within(tasks).getByText('1 of 2 done · 1 deleted')).toBeInTheDocument()
+    expect([...tasks.querySelectorAll('li')].map((item) => [item.dataset.status, item.textContent])).toEqual([
+      ['done', 'Done: Draw the board'],
+      ['open', 'Open: Add the pieces'],
+      ['deleted', 'Deleted: Add a basslineAdded by the agent'],
+    ])
+    expect(tasks.nextElementSibling).toBe(completion.previousElementSibling)
     expect(within(dialog).getByText('C:/test.py').closest('li')).toHaveAttribute('data-ok', 'false')
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Open tetris/index.html' }))
@@ -359,6 +380,7 @@ describe('BenchmarksPanel', () => {
         { round: 1, name: 'write_file', path: 'tetris/index.html', ok: true, result: 'Wrote 25 bytes to tetris/index.html' },
         { round: 1, name: 'write_file', path: 'C:/test.py', ok: false, result: "Error: 'C:/test.py' is outside your workspace." },
       ],
+      tasks: [],
       artifacts: [{ path: 'tetris/index.html', size: 25 }],
       timeline: [
         { kind: 'reading', round: 1, start: 0, end: 4.2, prompt_tokens: 529 },
@@ -406,6 +428,7 @@ describe('BenchmarksPanel', () => {
       output: '',
       reasoning: 'Plan the board.',
       tool_calls: [],
+      tasks: [],
       artifacts: [],
       timeline: [
         { kind: 'reading', round: 1, start: 0, end: 5.2, prompt_tokens: 529 },
@@ -426,7 +449,7 @@ describe('BenchmarksPanel', () => {
 
   it('shows a finished run with its output, and deletes it after confirming', async () => {
     mockApi([finished])
-    const detail: BenchmarkRunDetail = { ...finished, prompt: 'make tetris', system_prompt: null, samples: [{ t: 3, phase: 'decode', tokens: 10, rate: 20 }, { t: 4, phase: 'decode', tokens: 30, rate: 21 }], output: '<html>tetris</html>', reasoning: 'Plan the grid', tool_calls: [], artifacts: [], timeline: [] }
+    const detail: BenchmarkRunDetail = { ...finished, prompt: 'make tetris', system_prompt: null, samples: [{ t: 3, phase: 'decode', tokens: 10, rate: 20 }, { t: 4, phase: 'decode', tokens: 30, rate: 21 }], output: '<html>tetris</html>', reasoning: 'Plan the grid', tool_calls: [], tasks: [], artifacts: [], timeline: [] }
     vi.spyOn(api, 'benchmarkRun').mockResolvedValue(detail)
     const remove = vi.spyOn(api, 'deleteBenchmarkRun').mockResolvedValue(undefined)
     renderPanel()

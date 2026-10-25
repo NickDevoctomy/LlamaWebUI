@@ -1847,6 +1847,11 @@ def create_app(
                 if progress
                 else record.tool_calls
             )
+            payload["tasks"] = (
+                [dict(task) for task in cast(list[dict[str, object]], progress["tasks"])]
+                if progress
+                else record.tasks
+            )
             payload["timeline"] = (
                 [dict(entry) for entry in cast(list[dict[str, object]], progress["timeline"])]
                 if progress

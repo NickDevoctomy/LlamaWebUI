@@ -763,6 +763,15 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .benchmark-tool-list .benchmark-option[data-disabled] { cursor: not-allowed; }
 .benchmark-tool-list .benchmark-option[data-disabled] code { color: var(--muted); }
 .benchmark-empty { margin: 0; color: var(--muted); font-size: 12.5px; }
+.benchmark-task-count { margin-left: 6px; color: var(--muted); font-size: 12px; font-weight: 400; }
+.benchmark-task-list { margin: 0; padding: 0; display: grid; gap: 2px; list-style: none; }
+.benchmark-task-list li { padding: 5px 10px; border-radius: var(--radius-xs); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 1px 9px; color: var(--fg); background: var(--surface-2); font-size: 12.5px; line-height: 1.45; }
+.benchmark-task-list li > svg { margin-top: 1px; color: var(--muted); }
+.benchmark-task-list li[data-status='done'] > svg { color: var(--good-solid); }
+.benchmark-task-list li[data-status='deleted'] { color: var(--muted); }
+.benchmark-task-list li[data-status='deleted'] .benchmark-task-title { text-decoration: line-through; }
+.benchmark-task-title { overflow-wrap: anywhere; }
+.benchmark-task-list small { grid-column: 2; color: var(--muted); font-size: 11px; }
 .artifact-list { margin: 0; padding: 0; display: grid; gap: 4px; list-style: none; }
 .artifact-link { width: 100%; min-height: 34px; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; color: var(--fg); background: var(--surface-2); font: 12.5px var(--font-mono); text-align: left; cursor: pointer; }
 .artifact-link:hover { border-color: var(--line-strong); background: var(--hover); }
