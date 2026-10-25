@@ -109,6 +109,12 @@ class BenchmarkRunRecord(Base):
     tasks: Mapped[list[dict[str, object]]] = mapped_column(
         JSON, default=list, server_default=text("'[]'")
     )
+    # For a run with the TypeScript tools, whether check_typescript was strict; None
+    # for every other run.
+    typescript_strict: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Whether each tool call kept the arguments the model sent and its whole result,
+    # rather than a short excerpt, so failed calls can be looked into afterwards.
+    verbose_log: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     # What generation spent its time on: reading, thinking, answering and tool calls.
     timeline: Mapped[list[dict[str, object]]] = mapped_column(
         JSON, default=list, server_default=text("'[]'")

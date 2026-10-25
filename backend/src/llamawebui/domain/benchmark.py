@@ -1,7 +1,12 @@
 """Bundled benchmark prompts: one plain-text prompt per file.
 
 A benchmark prompt may start with YAML frontmatter between ``---`` lines. Its
-``tasks`` key lists the tasks an agent with the planning tools starts with.
+``tasks`` key lists the tasks an agent with the planning tools starts with, and its
+``typescript`` key makes it a TypeScript benchmark, where the agent writes TypeScript
+modules and builds the page from them:
+
+    typescript:
+      strict: true   # optional; type checks are non-strict by default
 """
 
 from __future__ import annotations
@@ -16,7 +21,8 @@ BENCHMARK_DIRECTORY = Path(__file__).resolve().parent.parent / "benchmarks"
 _ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 # Frontmatter: YAML between a first line of --- and the next line of ---.
 _FRONTMATTER = re.compile(r"\A---[ \t]*\r?\n(.*?)^---[ \t]*$", re.DOTALL | re.MULTILINE)
-FRONTMATTER_KEYS = frozenset({"tasks"})
+FRONTMATTER_KEYS = frozenset({"tasks", "typescript"})
+TYPESCRIPT_KEYS = frozenset({"strict"})
 
 
 class BenchmarkError(ValueError):
@@ -30,6 +36,12 @@ class Benchmark:
     prompt: str
     # Tasks an agent with the planning tools starts with, from the file's frontmatter.
     tasks: tuple[str, ...] = field(default=())
+    # None for a plain benchmark; for a TypeScript one, whether type checks are strict.
+    typescript_strict: bool | None = None
+
+    @property
+    def typescript(self) -> bool:
+        return self.typescript_strict is not None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -37,6 +49,9 @@ class Benchmark:
             "title": self.title,
             "prompt": self.prompt,
             "tasks": list(self.tasks),
+            "typescript": (
+                {"strict": self.typescript_strict} if self.typescript_strict is not None else None
+            ),
         }
 
 
@@ -101,6 +116,23 @@ def _tasks(name: str, value: object) -> tuple[str, ...]:
     return tuple(" ".join(item.split()) for item in value)
 
 
+def _typescript_strict(name: str, value: object) -> bool | None:
+    """None when the key is absent; true or an empty mapping turns TypeScript on."""
+    if value is None or value is False:
+        return None
+    if value is True:
+        return False
+    if not isinstance(value, dict):
+        raise BenchmarkError(f"{name}: typescript must be true or a mapping of settings")
+    unknown = sorted(str(key) for key in value if key not in TYPESCRIPT_KEYS)
+    if unknown:
+        raise BenchmarkError(f"{name}: unknown typescript settings: {', '.join(unknown)}")
+    strict = value.get("strict", False)
+    if not isinstance(strict, bool):
+        raise BenchmarkError(f"{name}: typescript strict must be true or false")
+    return strict
+
+
 def load_benchmarks(directory: Path = BENCHMARK_DIRECTORY) -> tuple[Benchmark, ...]:
     """Load every ``*.txt`` prompt; the file name, without extension, is its id."""
     benchmarks: list[Benchmark] = []
@@ -109,7 +141,11 @@ def load_benchmarks(directory: Path = BENCHMARK_DIRECTORY) -> tuple[Benchmark, .
         settings, prompt = _split_frontmatter(name, text)
         benchmarks.append(
             Benchmark(
-                id=identifier, title=title, prompt=prompt, tasks=_tasks(name, settings.get("tasks"))
+                id=identifier,
+                title=title,
+                prompt=prompt,
+                tasks=_tasks(name, settings.get("tasks")),
+                typescript_strict=_typescript_strict(name, settings.get("typescript")),
             )
         )
     return tuple(benchmarks)

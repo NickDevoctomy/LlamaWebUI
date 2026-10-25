@@ -351,6 +351,8 @@ class BenchmarkRunRequest(BaseModel):
     reasoning_level: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = (
         None
     )
+    # Keep each tool call's arguments and whole result in its log, not a short excerpt.
+    verbose_log: bool = False
 
 
 class LoginRequest(BaseModel):
@@ -1818,6 +1820,8 @@ def create_app(
             "tool_names": record.tool_names,
             "system_prompt_id": record.system_prompt_id,
             "reasoning_level": record.reasoning_level,
+            "typescript_strict": record.typescript_strict,
+            "verbose_log": record.verbose_log,
             "state": record.state,
             "stage": progress["stage"] if progress else record.stage,
             "error": record.error,
@@ -1869,6 +1873,13 @@ def create_app(
     @app.post("/api/settings/benchmark-tools/eslint", status_code=status.HTTP_202_ACCEPTED)
     async def install_eslint(request: Request) -> dict[str, object]:
         linter = cast(BenchmarkLinter, request.app.state.benchmark_linter)
+        runner = cast(BenchmarkRunner, request.app.state.benchmark_runner)
+        if linter.installed and runner.active_run_id is not None:
+            # Updating replaces the install, which the running benchmark may be using.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="wait for the running benchmark to finish before updating ESLint",
+            )
         try:
             linter.start_install()
         except LinterError as error:
@@ -1972,6 +1983,7 @@ def create_app(
                 tool_names=run_request.tool_names,
                 system_prompt=system_prompt,
                 reasoning_level=run_request.reasoning_level,
+                verbose_log=run_request.verbose_log,
             )
         except BenchmarkBusyError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error

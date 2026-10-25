@@ -2,7 +2,8 @@
 
 Linting is ESLint's own work, with eslint-plugin-html for the scripts inside HTML pages.
 This module only installs a pinned Node.js and pinned packages into the data folder,
-then hands ESLint a file's text and reports what it found.
+then hands ESLint a file's text and reports what it found. The same install carries
+TypeScript and esbuild, which ``benchmark_typescript`` runs for the TypeScript tools.
 """
 
 from __future__ import annotations
@@ -34,6 +35,9 @@ PACKAGES: dict[str, str] = {
     "@eslint/js": "10.0.1",
     "eslint-plugin-html": "8.2.1",
     "globals": "17.13.0",
+    # For the TypeScript tools: the native compiler checks types, esbuild bundles.
+    "typescript": "7.0.2",
+    "esbuild": "0.28.2",
 }
 NODE_DIST = "https://nodejs.org/dist"
 # The extensions ESLint is set up for here; anything else is refused before it runs.
@@ -180,6 +184,16 @@ class BenchmarkLinter:
     def installed(self) -> bool:
         return self._manifest() is not None
 
+    @property
+    def typescript_installed(self) -> bool:
+        """Whether the install carries TypeScript and esbuild; older installs do not."""
+        return self.installed and all(path.is_file() for path in self._typescript_files())
+
+    @property
+    def outdated(self) -> bool:
+        """Installed, but from before the TypeScript tools; installing again adds them."""
+        return self.installed and not self.typescript_installed
+
     def status(self) -> dict[str, object]:
         manifest = self._manifest()
         state = (
@@ -196,6 +210,8 @@ class BenchmarkLinter:
             "versions": manifest["versions"] if manifest else None,
             "installed_at": manifest["installed_at"] if manifest else None,
             "size": _folder_size(self.root) if manifest else None,
+            "typescript": self.typescript_installed,
+            "outdated": self.outdated,
             "progress": dict(self._progress) if self.installing else None,
             "error": self._error if state == "failed" else None,
             # What an install fetches, so the page can say before it starts.
@@ -220,6 +236,15 @@ class BenchmarkLinter:
     def _eslint(self, root: Path | None = None) -> Path:
         return (root or self.root) / "node_modules" / "eslint" / "bin" / "eslint.js"
 
+    def tsc(self, root: Path | None = None) -> Path:
+        return (root or self.root) / "node_modules" / "typescript" / "bin" / "tsc"
+
+    def esbuild(self, root: Path | None = None) -> Path:
+        return (root or self.root) / "node_modules" / "esbuild" / "bin" / "esbuild"
+
+    def _typescript_files(self, root: Path | None = None) -> tuple[Path, Path]:
+        return self.tsc(root), self.esbuild(root)
+
     def _npm(self, root: Path) -> Path:
         base = root / "node"
         if self._platform == "win32":
@@ -231,7 +256,7 @@ class BenchmarkLinter:
     def start_install(self) -> None:
         if self.installing:
             raise LinterError("the linter is already being installed")
-        if self.installed:
+        if self.installed and not self.outdated:
             raise LinterError("the linter is already installed")
         self._error = None
         self._progress = {"stage": "downloading", "received": 0, "total": None}
@@ -337,6 +362,8 @@ class BenchmarkLinter:
             raise LinterError(f"npm could not install ESLint: {_last_line(result.stderr)}")
         if not self._eslint(root).is_file():
             raise LinterError("npm finished but ESLint is missing")
+        if not all(path.is_file() for path in self._typescript_files(root)):
+            raise LinterError("npm finished but TypeScript or esbuild is missing")
 
     def _env(self, root: Path, **extra: str) -> dict[str, str]:
         keep = (
@@ -348,6 +375,13 @@ class BenchmarkLinter:
         env["NO_UPDATE_NOTIFIER"] = "1"
         env.update(extra)
         return env
+
+    def run_node(
+        self, script: Path, arguments: list[str], cwd: Path, timeout: float
+    ) -> CommandResult:
+        """Run one of the installed packages' scripts with the installed Node.js."""
+        command = [str(self._node()), str(script), *arguments]
+        return self._run(command, cwd, self._env(self.root), timeout, None)
 
     # -- linting ------------------------------------------------------------------------
 

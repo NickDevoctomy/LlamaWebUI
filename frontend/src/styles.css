@@ -782,7 +782,15 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .tool-call-list li[data-ok='false'] { border-left-color: var(--bad-solid); background: color-mix(in srgb, var(--bad-bg) 60%, var(--surface)); }
 .tool-call-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; color: var(--fg); font: 600 12px var(--font-mono); }
 .tool-call-name code { color: var(--fg-2); font-weight: 400; overflow-wrap: anywhere; }
-.tool-call-result { color: var(--muted); font: 11.5px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-call-result { max-height: 240px; overflow: auto; color: var(--muted); font: 11.5px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-call-arguments { min-width: 0; display: grid; gap: 6px; font-size: 12px; }
+.tool-call-arguments summary { color: var(--fg-2); }
+.tool-call-arguments dl { margin: 0; display: grid; gap: 6px; }
+.tool-call-arguments dl > div { min-width: 0; display: grid; gap: 3px; }
+.tool-call-arguments dt { color: var(--fg-2); font: 600 11.5px var(--font-mono); }
+.tool-call-arguments dd { min-width: 0; margin: 0; }
+.tool-call-arguments p { margin: 0; }
+.tool-call-arguments pre { max-height: 240px; }
 .artifact-viewer { display: grid; gap: 10px; }
 .artifact-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 .artifact-toolbar > span:last-child { margin-left: auto; display: flex; gap: 6px; }

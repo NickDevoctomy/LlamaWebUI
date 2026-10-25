@@ -518,6 +518,7 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
                 "max_tokens": 128,
                 "system_prompt_id": "coding-agent",
                 "tool_names": ["write_file", "task_complete"],
+                "verbose_log": True,
             },
         )
         run_id = started.json()["id"]
@@ -557,6 +558,7 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
     assert run["system_prompt_id"] == "coding-agent"
     assert "finish_job" in str(run["system_prompt"])
     assert run["tools"] is True
+    assert run["verbose_log"] is True
     # The old name for finish_job still works, so an old run can be run again.
     assert run["tool_names"] == ["write_file", "finish_job"]
     assert unknown_tool.status_code == 422
@@ -568,6 +570,8 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
         "delete_file",
         "list_files",
         "check_file",
+        "check_typescript",
+        "bundle_typescript",
         "list_tasks",
         "create_task",
         "complete_task",

@@ -106,9 +106,14 @@ class FakeCommands:
         if "install" in command:
             if self.npm_code:
                 return CommandResult(self.npm_code, "", "npm ERR! network\nnpm ERR! offline")
-            eslint = cwd / "node_modules" / "eslint" / "bin" / "eslint.js"
-            eslint.parent.mkdir(parents=True)
-            eslint.write_text("eslint", encoding="utf-8")
+            for package, script in (
+                ("eslint", "eslint.js"),
+                ("typescript", "tsc"),
+                ("esbuild", "esbuild"),
+            ):
+                file = cwd / "node_modules" / package / "bin" / script
+                file.parent.mkdir(parents=True)
+                file.write_text(package, encoding="utf-8")
             return CommandResult(0, "", "")
         return self.eslint
 

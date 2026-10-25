@@ -604,7 +604,9 @@ async def test_finish_job_needs_the_final_message_and_keeps_it_whole(tmp_path: P
 
 
 # Every tool a run gets by default while ESLint is not installed.
-UNLINTED = [name for name in TOOL_NAMES if name != "check_file"]
+UNLINTED = [
+    name for name in TOOL_NAMES if name != "check_file" and not name.endswith("_typescript")
+]
 
 
 def test_the_workspace_note_names_only_the_tools_a_run_was_given() -> None:
@@ -625,7 +627,9 @@ def test_the_workspace_note_names_only_the_tools_a_run_was_given() -> None:
 
 
 def test_tools_are_chosen_by_name_in_offer_order() -> None:
-    assert choose_tools(None) == list(TOOL_NAMES)
+    plain = [name for name in TOOL_NAMES if not name.endswith("_typescript")]
+    assert choose_tools(None) == plain
+    assert choose_tools(None, typescript=True) == list(TOOL_NAMES)
     assert choose_tools(["list_files", "write_file", "write_file"]) == ["write_file", "list_files"]
     assert choose_tools([]) == []
     with pytest.raises(ValueError, match="unknown tools: run_shell"):
@@ -937,6 +941,54 @@ def test_bad_tool_arguments_are_reported_to_the_model(tmp_path: Path) -> None:
     reply, entry = _call_tool(workspace, "delete_file", json.dumps({"path": "../app.db"}))
     assert "'..' is not allowed" in reply
     assert entry["ok"] is False
+    assert "arguments" not in entry
+
+
+def test_a_verbose_log_keeps_the_arguments_and_the_whole_result(tmp_path: Path) -> None:
+    workspace = BenchmarkWorkspace(tmp_path / "run")
+    workspace.write("big.txt", "x" * 1000)
+    sent = json.dumps({"path": "big.txt", "old_string": "y\t", "new_string": "z"})
+    reply, entry = _call_tool(workspace, "edit_file", sent, verbose=True)
+    assert reply.startswith("Error: Could not find old_string")
+    assert entry["arguments"] == sent
+    reply, entry = _call_tool(
+        workspace, "read_file", json.dumps({"path": "big.txt"}), verbose=True
+    )
+    assert entry["result"] == reply == "1: " + "x" * 1000
+    # Arguments that are not JSON are kept as sent, since they are why the call failed.
+    _, entry = _call_tool(workspace, "write_file", '{"path": "a', verbose=True)
+    assert entry["arguments"] == '{"path": "a'
+
+
+@pytest.mark.asyncio
+async def test_a_run_keeps_a_verbose_log_only_when_asked(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    write = {"path": "index.html", "content": "<html>"}
+    client.replies = [
+        _round([_tool_call(0, "write_file", write)], finish="tool_calls", generated=5,
+               milliseconds=10.0),
+        _round([], finish="stop", generated=1, milliseconds=1.0),
+        _round([_tool_call(0, "write_file", write)], finish="tool_calls", generated=5,
+               milliseconds=10.0),
+        _round([], finish="stop", generated=1, milliseconds=1.0),
+        _round([], finish="stop", generated=1, milliseconds=1.0),
+    ]
+    runner, runs, _ = _runner(engine, client)
+
+    verbose = runner.start(profile, BENCHMARK, None, tools=True, verbose_log=True)
+    await runner.wait()
+    plain = runner.start(profile, BENCHMARK, None, tools=True)
+    await runner.wait()
+    # Only tool calls are logged, so a run without tools does not keep the setting.
+    untooled = runner.start(profile, BENCHMARK, None, tools=False, verbose_log=True)
+    await runner.wait()
+
+    assert runs.get(verbose.id).verbose_log is True
+    assert runs.get(verbose.id).tool_calls[0]["arguments"] == json.dumps(write)
+    assert runs.get(plain.id).verbose_log is False
+    assert "arguments" not in runs.get(plain.id).tool_calls[0]
+    assert runs.get(untooled.id).verbose_log is False
 
 
 def test_startup_prunes_folders_of_runs_that_no_longer_exist(tmp_path: Path) -> None:

@@ -20,7 +20,7 @@ function InstallProgress({ progress }: { progress: NonNullable<LinterStatus['pro
   </div>
 }
 
-/** ESLint, downloaded on request, gives benchmark agents the check_file tool. */
+/** ESLint, downloaded on request, gives benchmark agents check_file and, with TypeScript and esbuild, the TypeScript tools. */
 function EslintRow({ canManage }: { canManage: boolean }) {
   const queryClient = useQueryClient()
   const tools = useQuery({
@@ -41,11 +41,13 @@ function EslintRow({ canManage }: { canManage: boolean }) {
   return <div className="record-row">
     <span className="record-icon"><FileCheck2 size={17} /></span>
     <div className="record-copy">
-      <strong className="record-title">ESLint {eslint.state === 'installed' && <span className="profile-tag">Installed</span>}</strong>
-      <span className="record-description">Lints JavaScript, and the scripts inside HTML pages, for the <code>check_file</code> benchmark tool. Runs on its own copy of Node.js, kept in the data folder.</span>
-      {versions && <span title={eslint.state === 'installed' ? 'Installed versions' : 'Versions an install fetches'}>{eslint.state === 'installed' ? '' : 'Fetches '}Node.js {versions.node} · eslint {versions.eslint} · eslint-plugin-html {versions['eslint-plugin-html']}{eslint.size ? ` · ${formatBytes(eslint.size)}` : ''}</span>}
+      <strong className="record-title">ESLint and TypeScript {eslint.state === 'installed' && <span className="profile-tag">{eslint.outdated ? 'Update available' : 'Installed'}</span>}</strong>
+      <span className="record-description">Lints JavaScript, and the scripts inside HTML pages, for the <code>check_file</code> benchmark tool. TypeScript and esbuild give TypeScript benchmarks <code>check_typescript</code> and <code>bundle_typescript</code>. Runs on its own copy of Node.js, kept in the data folder.</span>
+      {versions && <span title={eslint.state === 'installed' ? 'Installed versions' : 'Versions an install fetches'}>{eslint.state === 'installed' ? '' : 'Fetches '}Node.js {versions.node} · eslint {versions.eslint} · eslint-plugin-html {versions['eslint-plugin-html']}{versions.typescript ? ` · typescript ${versions.typescript} · esbuild ${versions.esbuild}` : ''}{eslint.size ? ` · ${formatBytes(eslint.size)}` : ''}</span>}
+      {eslint.outdated && <span>Installed before the TypeScript tools. Update to add TypeScript {eslint.pinned.typescript} and esbuild {eslint.pinned.esbuild}; it downloads everything again.</span>}
     </div>
     <span className="row-actions">
+      {eslint.outdated && <button className="button primary compact" disabled={!canManage || busy} onClick={() => install.mutate()} title={canManage ? undefined : 'Changing settings needs the settings.write privilege'} type="button">{install.isPending ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />} Update</button>}
       {eslint.state === 'installed'
         ? <button className="button secondary compact" disabled={!canManage || busy} onClick={() => remove.mutate()} type="button">{remove.isPending ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />} Remove</button>
         : <button className="button primary compact" disabled={!canManage || busy} onClick={() => install.mutate()} title={canManage ? undefined : 'Changing settings needs the settings.write privilege'} type="button">{busy ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />} {eslint.state === 'failed' ? 'Try again' : 'Download'}</button>}

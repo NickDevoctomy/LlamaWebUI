@@ -1,17 +1,21 @@
 ---
+# A TypeScript benchmark: the agent writes modules under src/ and builds index.html
+# with bundle_typescript. check_typescript is non-strict; set strict: true to tighten it.
+typescript:
+  strict: false
 # The build plan, seeded as the agent's task list.
 tasks:
-  - 'Step 1, skeleton and loop: HTML structure, CSS layout (desktop and mobile), constants block, fixed-tick loop with accumulator, empty board drawn with grid. Done when the board and panels sit centred at the correct size and resize cleanly.'
-  - 'Step 2, pieces and movement: shapes, spawn, collision, left/right/down, 7-bag, gravity table, ghost, locking, line clears, levels. Done when a full game can be played with arrow keys and lines clear.'
-  - 'Step 3, SRS and lock delay: both rotation directions with kick tables, lock delay with the 15-reset limit and lowest-row rule, hard drop, soft drop. Done when the section 5 sanity checks pass and a piece can be slid along the floor for exactly 15 moves.'
-  - 'Step 4, input polish: event queue, DAS/ARR, direction priority, DAS carry-over, hold, pause, key bindings, blur handling. Done when tapping a key once always moves one cell, and holding it shifts after 170 ms then every 50 ms.'
-  - 'Step 5, scoring: T-spin detection, B2B, combo, drop points, score/level/lines display with separators. Done when a Tetris at level 1 adds 800, and a second consecutive Tetris adds 1,200 plus a combo bonus of 50 if it was the very next piece.'
-  - 'Step 6, screens and states: title, pause (blurred board, hidden previews), game-over grey-out and overlay, high score, restart. Done when every transition in section 10 works.'
-  - 'Step 7, visual style: cached glowing block sprites, palette, typography, synthwave background, panel styling. Done when it matches section 11 and holds 60 fps.'
+  - 'Step 1, skeleton and loop: the src/index.html template with the HTML structure and CSS layout (desktop and mobile), src/main.ts as the entry, a constants module, fixed-tick loop with accumulator, empty board drawn with grid, bundled into index.html. Done when the layout code applies the section 11 sizes and recalculates them on resize.'
+  - 'Step 2, pieces and movement: shapes, spawn, collision, left/right/down, 7-bag, gravity table, ghost, locking, line clears, levels. Done when the code supports a whole game with the arrow keys: pieces spawn, move, lock, clear lines and level up.'
+  - 'Step 3, SRS and lock delay: both rotation directions with kick tables, lock delay with the 15-reset limit and lowest-row rule, hard drop, soft drop. Done when tracing the section 5 sanity checks through the code gives the results stated there, and a grounded piece stops resetting its lock timer after 15 moves.'
+  - 'Step 4, input polish: event queue, DAS/ARR, direction priority, DAS carry-over, hold, pause, key bindings, blur handling. Done when the code path for a single tap moves exactly one cell, and a held key shifts after 170 ms then every 50 ms.'
+  - 'Step 5, scoring: T-spin detection, B2B, combo, drop points, score/level/lines display with separators. Done when working through the scoring code by hand gives 800 for a Tetris at level 1, and 1,200 plus a combo bonus of 50 for a second Tetris from the very next piece.'
+  - 'Step 6, screens and states: title, pause (blurred board, hidden previews), game-over grey-out and overlay, high score, restart. Done when every transition in section 10 is in the state machine.'
+  - 'Step 7, visual style: cached glowing block sprites, palette, typography, synthwave background, panel styling. Done when every colour, size and draw-order rule in section 11 is in the code, and blocks are drawn from the cached sprites.'
   - 'Step 8, effects: lock flash, line flash/dissolve, particles, Tetris shake and text, T-spin/B2B/combo text, hard-drop trail and bump, level-up sweep, score tween, reduced-motion handling.'
   - 'Step 9, audio: the sound effects table, mute toggle and icon, persistence of mute, then the bassline.'
-  - 'Step 10, mobile: touch buttons with DAS/ARR, swipe gestures, mobile layout check on a 375x667 viewport.'
-  - 'Step 11, final pass: run the section 15 acceptance checklist, remove debug output, confirm no external requests.'
+  - 'Step 10, mobile: touch buttons with DAS/ARR, swipe gestures, and the mobile layout, checked by working the section 11 cell-size formula through for a 375x667 viewport.'
+  - 'Step 11, final pass: review the source against the section 15 acceptance checklist item by item, remove debug output, confirm there are no external URLs, then check the types with check_typescript and build the final index.html with bundle_typescript.'
 ---
 
 # Neon Tetris — Low-Level Build Spec
@@ -22,11 +26,14 @@ You are writing a complete Tetris clone called NEON TETRIS. Every design decisio
 
 Output requirements:
 
-- One file: `index.html`, containing all HTML, CSS and JavaScript inline.
-- No external libraries, fonts, images, audio files or network requests of any kind.
-- Output the full file in one go. No placeholders, no "rest of code here", no TODOs.
-- Plain modern JavaScript (ES2020), no build step, no frameworks. Use `"use strict"` inside a single IIFE or module script.
-- Must run correctly by opening the file directly from disk in current Chrome, Firefox, Safari and Edge, desktop and mobile.
+- Write the game in TypeScript, as the modules listed in section 14 under `src/`, with `src/main.ts` as the entry point.
+- Write the page as the template `src/index.html`: all the HTML and CSS, with the line `<!-- typescript-bundle -->` where the script goes. No `<script>` tags of your own.
+- Build the deliverable with `bundle_typescript`, which bundles the modules and writes `index.html` with the script inline. Never write `index.html` yourself, and build it again after every change.
+- The finished `index.html` is one self-contained file: no external libraries, fonts, images, audio files or network requests of any kind.
+- No frameworks and no npm packages: modules import only each other, which is all `bundle_typescript` can resolve.
+- Complete code only: no placeholders, no "rest of code here", no TODOs.
+- Give exported functions and shared state explicit types, and keep `check_typescript` free of errors.
+- Write it to run by opening `index.html` directly from disk in current Chrome, Firefox, Safari and Edge, desktop and mobile. You have no browser to try it in, so follow this spec exactly rather than relying on testing.
 - Only ONE next piece is shown (not five). This overrides any habit from other Tetris versions.
 
 Units used throughout: ms = milliseconds, px = CSS pixels, "cell" = one board square, "tick" = one fixed logic step of 1000/60 ms (≈16.667 ms).
@@ -40,14 +47,14 @@ Game logic runs on a fixed 60 Hz tick; rendering runs once per `requestAnimation
 3. While accumulator ≥ TICK\_MS: run one logic tick, subtract TICK\_MS. Cap at 8 ticks per frame; if still behind, discard the remainder.
 4. After ticks, render once. Rendering reads state only; it never changes game state.
 5. Purely cosmetic effects (particles, background grid scroll, screen shake, text pop-ups, score counter tween) may use real frame delta in ms, but must also freeze while paused.
-6. Target 60 fps rendering on a mid-range phone. Avoid per-frame allocations in hot paths (reuse arrays/objects, no new closures per frame).
+6. Write rendering for 60 fps on a mid-range phone: avoid per-frame allocations in hot paths (reuse arrays/objects, no new closures per frame).
 7. On `visibilitychange` to hidden, or window `blur`, auto-pause if currently playing.
 
 Input events are captured by listeners as they arrive and queued; the queue is drained at the start of each logic tick so no press is ever lost, even a press and release that both happen between two ticks.
 
 ## 3. Tunable constants
 
-Declare every value below as a named, upper-case constant in one block at the top of the script, grouped by the headings shown. No magic numbers elsewhere.
+Declare every value below as a named, upper-case, exported constant in `src/constants.ts`, grouped by the headings shown. No magic numbers elsewhere.
 
 | Group | Constant | Value |
 | --- | --- | --- |
@@ -165,7 +172,7 @@ Rotation procedure (clockwise or counter-clockwise):
 | L→0 | (0, 0) | (+1, 0) | (−2, 0) | (+1, +2) | (−2, −1) |
 | 0→L | (0, 0) | (−1, 0) | (+2, 0) | (−1, −2) | (+2, +1) |
 
-Sanity check the implementation: a T piece in state 0 sitting flat on the floor, rotated clockwise, must succeed with test 1. An I piece in state 0 against the left wall (box x = 0) rotated clockwise must succeed (test 1 places it in column 2).
+Sanity check the implementation by tracing these through your rotation code and the tables (you cannot run it): a T piece in state 0 sitting flat on the floor, rotated clockwise, must succeed with test 1. An I piece in state 0 against the left wall (box x = 0) rotated clockwise must succeed (test 1 places it in column 2).
 
 ## 6. Gravity, drops and lock delay
 
@@ -432,24 +439,27 @@ Noise: generate one 1-second white-noise AudioBuffer at startup and reuse it.
 
 **Persistence.** Store the high score (integer) under `neonTetris.highScore` and mute ("1" or "0") under `neonTetris.muted` in localStorage. Wrap every read and write in try/catch; on any failure fall back to in-memory values (high score 0, unmuted) and never show an error. Validate loaded values (non-negative finite integer for score).
 
-**Code organisation** inside the single script, in this order, each as a clearly commented section with no cross-section reaching into internals:
+**Code organisation:** one TypeScript module per area under `src/`, each exporting only what other modules need, with no module reaching into another's internals:
 
-1. Constants (section 3 values, colours, gravity table, piece shapes, kick tables).
-2. Storage helpers (safe get/set).
-3. Game logic: board, piece, bag, collision, movement, rotation, gravity, lock delay, hold, line detection, T-spin, scoring, levels, game state machine. Pure state + functions; no DOM, canvas or audio calls. Logic emits events (e.g. "moved", "rotated", "locked", "cleared" with line count/T-spin/B2B/combo, "hardDrop" with start/end rows, "levelUp", "gameOver") into an event list that the rendering and audio layers consume after each tick.
-4. Input: keyboard, touch buttons, swipe; translates raw events into the action queue and held-key state.
-5. Audio: context setup, sound functions, bassline scheduler, mute.
-6. Rendering: block sprite cache, board canvas, previews, background canvas, effects/particles, HTML panel updates (only touch the DOM when a displayed value actually changes).
-7. Layout: cell-size calculation and resize handling.
-8. Main loop and boot.
+1. `constants.ts`: section 3 values, colours, gravity table, piece shapes, kick tables.
+2. `storage.ts`: storage helpers (safe get/set).
+3. `logic.ts`: board, piece, bag, collision, movement, rotation, gravity, lock delay, hold, line detection, T-spin, scoring, levels, game state machine. Pure state + functions; no DOM, canvas or audio calls. Logic emits events (e.g. "moved", "rotated", "locked", "cleared" with line count/T-spin/B2B/combo, "hardDrop" with start/end rows, "levelUp", "gameOver") into an event list that the rendering and audio layers consume after each tick. Split it into further modules (for example `rotation.ts`, `scoring.ts`) if it grows large.
+4. `input.ts`: keyboard, touch buttons, swipe; translates raw events into the action queue and held-key state.
+5. `audio.ts`: context setup, sound functions, bassline scheduler, mute.
+6. `render.ts`: block sprite cache, board canvas, previews, background canvas, effects/particles, HTML panel updates (only touch the DOM when a displayed value actually changes).
+7. `layout.ts`: cell-size calculation and resize handling.
+8. `main.ts`: main loop and boot; the entry point `bundle_typescript` builds from.
 
-**HTML structure:** a root container holding the background canvas, the game layout (left panel, board wrapper containing the board canvas, effects layer, overlays and combo label, right panel), and the touch-control container. Set the viewport meta to `width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover`. Body: margin 0, overflow hidden, `user-select: none`, `-webkit-tap-highlight-color: transparent`.
+Keep each module small enough to write in one go, and change existing modules with edits rather than rewriting them.
+
+**HTML structure** (in `src/index.html`, with `<!-- typescript-bundle -->` just before `</body>`, so the script runs after the elements it looks up exist): a root container holding the background canvas, the game layout (left panel, board wrapper containing the board canvas, effects layer, overlays and combo label, right panel), and the touch-control container. Set the viewport meta to `width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover`. Body: margin 0, overflow hidden, `user-select: none`, `-webkit-tap-highlight-color: transparent`.
 
 ## 15. Acceptance checklist
 
-The finished file must pass every item.
+The finished game must meet every item. You cannot run it, so before finishing, go through the source item by item and confirm each one from the code, tracing the logic by hand where an item gives numbers.
 
-- [ ] Single `index.html`, opens from disk, zero network requests, zero console errors.
+- [ ] `check_typescript` reports no errors, and `index.html` was built by `bundle_typescript` from the latest source.
+- [ ] Single `index.html`, works from disk: no external URLs anywhere in the source, and every element ID the code looks up exists in `src/index.html`.
 - [ ] Exactly one next piece is shown.
 - [ ] Every 7 consecutive pieces from a fresh bag contain each piece type once.
 - [ ] Level 1 gravity is 1 row per second; level 10 is 64 ms per row; speed is identical on 60 Hz and 144 Hz displays.
@@ -465,4 +475,4 @@ The finished file must pass every item.
 - [ ] Arrow keys and space never scroll the page.
 - [ ] Mobile (< 700 px): hold/next row, stats row, board, touch buttons; controls panel hidden; swipes work.
 - [ ] Reduced-motion setting disables shake, bump and particles.
-- [ ] All tunables are named constants at the top of the script.
+- [ ] All tunables are named constants in `src/constants.ts`.

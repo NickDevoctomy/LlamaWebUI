@@ -332,7 +332,7 @@ function ContextFigure({ run }: { run: BenchmarkRun }) {
 /** The same benchmark and settings as an earlier run; the profile is whatever it is now. */
 function retryRequest(run: BenchmarkRun) {
   // Runs from before tools could be chosen had them all, which null asks for.
-  return { profile_id: run.profile_id, benchmark_id: run.benchmark_id, max_tokens: run.max_tokens, tools: run.tools, tool_names: run.tools ? run.tool_names ?? null : [], system_prompt_id: run.system_prompt_id, reasoning_level: run.reasoning_level }
+  return { profile_id: run.profile_id, benchmark_id: run.benchmark_id, max_tokens: run.max_tokens, tools: run.tools, tool_names: run.tools ? run.tool_names ?? null : [], system_prompt_id: run.system_prompt_id, reasoning_level: run.reasoning_level, verbose_log: Boolean(run.verbose_log) }
 }
 
 function RetryButton({ run, profile, blocker, pending, onRetry }: { run: BenchmarkRun; profile?: Profile; blocker?: string; pending: boolean; onRetry: () => void }) {
@@ -341,8 +341,22 @@ function RetryButton({ run, profile, blocker, pending, onRetry }: { run: Benchma
   return <button aria-label={`Retry run ${run.benchmark_title} on ${run.profile_alias}`} className="icon-button small" disabled={Boolean(reason) || pending || run.state === 'running'} onClick={onRetry} title={reason ?? `Run again with the same settings on the profile as it is now (${version})`} type="button"><RotateCcw size={15} /></button>
 }
 
+// Offered only on a TypeScript benchmark, once an install that carries them is in place.
+const TYPESCRIPT_TOOLS = ['check_typescript', 'bundle_typescript']
+
+/** Why a tool can't be chosen: the benchmark isn't TypeScript, or what it needs isn't installed. */
+type PickerTool = BenchmarkTool & { reason?: string }
+
+function toolsFor(tools: BenchmarkTool[], typescript: boolean): PickerTool[] {
+  return tools.map((tool) => {
+    if (!TYPESCRIPT_TOOLS.includes(tool.name)) return tool.available ? tool : { ...tool, reason: 'Needs ESLint: download it in Settings, under Benchmark.' }
+    if (!typescript) return { ...tool, available: false, reason: 'Only for TypeScript benchmarks.' }
+    return tool.available ? tool : { ...tool, reason: 'Needs the TypeScript tools: download or update ESLint in Settings, under Benchmark.' }
+  })
+}
+
 /** File tools for a run: all on or off at once, or chosen one by one when expanded. */
-function ToolPicker({ tools, chosen, onChange }: { tools: BenchmarkTool[]; chosen: string[]; onChange: (names: string[]) => void }) {
+function ToolPicker({ tools, chosen, onChange }: { tools: PickerTool[]; chosen: string[]; onChange: (names: string[]) => void }) {
   const [open, setOpen] = useState(false)
   const all = useRef<HTMLInputElement>(null)
   // Tools whose requirements are not installed can't be chosen, so "all" means all usable.
@@ -359,7 +373,7 @@ function ToolPicker({ tools, chosen, onChange }: { tools: BenchmarkTool[]; chose
       <button aria-controls="benchmark-tool-list" aria-expanded={open} className="button secondary compact" onClick={() => setOpen(!open)} type="button">Choose tools<ChevronDown aria-hidden="true" className="benchmark-tools-chevron" size={14} /></button>
     </div>
     {open && <ul className="benchmark-tool-list" id="benchmark-tool-list">
-      {tools.map((tool) => <li key={tool.name}><label className="benchmark-option" data-disabled={!tool.available || undefined}><input checked={tool.available && chosen.includes(tool.name)} disabled={!tool.available} onChange={(event) => toggle(tool.name, event.target.checked)} type="checkbox" /><span><code>{tool.name}</code><small>{tool.summary}{!tool.available && ' Needs ESLint: download it in Settings, under Benchmark.'}</small></span></label></li>)}
+      {tools.map((tool) => <li key={tool.name}><label className="benchmark-option" data-disabled={!tool.available || undefined}><input checked={tool.available && chosen.includes(tool.name)} disabled={!tool.available} onChange={(event) => toggle(tool.name, event.target.checked)} type="checkbox" /><span><code>{tool.name}</code><small>{tool.summary}{tool.reason && ` ${tool.reason}`}</small></span></label></li>)}
     </ul>}
   </div>
 }
@@ -371,6 +385,22 @@ const FINISH_TOOLS = ['finish_job', 'task_complete']
 function completionMessage(run: BenchmarkRunDetail) {
   const done = run.tool_calls.filter((call) => FINISH_TOOLS.includes(call.name) && call.ok).at(-1)
   return done?.result.replace(/^(Job marked finished|Task marked complete)\.\s*/, '').trim() || undefined
+}
+
+/** A verbose log's tool arguments, one field at a time, with the text exactly as the model sent it. */
+function ToolArguments({ sent }: { sent: string }) {
+  let fields: [string, string][] | undefined
+  try {
+    const parsed: unknown = JSON.parse(sent)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) fields = Object.entries(parsed).map(([key, value]) => [key, typeof value === 'string' ? value : JSON.stringify(value, null, 2)])
+  } catch { /* shown as sent below */ }
+  return <details className="tool-call-arguments">
+    <summary>Arguments ({sent.length.toLocaleString()} characters)</summary>
+    {fields ? <>
+      <dl>{fields.map(([key, value]) => <div key={key}><dt>{key}</dt><dd><pre>{value}</pre></dd></div>)}</dl>
+      <details><summary>As sent</summary><pre>{sent}</pre></details>
+    </> : <><p>Not a JSON object, as sent:</p><pre>{sent}</pre></>}
+  </details>
 }
 
 const TASK_ICONS = { open: Square, done: SquareCheck, deleted: SquareX }
@@ -416,6 +446,8 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
     ['Decode at end (3 s)', formatRate(stats.decode_final_tokens_per_second)],
     [context?.live ? 'Context (now)' : 'Context (most used)', context ? `${context.used.toLocaleString()} / ${context.size.toLocaleString()} (${context.percent}%)` : '—'],
     ['Reasoning', reasoningLabel(run.reasoning_level)],
+    ...(run.verbose_log ? [['Log', 'Verbose'] as [string, string]] : []),
+    ...(run.typescript_strict != null ? [['TypeScript', run.typescript_strict ? 'Strict checks' : 'Non-strict checks'] as [string, string]] : []),
     ['Total', formatSeconds(stats.total_seconds)],
     ...(run.tools && run.tool_names ? [['Tools', offered && run.tool_names.length === offered.length ? 'All' : run.tool_names.join(', ')] as [string, string]] : []),
     ...(run.tools ? [['Tool calls', `${stats.tool_calls ?? run.tool_calls.length} in ${stats.rounds ?? 1} ${stats.rounds === 1 ? 'request' : 'requests'}`] as [string, string]] : []),
@@ -445,6 +477,7 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
         {run.tool_calls.map((call, index) => <li data-ok={call.ok} key={index}>
           <span className="tool-call-name">{call.name}{call.path ? <code>{call.path}</code> : null}</span>
           <span className="tool-call-result">{call.result}</span>
+          {call.arguments != null && <ToolArguments sent={call.arguments} />}
         </li>)}
       </ol>
     </details>}
@@ -473,6 +506,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   const [systemPromptId, setSystemPromptId] = useState<string>()
   // '' sends no level, so the model's chat template picks its own default.
   const [reasoningLevel, setReasoningLevel] = useState('')
+  const [verboseLog, setVerboseLog] = useState(false)
   const [viewing, setViewing] = useState<string>()
   const [deleting, setDeleting] = useState<BenchmarkRun>()
   const runPanel = useRef<HTMLElement>(null)
@@ -481,7 +515,9 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   const benchmarks = catalog.data?.benchmarks ?? []
   const benchmark = benchmarks.find((item) => item.id === benchmarkId) ?? benchmarks[0]
   const systemPrompts = catalog.data?.system_prompts ?? []
-  const allTools = catalog.data?.tools ?? []
+  const allTools = toolsFor(catalog.data?.tools ?? [], Boolean(benchmark?.typescript))
+  // A TypeScript benchmark without its tools would run as a plain one, so say so.
+  const typescriptMissing = Boolean(benchmark?.typescript) && allTools.some((tool) => TYPESCRIPT_TOOLS.includes(tool.name) && !tool.available)
   const usableTools = allTools.filter((tool) => tool.available).map((tool) => tool.name)
   // A tool chosen earlier drops out if what it needs is removed in the meantime.
   const chosenTools = (toolNames ?? usableTools).filter((name) => usableTools.includes(name))
@@ -540,7 +576,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   return <>
     <section className="data-panel benchmark-run-panel" ref={runPanel}>
       <div className="panel-heading"><div><h2>Run a benchmark</h2><p>Starts the server, loads one profile, sends the prompt and measures it, then stops the server again.</p></div><Timer size={18} /></div>
-      <form className="benchmark-form" onSubmit={(event) => { event.preventDefault(); start.mutate({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools: chosenTools.length > 0, tool_names: chosenTools, system_prompt_id: systemPrompt?.id ?? null, reasoning_level: reasoningLevel || null }) }}>
+      <form className="benchmark-form" onSubmit={(event) => { event.preventDefault(); start.mutate({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools: chosenTools.length > 0, tool_names: chosenTools, system_prompt_id: systemPrompt?.id ?? null, reasoning_level: reasoningLevel || null, verbose_log: chosenTools.length > 0 && verboseLog }) }}>
         <label className="compare-pick"><span>Profile</span><select aria-label="Profile" onChange={(event) => setProfileId(event.target.value)} value={profile?.id ?? ''}>
           {profiles.map((item) => <option disabled={!item.enabled} key={item.id} value={item.id}>{item.alias}{item.enabled ? '' : ' (disabled)'}</option>)}
         </select></label>
@@ -551,6 +587,8 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
         <button className="button primary" disabled={Boolean(blocker) || !tokensValid || start.isPending || !profile || !benchmark} type="submit">{start.isPending ? <LoaderCircle className="spin" size={15} /> : <Play size={14} fill="currentColor" />} Run benchmark</button>
       </form>
       {allTools.length > 0 && <ToolPicker chosen={chosenTools} onChange={setToolNames} tools={allTools} />}
+      {chosenTools.length > 0 && <label className="benchmark-option"><input aria-label="Verbose log" checked={verboseLog} onChange={(event) => setVerboseLog(event.target.checked)} type="checkbox" /><span><strong>Verbose log</strong><small>Keeps the arguments of every tool call and its whole result, so you can see why a call failed. Runs take more space.</small></span></label>}
+      {typescriptMissing && <p className="benchmark-note" role="status"><AlertCircle size={15} /> {benchmark?.title} is a TypeScript benchmark, but the TypeScript tools are not installed, so it would run without them. Download or update ESLint in Settings, under Benchmark, to add them.</p>}
       <div className="benchmark-choices">
         {systemPrompts.length > 0 && <label className="compare-pick"><span>System prompt</span><select aria-label="System prompt" onChange={(event) => setSystemPromptId(event.target.value)} value={chosenSystemPrompt}>
           <option value="">None: the prompt on its own</option>

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { api, type BenchmarkRun, type BenchmarkRunDetail, type Profile, type RouterState } from './api'
+import { api, type Benchmark, type BenchmarkRun, type BenchmarkRunDetail, type BenchmarkTool, type Profile, type RouterState } from './api'
 import { BenchmarksPanel } from './BenchmarksPanel'
 
 const profiles = [
@@ -42,8 +42,10 @@ const running: BenchmarkRun = {
 const TOOLS = ['write_file', 'edit_file', 'read_file', 'delete_file', 'list_files', 'check_file', 'finish_job'].map((name) => ({ name, summary: `What ${name} does.`, available: name !== 'check_file' }))
 const ALL_TOOLS = TOOLS.filter((tool) => tool.available).map((tool) => tool.name)
 
-function mockApi(runs: BenchmarkRun[]) {
-  vi.spyOn(api, 'benchmarks').mockResolvedValue({ benchmarks: [{ id: 'tetris', title: 'Tetris', prompt: 'make tetris', tasks: [] }], system_prompts: [{ id: 'coding-agent', title: 'Coding agent', text: 'You are an AI agent running in a coding agent harness.' }], default_system_prompt_id: 'coding-agent', reasoning_levels: ['off', 'low', 'medium', 'high', 'xhigh'], default_max_tokens: null, tools: TOOLS, active_run_id: null })
+const TETRIS: Benchmark = { id: 'tetris', title: 'Tetris', prompt: 'make tetris', tasks: [], typescript: null }
+
+function mockApi(runs: BenchmarkRun[], { benchmarks = [TETRIS], tools = TOOLS }: { benchmarks?: Benchmark[]; tools?: BenchmarkTool[] } = {}) {
+  vi.spyOn(api, 'benchmarks').mockResolvedValue({ benchmarks, system_prompts: [{ id: 'coding-agent', title: 'Coding agent', text: 'You are an AI agent running in a coding agent harness.' }], default_system_prompt_id: 'coding-agent', reasoning_levels: ['off', 'low', 'medium', 'high', 'xhigh'], default_max_tokens: null, tools, active_run_id: null })
   vi.spyOn(api, 'benchmarkRuns').mockResolvedValue(runs)
 }
 
@@ -69,7 +71,37 @@ describe('BenchmarksPanel', () => {
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Max tokens' }), { target: { value: '2048' } })
     fireEvent.click(run)
 
-    await waitFor(() => expect(start).toHaveBeenCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: 2048, tools: true, tool_names: ALL_TOOLS, system_prompt_id: 'coding-agent', reasoning_level: null }))
+    await waitFor(() => expect(start).toHaveBeenCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: 2048, tools: true, tool_names: ALL_TOOLS, system_prompt_id: 'coding-agent', reasoning_level: null, verbose_log: false }))
+  })
+
+  it('keeps a verbose log when asked, and shows each call\'s arguments as sent', async () => {
+    const body = 'function a() {\n  return 1\n}'
+    const sent = JSON.stringify({ path: 'src/render.ts', old_string: body, new_string: 'b' })
+    const verbose: BenchmarkRun = { ...finished, tools: true, tool_names: ALL_TOOLS, verbose_log: true }
+    mockApi([verbose])
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
+    vi.spyOn(api, 'benchmarkRun').mockResolvedValue({ ...verbose, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [{ round: 1, name: 'edit_file', path: 'src/render.ts', ok: false, result: 'Error: Could not find old_string', arguments: sent }, { round: 2, name: 'write_file', path: 'a', ok: false, result: 'Error: the tool arguments were not a JSON object.', arguments: '{"path": "a' }], tasks: [], artifacts: [], timeline: [] })
+    renderPanel()
+
+    const run = await screen.findByRole('button', { name: 'Run benchmark' })
+    await waitFor(() => expect(run).toBeEnabled())
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Verbose log' }))
+    fireEvent.click(run)
+    await waitFor(() => expect(start).toHaveBeenCalledWith(expect.objectContaining({ verbose_log: true })))
+
+    // Without tools there is nothing to log, so the option goes.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'File tools' }))
+    expect(screen.queryByRole('checkbox', { name: 'Verbose log' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry run Tetris on qwen-24gb' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ verbose_log: true })))
+
+    fireEvent.click(screen.getByRole('button', { name: 'View run Tetris on qwen-24gb' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
+    expect(await within(dialog).findByText('Verbose')).toBeInTheDocument()
+    expect(within(dialog).getByText('old_string')).toBeInTheDocument()
+    expect(within(dialog).getByText((_, element) => element?.tagName === 'PRE' && element.textContent === body)).toBeInTheDocument()
+    expect(within(dialog).getByText('Not a JSON object, as sent:')).toBeInTheDocument()
   })
 
   it('shows how much of the context each run filled, and opens a run from its title', async () => {
@@ -104,7 +136,7 @@ describe('BenchmarksPanel', () => {
     await waitFor(() => expect(retry).toBeEnabled())
     expect(retry).toHaveAttribute('title', 'Run again with the same settings on the profile as it is now (v2, this run used v1)')
     fireEvent.click(retry)
-    await waitFor(() => expect(start).toHaveBeenLastCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: null, tools: true, tool_names: ['write_file', 'finish_job'], system_prompt_id: 'coding-agent', reasoning_level: 'high' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: null, tools: true, tool_names: ['write_file', 'finish_job'], system_prompt_id: 'coding-agent', reasoning_level: 'high', verbose_log: false }))
 
     // A run from before tools could be chosen had them all.
     fireEvent.click(screen.getByRole('button', { name: 'Retry run Snake on qwen-24gb' }))
@@ -159,6 +191,39 @@ describe('BenchmarksPanel', () => {
     expect(screen.getByText('Off: the model can only answer in text.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
     await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ tools: false, tool_names: [] })))
+  })
+
+  it('offers the TypeScript tools only on a TypeScript benchmark', async () => {
+    const typed = ['check_typescript', 'bundle_typescript'].map((name) => ({ name, summary: `What ${name} does.`, available: true }))
+    const tools = [...TOOLS.slice(0, 6), ...typed, TOOLS[6]]
+    const neon: Benchmark = { ...TETRIS, id: 'neon', title: 'Neon', typescript: { strict: false } }
+    mockApi([], { benchmarks: [TETRIS, neon], tools })
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
+    renderPanel()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Choose tools' }))
+    const bundle = screen.getByRole('checkbox', { name: /bundle_typescript/ })
+    expect(bundle).toBeDisabled()
+    expect(screen.getAllByText(/Only for TypeScript benchmarks\./)).toHaveLength(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ benchmark_id: 'tetris', tool_names: ALL_TOOLS })))
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Benchmark' }), { target: { value: 'neon' } })
+    expect(bundle).toBeEnabled()
+    expect(bundle).toBeChecked()
+    expect(screen.queryByText(/Only for TypeScript benchmarks\./)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ benchmark_id: 'neon', tool_names: [...ALL_TOOLS.slice(0, 5), 'check_typescript', 'bundle_typescript', 'finish_job'] })))
+  })
+
+  it('warns when a TypeScript benchmark would run without its tools', async () => {
+    const typed = ['check_typescript', 'bundle_typescript'].map((name) => ({ name, summary: `What ${name} does.`, available: false }))
+    mockApi([], { benchmarks: [{ ...TETRIS, typescript: { strict: true } }], tools: [...TOOLS, ...typed] })
+    renderPanel()
+
+    expect(await screen.findByText(/Tetris is a TypeScript benchmark, but the TypeScript tools are not installed/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Choose tools' }))
+    expect(screen.getAllByText(/Needs the TypeScript tools: download or update ESLint in Settings/)).toHaveLength(2)
   })
 
   it('sends the coding agent system prompt by default, or none when chosen', async () => {
@@ -281,7 +346,7 @@ describe('BenchmarksPanel', () => {
   })
 
   it('lists the files a run wrote and opens one in a read-only editor', async () => {
-    const withTools: BenchmarkRun = { ...finished, tools: true, tool_names: ['write_file', 'read_file'], stats: { ...finished.stats, rounds: 3, tool_calls: 2, files_written: 1 } }
+    const withTools: BenchmarkRun = { ...finished, tools: true, tool_names: ['write_file', 'read_file'], typescript_strict: true, stats: { ...finished.stats, rounds: 3, tool_calls: 2, files_written: 1 } }
     mockApi([withTools])
     const detail: BenchmarkRunDetail = {
       ...withTools,
@@ -314,6 +379,7 @@ describe('BenchmarksPanel', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
     expect(await within(dialog).findByText('2 in 3 requests')).toBeInTheDocument()
     expect(within(dialog).getByText('write_file, read_file')).toBeInTheDocument()
+    expect(within(dialog).getByText('Strict checks')).toBeInTheDocument()
     expect(within(dialog).getByText('Tool calls (4, 2 refused)')).toBeInTheDocument()
     // The accepted final message sits under the artifacts, without the tool's own preamble.
     const completion = within(dialog).getByRole('heading', { name: 'Completion message' }).closest('section')!

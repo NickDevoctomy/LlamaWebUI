@@ -116,6 +116,8 @@ export interface Benchmark {
   prompt: string
   /** Tasks a run with complete_task starts with, from the prompt file's frontmatter. */
   tasks: string[]
+  /** Set for a TypeScript benchmark, which gets the TypeScript tools; null otherwise. */
+  typescript: { strict: boolean } | null
 }
 
 /** A task on the agent's task list; deleting one only marks it deleted. */
@@ -164,6 +166,10 @@ export interface LinterStatus {
   error: string | null
   /** What an install fetches. */
   pinned: Record<string, string>
+  /** Whether the install carries TypeScript and esbuild, for the TypeScript tools. */
+  typescript: boolean
+  /** Installed from before the TypeScript tools; installing again adds them. */
+  outdated: boolean
 }
 
 /** Timings in seconds and speeds in tokens per second; any may be missing for a run that stopped early. */
@@ -225,6 +231,10 @@ export interface BenchmarkRun {
   system_prompt_id: string | null
   /** 'off', an effort level, or null for the model's own default. */
   reasoning_level: string | null
+  /** For a run with the TypeScript tools, whether check_typescript was strict; null otherwise. */
+  typescript_strict?: boolean | null
+  /** Whether each tool call kept its arguments and whole result. */
+  verbose_log?: boolean
   state: BenchmarkState
   stage: BenchmarkStage
   error: string | null
@@ -265,8 +275,8 @@ export interface BenchmarkRunDetail extends BenchmarkRun {
   samples: { t: number; phase: 'prefill' | 'decode'; tokens: number | null; rate: number; span?: number }[]
   output: string
   reasoning: string
-  /** Each file tool call, in order; results are cut short. */
-  tool_calls: { round: number; name: string; path: string | null; ok: boolean; result: string }[]
+  /** Each file tool call, in order; results are cut short unless the run kept a verbose log, which also keeps the arguments as sent. */
+  tool_calls: { round: number; name: string; path: string | null; ok: boolean; result: string; arguments?: string }[]
   /** The agent's task list from the planning tools, in the order tasks were added. */
   tasks: BenchmarkTask[]
   /** Files the model wrote into the run's folder. */
@@ -743,7 +753,7 @@ export const api = {
   benchmarkRun: (runId: string) => request<BenchmarkRunDetail>(`/api/benchmarks/runs/${runId}`),
   benchmarkArtifact: (runId: string, path: string) =>
     request<{ path: string; content: string }>(`/api/benchmarks/runs/${runId}/artifacts/${path.split('/').map(encodeURIComponent).join('/')}`),
-  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number | null; tools: boolean; tool_names: string[] | null; system_prompt_id: string | null; reasoning_level: string | null }) =>
+  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number | null; tools: boolean; tool_names: string[] | null; system_prompt_id: string | null; reasoning_level: string | null; verbose_log: boolean }) =>
     request<BenchmarkRunDetail>('/api/benchmarks/runs', { method: 'POST', body: JSON.stringify(body) }),
   cancelBenchmark: (runId: string) =>
     request<BenchmarkRun>(`/api/benchmarks/runs/${runId}/cancel`, { method: 'POST' }),
