@@ -25,7 +25,7 @@
           "description": "Dynamic runtime attribute configuration allows for a more user friendly way of configuring a profile."
         }              
       ]
-    }    
+    },
     {
       "version": "0.3.1",
       "release_date": "2026-09-27",
