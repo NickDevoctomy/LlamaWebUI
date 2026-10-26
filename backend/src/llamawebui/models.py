@@ -2,7 +2,19 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, false, func, text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    false,
+    func,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -275,3 +287,54 @@ class SessionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class AssistantConversationRecord(Base):
+    """A chat with the assistant, and the optimisation brief it works to."""
+
+    __tablename__ = "assistant_conversations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    title: Mapped[str] = mapped_column(String(200))
+    created_by: Mapped[str] = mapped_column(String(64))
+    # The OpenRouter model of the latest turn; a conversation can outlive a model change.
+    model_id: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    brief: Mapped[dict[str, object]] = mapped_column(JSON)
+    # idle, running, paused (spend cap reached), interrupted or failed.
+    state: Mapped[str] = mapped_column(String(20), default="idle")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # What OpenRouter reported the conversation's replies cost, in US dollars.
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0, server_default=text("0"))
+    # Spending stops at this; continuing after a pause raises it by the configured cap.
+    spend_limit_usd: Mapped[float] = mapped_column(Float)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AssistantMessageRecord(Base):
+    """One entry of a conversation: a user message, a reply, a tool result or an event."""
+
+    __tablename__ = "assistant_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("assistant_conversations.id", ondelete="CASCADE"), index=True
+    )
+    seq: Mapped[int] = mapped_column(Integer)
+    # user, assistant, tool or event (brief edits, pauses and other notes for the reader).
+    role: Mapped[str] = mapped_column(String(16))
+    content: Mapped[str] = mapped_column(Text, default="")
+    reasoning: Mapped[str] = mapped_column(Text, default="")
+    # A reply's tool calls as sent back to the model: id, function name and arguments.
+    tool_calls: Mapped[list[dict[str, object]] | None] = mapped_column(JSON, nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    tool_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # What the UI shows for a tool result or event, apart from the text the model saw.
+    summary: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    usage: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

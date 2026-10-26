@@ -18,6 +18,9 @@ from pathlib import Path
 import yaml
 
 BENCHMARK_DIRECTORY = Path(__file__).resolve().parent.parent / "benchmarks"
+# The quickest bundled benchmark, and the coding-agent framing a client like OpenCode sends.
+DEFAULT_BENCHMARK_ID = "tetris-no-details"
+DEFAULT_SYSTEM_PROMPT_ID = "coding-agent"
 _ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 # Frontmatter: YAML between a first line of --- and the next line of ---.
 _FRONTMATTER = re.compile(r"\A---[ \t]*\r?\n(.*?)^---[ \t]*$", re.DOTALL | re.MULTILINE)

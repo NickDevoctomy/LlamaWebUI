@@ -5,6 +5,8 @@ import { api, type LinterStatus, type SecretName } from './api'
 import { OpenRouterModelPicker } from './OpenRouterModelPicker'
 import { formatBytes } from './Dashboard'
 
+const SETTINGS_WRITE_HINT = 'Changing settings needs the settings.write privilege'
+
 const STAGES: Record<NonNullable<LinterStatus['progress']>['stage'], string> = {
   downloading: 'Downloading Node.js',
   verifying: 'Checking the download',
@@ -48,10 +50,10 @@ function EslintRow({ canManage }: { canManage: boolean }) {
       {eslint.outdated && <span>Installed before the TypeScript tools. Update to add TypeScript {eslint.pinned.typescript} and esbuild {eslint.pinned.esbuild}; it downloads everything again.</span>}
     </div>
     <span className="row-actions">
-      {eslint.outdated && <button className="button primary compact" disabled={!canManage || busy} onClick={() => install.mutate()} title={canManage ? undefined : 'Changing settings needs the settings.write privilege'} type="button">{install.isPending ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />} Update</button>}
+      {eslint.outdated && <button className="button primary compact" disabled={!canManage || busy} onClick={() => install.mutate()} title={canManage ? undefined : SETTINGS_WRITE_HINT} type="button">{install.isPending ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />} Update</button>}
       {eslint.state === 'installed'
         ? <button className="button secondary compact" disabled={!canManage || busy} onClick={() => remove.mutate()} type="button">{remove.isPending ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />} Remove</button>
-        : <button className="button primary compact" disabled={!canManage || busy} onClick={() => install.mutate()} title={canManage ? undefined : 'Changing settings needs the settings.write privilege'} type="button">{busy ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />} {eslint.state === 'failed' ? 'Try again' : 'Download'}</button>}
+        : <button className="button primary compact" disabled={!canManage || busy} onClick={() => install.mutate()} title={canManage ? undefined : SETTINGS_WRITE_HINT} type="button">{busy ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />} {eslint.state === 'failed' ? 'Try again' : 'Download'}</button>}
     </span>
     {eslint.progress && <InstallProgress progress={eslint.progress} />}
     {error && eslint.state !== 'installing' && <div className="form-error record-details" role="alert"><AlertCircle size={15} /> {error}</div>}
@@ -135,7 +137,7 @@ function SecurityTab({ canManage }: { canManage: boolean }) {
   const allowed = settings.allow_remote_secrets
   // Turning remote access on is only accepted from the server itself; turning it off works anywhere.
   const blockedHere = !allowed && !settings.local_request
-  const hint = !canManage ? 'Changing settings needs the settings.write privilege' : blockedHere ? 'Turn this on from a browser on the server itself' : undefined
+  const hint = !canManage ? SETTINGS_WRITE_HINT : blockedHere ? 'Turn this on from a browser on the server itself' : undefined
   return <>
     <div className="settings-section"><h3>Secrets</h3><p>Provider credentials are kept in the system credential store and are never sent back to the browser.</p></div>
     <div className="record-list"><div className="record-row">
@@ -155,7 +157,38 @@ function SecurityTab({ canManage }: { canManage: boolean }) {
   </>
 }
 
-type SettingsTab = 'benchmark' | 'security' | SecretName
+/** The assistant's name, and the limits on what one conversation may spend and do. */
+function AssistantTab({ canManage }: { canManage: boolean }) {
+  const queryClient = useQueryClient()
+  const settings = useQuery({ queryKey: ['assistant-settings'], queryFn: api.assistantSettings })
+  const [draft, setDraft] = useState<{ name: string; spend: string; rounds: string }>()
+  const saved = settings.data
+  const values = draft ?? (saved ? { name: saved.name, spend: String(saved.spend_limit_usd), rounds: String(saved.max_rounds_per_turn) } : undefined)
+  const save = useMutation({
+    mutationFn: () => api.updateAssistantSettings({ name: values!.name, spend_limit_usd: Number(values!.spend), max_rounds_per_turn: Number(values!.rounds) }),
+    onSuccess: async (next) => {
+      queryClient.setQueryData(['assistant-settings'], next)
+      setDraft(undefined)
+      await queryClient.invalidateQueries({ queryKey: ['assistant-status'] })
+    },
+  })
+  if (settings.isError) return <div className="settings-body"><div className="capability-note error" role="alert"><AlertCircle size={16} /><span>{settings.error.message}</span></div></div>
+  if (!values) return <div className="settings-body"><div className="capability-note" role="status"><LoaderCircle className="spin" size={16} /><span>Loading assistant settings…</span></div></div>
+  const change = (key: 'name' | 'spend' | 'rounds') => (event: React.ChangeEvent<HTMLInputElement>) => setDraft({ ...values, [key]: event.target.value })
+  const hint = canManage ? undefined : SETTINGS_WRITE_HINT
+  return <>
+    <div className="settings-section"><h3>Assistant</h3><p>What the assistant is called, and how far one conversation may go before it stops to check with you.</p></div>
+    <form className="secret-form assistant-settings-form" onSubmit={(event) => { event.preventDefault(); save.mutate() }}>
+      <label className="form-field"><span>Name</span><input disabled={!canManage} maxLength={40} onChange={change('name')} title={hint} value={values.name} /><small>Used in its replies and its instructions.</small></label>
+      <label className="form-field"><span>Spending limit (USD)</span><input disabled={!canManage} inputMode="decimal" min="0.01" onChange={change('spend')} step="0.01" title={hint} type="number" value={values.spend} /><small>A conversation pauses at this cost; continuing adds the same again.</small></label>
+      <label className="form-field"><span>Model calls per message</span><input disabled={!canManage} inputMode="numeric" min="1" onChange={change('rounds')} step="1" title={hint} type="number" value={values.rounds} /><small>Tool calls included, before it stops and waits.</small></label>
+      <button className="button primary" disabled={!canManage || !draft || !values.name.trim() || save.isPending} title={hint} type="submit">{save.isPending ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />} Save</button>
+      {save.error && <div className="form-error" role="alert"><AlertCircle size={15} /> {save.error.message}</div>}
+    </form>
+  </>
+}
+
+type SettingsTab = 'benchmark' | 'security' | 'assistant' | SecretName
 
 export function SettingsPanel({ canManage, canViewSettings = true, canViewSecrets = false, canManageSecrets = false }: {
   canManage: boolean
@@ -168,6 +201,7 @@ export function SettingsPanel({ canManage, canViewSettings = true, canViewSecret
     ...(canViewSecrets ? [{ key: 'huggingface-token' as const, label: SECRETS['huggingface-token'].tab }] : []),
     // The OpenRouter tab holds the API key (secrets) and the assistant's model (settings).
     ...(canViewSecrets || canViewSettings ? [{ key: 'openrouter-api-key' as const, label: SECRETS['openrouter-api-key'].tab }] : []),
+    ...(canViewSettings ? [{ key: 'assistant' as const, label: 'Assistant' }] : []),
   ]
   const [selected, setTab] = useState<SettingsTab>()
   const tab = selected ?? tabs[0]?.key
@@ -177,6 +211,7 @@ export function SettingsPanel({ canManage, canViewSettings = true, canViewSecret
       {tabs.map(({ key, label }) => <button aria-selected={tab === key} key={key} onClick={() => setTab(key)} role="tab" type="button">{label}</button>)}
     </div>
     {tab === 'security' && <div role="tabpanel" aria-label="Security"><SecurityTab canManage={canManage} /></div>}
+    {tab === 'assistant' && <div role="tabpanel" aria-label="Assistant"><AssistantTab canManage={canManage} /></div>}
     {tab === 'huggingface-token' && <div role="tabpanel" aria-label="Hugging Face"><SecretTab key={tab} canManage={canManageSecrets} name={tab} /></div>}
     {tab === 'openrouter-api-key' && <div role="tabpanel" aria-label="OpenRouter">
       {canViewSecrets && <SecretTab key={tab} canManage={canManageSecrets} name={tab} />}

@@ -150,7 +150,7 @@ describe('SettingsPanel', () => {
   it('shows OpenRouter for its model, but not Hugging Face, without secrets.read', () => {
     vi.spyOn(api, 'benchmarkTools').mockResolvedValue({ eslint: missing })
     renderPanel()
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Benchmark', 'Security', 'OpenRouter'])
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Benchmark', 'Security', 'OpenRouter', 'Assistant'])
   })
 
   it('needs the settings write privilege to change anything', async () => {

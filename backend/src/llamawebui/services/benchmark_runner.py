@@ -37,6 +37,13 @@ from llamawebui.services.benchmark_workspace import (
     remove_run_folder,
     run_folder,
 )
+from llamawebui.services.chat_stream import (
+    assistant_message,
+    delta_kind,
+    merge_tool_calls,
+    ordered_calls,
+    shorten,
+)
 from llamawebui.services.router_client import RouterAPIError, RouterModel, RouterUnavailableError
 
 LOGGER = logging.getLogger("llamawebui.benchmarks")
@@ -431,18 +438,6 @@ def _short_error(message: str) -> str:
     return reason if len(reason) <= MAX_ERROR_LENGTH else reason[: MAX_ERROR_LENGTH - 1] + "…"
 
 
-def _history_arguments(arguments: str) -> str:
-    """A call's arguments as sent back to the server, which rejects any that are not JSON.
-
-    A malformed call still gets its error as the tool result, so the model can retry it.
-    """
-    try:
-        valid = isinstance(json.loads(arguments or "{}"), dict)
-    except json.JSONDecodeError:
-        valid = False
-    return arguments if valid else "{}"
-
-
 def _given_tools(record: BenchmarkRunRecord) -> list[str]:
     """The tools a run was given; runs from before tools could be chosen had them all."""
     if record.tool_names is None:
@@ -593,7 +588,7 @@ def _call_tool(
     # message is kept whole: it is the agent's report, read in the run's tool call log, and
     # so is a refusal, which lists the tasks still open.
     keep_whole = verbose or name == COMPLETE_TOOL
-    entry["result"] = result if keep_whole or len(result) <= 300 else result[:300] + "…"
+    entry["result"] = result if keep_whole else shorten(result, 300)
     return result, entry
 
 
@@ -1299,15 +1294,7 @@ class BenchmarkRunner:
                     continue
                 delta = choice.get("delta")
                 if isinstance(delta, dict):
-                    kind = (
-                        "tool_call"
-                        if delta.get("tool_calls")
-                        else "thinking"
-                        if delta.get("reasoning_content")
-                        else "answer"
-                        if delta.get("content")
-                        else None
-                    )
+                    kind = delta_kind(delta)
                     if kind is not None:
                         timeline.switch(kind, round_number)
                 if isinstance(delta, dict) and self._take_delta(
@@ -1360,9 +1347,7 @@ class BenchmarkRunner:
                 break
             if workspace is None or not pending:
                 break
-            ordered = [pending[index] for index in sorted(pending)]
-            for position, call in enumerate(ordered):
-                call["id"] = call["id"] or f"call_{round_number}_{position}"
+            ordered = ordered_calls(pending, round_number)
             for entry in reversed(cast(list[dict[str, object]], self._progress["timeline"])):
                 if entry["kind"] == "tool_call" and entry["round"] == round_number:
                     entry["names"] = [call["name"] for call in ordered]
@@ -1385,23 +1370,7 @@ class BenchmarkRunner:
                 # Without a token limit, only a full context stops generation this way.
                 stats["finish_reason"] = "length" if budget is not None else "context"
                 break
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": content,
-                    "tool_calls": [
-                        {
-                            "id": call["id"],
-                            "type": "function",
-                            "function": {
-                                "name": call["name"],
-                                "arguments": _history_arguments(call["arguments"]),
-                            },
-                        }
-                        for call in ordered
-                    ],
-                }
-            )
+            messages.append(assistant_message(content, ordered))
             for call in ordered:
                 timeline.switch("tool", round_number, name=call["name"], call=len(calls_made))
                 # Off the event loop: linting starts Node.js, which takes a moment.
@@ -1483,26 +1452,10 @@ class BenchmarkRunner:
                 gap = "\n\n" if key == "output" and separate and text else ""
                 self._progress[key] = text + gap + value
                 received = True
-        tool_calls = delta.get("tool_calls")
-        if isinstance(tool_calls, list):
-            for position, part in enumerate(tool_calls):
-                if not isinstance(part, dict):
-                    continue
-                index = part.get("index")
-                slot = index if isinstance(index, int) else position
-                call = pending.setdefault(slot, {"id": "", "name": "", "arguments": ""})
-                if isinstance(part.get("id"), str):
-                    call["id"] = part["id"]
-                function = part.get("function")
-                if isinstance(function, dict):
-                    if isinstance(function.get("name"), str):
-                        call["name"] += function["name"]
-                    piece = function.get("arguments")
-                    if isinstance(piece, str):
-                        call["arguments"] += piece
-                        sizes[slot] = sizes.get(slot, 0) + len(piece.encode("utf-8"))
-                self._progress["tool_call"] = {"name": call["name"], "bytes": sizes.get(slot, 0)}
-                received = True
+        latest = merge_tool_calls(delta, pending, sizes)
+        if latest is not None:
+            self._progress["tool_call"] = latest
+            received = True
         return received
 
     def _result(self, record: BenchmarkRunRecord) -> dict[str, object]:

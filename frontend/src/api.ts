@@ -186,6 +186,82 @@ export interface AssistantStatus {
   available: boolean
   openrouter_key_configured: boolean
   model: SelectedOpenRouterModel | null
+  /** What the assistant is called, from Settings. */
+  name: string
+}
+
+export type BriefTarget = 'decode' | 'prefill' | 'load' | 'memory'
+
+/** What a conversation works on, and the targets it aims for. Exactly one subject is set. */
+export interface Brief {
+  subject: 'model' | 'profile'
+  model?: { repo_id: string; quantization?: string | null } | null
+  profile_id?: string | null
+  max_load_seconds?: number | null
+  min_prefill_tps?: number | null
+  min_decode_tps?: number | null
+  max_ram_gb?: number | null
+  max_vram_gb?: number | null
+  min_context_tokens?: number | null
+  parallel_slots?: number
+  /** Null until the server fills in the default benchmark. */
+  benchmark_id?: string | null
+  reasoning_level?: string | null
+  /** Every target, most important first. */
+  priority?: BriefTarget[]
+}
+
+export interface AssistantConversation {
+  id: string
+  title: string
+  created_by: string
+  model_id: string | null
+  brief: Brief
+  /** paused: the spending limit was reached; continuing raises it. */
+  state: 'idle' | 'running' | 'paused' | 'interrupted' | 'failed'
+  error: string | null
+  cost_usd: number
+  spend_limit_usd: number
+  prompt_tokens: number
+  completion_tokens: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AssistantMessage {
+  id: string
+  seq: number
+  /** event: a note for the reader, such as a pause or a brief edit. */
+  role: 'user' | 'assistant' | 'tool' | 'event'
+  content: string
+  reasoning: string
+  tool_calls: { id: string; function: { name: string; arguments: string } }[] | null
+  tool_call_id: string | null
+  tool_name: string | null
+  /** A tool result's one-line summary and outcome, or an event's kind. */
+  summary: { summary?: string; ok?: boolean; kind?: string } | null
+  cost_usd: number | null
+  created_at: string
+}
+
+/** The reply being streamed while a turn runs. */
+export interface AssistantProgress {
+  round: number
+  content: string
+  reasoning: string
+  tool_call: { name: string; bytes: number } | null
+  running_tool?: string | null
+}
+
+export interface AssistantConversationDetail extends AssistantConversation {
+  messages: AssistantMessage[]
+  progress: AssistantProgress | null
+}
+
+export interface AssistantSettings {
+  name: string
+  spend_limit_usd: number
+  max_rounds_per_turn: number
 }
 
 export interface SecuritySettings {
@@ -827,6 +903,16 @@ export const api = {
   selectOpenRouterModel: (id: string) => request<{ model: SelectedOpenRouterModel }>('/api/settings/openrouter/model', { method: 'PUT', body: JSON.stringify({ id }) }),
   clearOpenRouterModel: () => request<{ model: null }>('/api/settings/openrouter/model', { method: 'DELETE' }),
   assistantStatus: () => request<AssistantStatus>('/api/assistant/status'),
+  assistantConversations: () => request<AssistantConversation[]>('/api/assistant/conversations'),
+  assistantConversation: (id: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}`),
+  createAssistantConversation: (brief: Brief, title?: string) => request<AssistantConversationDetail>('/api/assistant/conversations', { method: 'POST', body: JSON.stringify({ brief, title: title || null }) }),
+  updateAssistantBrief: (id: string, brief: Brief) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/brief`, { method: 'PUT', body: JSON.stringify(brief) }),
+  deleteAssistantConversation: (id: string) => request<void>(`/api/assistant/conversations/${id}`, { method: 'DELETE' }),
+  sendAssistantMessage: (id: string, content: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/messages`, { method: 'POST', body: JSON.stringify({ content }) }),
+  stopAssistant: (id: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/stop`, { method: 'POST' }),
+  continueAssistant: (id: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/continue`, { method: 'POST' }),
+  assistantSettings: () => request<AssistantSettings>('/api/settings/assistant'),
+  updateAssistantSettings: (settings: AssistantSettings) => request<AssistantSettings>('/api/settings/assistant', { method: 'PUT', body: JSON.stringify(settings) }),
   secrets: () => request<{ store: string; secrets: SecretStatus[] }>('/api/secrets'),
   saveSecret: (name: SecretName, value: string) => request<SecretStatus>(`/api/secrets/${name}`, { method: 'PUT', body: JSON.stringify({ value }) }),
   removeSecret: (name: SecretName) => request<SecretStatus>(`/api/secrets/${name}`, { method: 'DELETE' }),

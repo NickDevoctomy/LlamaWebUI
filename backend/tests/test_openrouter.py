@@ -144,7 +144,12 @@ def test_a_model_is_selected_with_its_pricing_and_the_assistant_becomes_availabl
         after = client.get("/api/assistant/status").json()
 
     assert {"assistant.read", "assistant.write"} <= privileges
-    assert initial == {"available": False, "openrouter_key_configured": False, "model": None}
+    assert initial == {
+        "available": False,
+        "openrouter_key_configured": False,
+        "model": None,
+        "name": "Lama",
+    }
     assert search["total"] == 1
     assert selected.status_code == 200
     model = selected.json()["model"]
@@ -153,7 +158,12 @@ def test_a_model_is_selected_with_its_pricing_and_the_assistant_becomes_availabl
     assert model["context_length"] == 1000000
     assert model["selected_at"]
     assert model_only["available"] is False
-    assert ready == {"available": True, "openrouter_key_configured": True, "model": model}
+    assert ready == {
+        "available": True,
+        "openrouter_key_configured": True,
+        "model": model,
+        "name": "Lama",
+    }
     assert "sk-or-v1-test" not in str(ready)
     assert stored == {"model": model}
     assert cleared == {"model": None}

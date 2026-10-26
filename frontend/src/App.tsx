@@ -36,6 +36,7 @@ import {
 } from 'lucide-react'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { AccessPanel } from './AccessPanel'
+import { AssistantPanel } from './AssistantPanel'
 import { BenchmarksPanel } from './BenchmarksPanel'
 import { api, type LibraryModel, type LogicalModel, type Profile, type RouterModel, type Runtime } from './api'
 import { DashboardPanel, formatBytes, useStatusHistory } from './Dashboard'
@@ -367,7 +368,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
               running={running}
             />
           ) : section === 'Assistant' ? (
-            null
+            assistant.data ? <AssistantPanel canWrite={canRead('assistant.write')} status={assistant.data} /> : null
           ) : section === 'Benchmarks' ? (
             <BenchmarksPanel canRun={canRead('server.lifecycle.write')} profiles={profiles.data ?? []} routerState={status.data?.state} />
           ) : section === 'Server' ? (

@@ -17,10 +17,19 @@ from fastapi.staticfiles import StaticFiles
 from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, Field, field_validator
 
+from llamawebui.assistant.conversations import ConversationRegistry
+from llamawebui.assistant.engine import AssistantEngine
+from llamawebui.assistant.openrouter_client import ChatClient, OpenRouterClient
+from llamawebui.assistant.routes import router as assistant_router
+from llamawebui.assistant.settings import load_settings as load_assistant_settings
+from llamawebui.assistant.setup import build_engine as build_assistant_engine
+from llamawebui.assistant.tools import ToolServices
 from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.domain.argument_catalog import ArgumentCatalog, default_catalog
 from llamawebui.domain.benchmark import (
+    DEFAULT_BENCHMARK_ID,
+    DEFAULT_SYSTEM_PROMPT_ID,
     Benchmark,
     SystemPrompt,
     load_benchmarks,
@@ -38,7 +47,6 @@ from llamawebui.domain.model_profile import (
     render_command,
     render_preset_unchecked,
     validate_profile,
-    write_combined_preset_atomic,
 )
 from llamawebui.domain.profile_arguments import (
     LEGACY_FIELDS,
@@ -56,7 +64,7 @@ from llamawebui.domain.recommendation import (
     assess,
     load_recommendations,
 )
-from llamawebui.domain.router_lifecycle import RouterLaunch, RouterState
+from llamawebui.domain.router_lifecycle import RouterState
 from llamawebui.models import (
     AccessTokenRecord,
     BenchmarkRunRecord,
@@ -96,6 +104,13 @@ from llamawebui.services.benchmark_runner import (
     BenchmarkRunRegistry,
 )
 from llamawebui.services.benchmark_workspace import WorkspaceError
+from llamawebui.services.control_plane import (
+    ControlPlane,
+    ControlPlaneError,
+    next_profile_version,
+)
+from llamawebui.services.control_plane import exclusive_conflict as _exclusive_conflict
+from llamawebui.services.control_plane import router_diagnostics as _router_diagnostics
 from llamawebui.services.database_backup import backup_database
 from llamawebui.services.diagnostics import DiagnosticsExporter
 from llamawebui.services.download_coordinator import DownloadCoordinator
@@ -191,8 +206,6 @@ from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRe
 from llamawebui.version import __version__
 
 MODEL_EVENT_KEEPALIVE_SECONDS = 15.0
-DEFAULT_SYSTEM_PROMPT_ID = "coding-agent"
-DEFAULT_BENCHMARK_ID = "tetris-no-details"
 PROFILE_DESCRIPTION_LIMIT = 500
 _ACTIVE_DOWNLOAD_STATES = frozenset(
     {DownloadState.QUEUED, DownloadState.DOWNLOADING, DownloadState.PAUSED}
@@ -469,19 +482,6 @@ def _runtime_payload(runtime: RuntimeRecord) -> dict[str, object]:
     }
 
 
-def _router_diagnostics(runtime: RuntimeRecord) -> tuple[str, ...]:
-    diagnostics: list[str] = []
-    if runtime.probe_error:
-        diagnostics.extend(
-            error
-            for error in runtime.probe_error.splitlines()
-            if error.startswith(("version probe", "help probe"))
-        )
-    if "models-preset" not in runtime.options:
-        diagnostics.append("runtime does not support --models-preset")
-    return tuple(diagnostics)
-
-
 def _issues_payload(issues: tuple[ArgumentIssue, ...]) -> dict[str, object]:
     errors = errors_of(issues)
     return {
@@ -691,31 +691,6 @@ def _server_payload(
     }
 
 
-def _next_version(
-    current: ModelProfileRecord,
-    profile: ModelProfile,
-    profile_request: ProfileCreateRequest,
-    catalog: ArgumentCatalog,
-) -> int | None:
-    """The version to save, or ``None`` to keep the current one.
-
-    A recommended profile keeps the version of its recommendation. Any other profile
-    takes a version typed in by hand, or moves up one when its settings change.
-    """
-    if current.recommendation_id is not None:
-        return None
-    if profile_request.version is not None and profile_request.version != current.version:
-        return profile_request.version
-    settings_changed = (
-        profile.configuration.to_payload(catalog)["arguments"]
-        != configuration_payload(current, catalog).get("arguments")
-        or str(profile.model_path.resolve()) != current.model_path
-        or profile_request.runtime_id != current.runtime_id
-        or profile_request.exclusive != current.exclusive
-    )
-    return current.version + 1 if settings_changed else None
-
-
 def _profile_description(value: str | None) -> str | None:
     """Trimmed description text; an empty one means no description."""
     if value is None:
@@ -723,23 +698,28 @@ def _profile_description(value: str | None) -> str | None:
     return value.strip() or None
 
 
-def _exclusive_conflict(
-    model: str, models: Sequence[RouterModel], exclusive: set[str]
-) -> str | None:
-    """Why loading ``model`` would put an exclusive profile beside another model."""
-    occupied = [
-        item.id
-        for item in models
-        if item.id != model and item.status.get("value") in {"loaded", "loading"}
-    ]
-    if not occupied:
-        return None
-    if model in exclusive:
-        return f"{model} is exclusive: unload {', '.join(occupied)} first"
-    blocker = next((item for item in occupied if item in exclusive), None)
-    if blocker is not None:
-        return f"{blocker} is exclusive: unload it before loading another model"
-    return None
+_CONTROL_PLANE_STATUS = {
+    "conflict": status.HTTP_409_CONFLICT,
+    "not_found": status.HTTP_404_NOT_FOUND,
+    "invalid": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "timeout": status.HTTP_504_GATEWAY_TIMEOUT,
+    "upstream": status.HTTP_502_BAD_GATEWAY,
+}
+
+
+def _control_plane_error(error: ControlPlaneError) -> HTTPException:
+    return HTTPException(status_code=_CONTROL_PLANE_STATUS[error.kind], detail=str(error))
+
+
+def _control_plane(request: Request) -> ControlPlane:
+    return cast(ControlPlane, request.app.state.control_plane)
+
+
+def _require_router_stopped(request: Request, action: str) -> None:
+    try:
+        _control_plane(request).require_router_stopped(action)
+    except ControlPlaneError as error:
+        raise _control_plane_error(error) from error
 
 
 def _system_metrics(data_dir: Path) -> dict[str, object]:
@@ -956,6 +936,7 @@ def create_app(
     system_prompts: tuple[SystemPrompt, ...] | None = None,
     benchmark_linter: BenchmarkLinter | None = None,
     openrouter_catalog: OpenRouterCatalog | None = None,
+    assistant_client: ChatClient | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
     packaged_static_dir = static_dir or Path(__file__).parent / "static"
@@ -1103,7 +1084,26 @@ def create_app(
             huggingface_token_configured=lambda: huggingface_token() is not None,
         )
         app.state.active_server_run_id = None
-        app.state.router_lifecycle_lock = asyncio.Lock()
+
+        def record_server_run(run_id: str) -> None:
+            app.state.active_server_run_id = run_id
+
+        app.state.control_plane = ControlPlane(
+            settings=app_settings,
+            catalog=app.state.argument_catalog,
+            runtimes=app.state.runtime_registry,
+            profiles=app.state.profile_registry,
+            artifacts=app.state.model_artifact_registry,
+            tokens=app.state.token_registry,
+            supervisor=app.state.router_supervisor,
+            server_runs=app.state.server_run_registry,
+            hub=app.state.huggingface_catalog,
+            downloads=app.state.download_registry,
+            coordinator=app.state.download_coordinator,
+            port_probe=router_port_probe,
+            on_server_run=record_server_run,
+        )
+        app.state.router_lifecycle_lock = app.state.control_plane.lock
         app.state.benchmarks = benchmarks if benchmarks is not None else load_benchmarks()
         app.state.system_prompts = (
             system_prompts if system_prompts is not None else load_system_prompts()
@@ -1118,19 +1118,13 @@ def create_app(
             async with app.state.router_lifecycle_lock:
                 await start_router(runtime_id, app)
 
-        async def stop_router_after_benchmark() -> None:
-            async with app.state.router_lifecycle_lock:
-                await app.state.router_supervisor.stop()
-                app.state.token_registry.remove_materialized_tokens()
-
         app.state.benchmark_linter = benchmark_linter or BenchmarkLinter(app_settings.data_dir)
         app.state.benchmark_runner = BenchmarkRunner(
             app.state.benchmark_runs,
             cast(BenchmarkClient, app.state.router_client),
             start_router=start_router_for_benchmark,
-            stop_router=stop_router_after_benchmark,
-            router_stopped=lambda: app.state.router_supervisor.state
-            in {RouterState.STOPPED, RouterState.CRASHED},
+            stop_router=app.state.control_plane.stop_router,
+            router_stopped=lambda: app.state.control_plane.router_stopped,
             linter=app.state.benchmark_linter,
             context=lambda alias: slot_context(
                 cast(RouterSupervisor, app.state.router_supervisor).context, alias
@@ -1139,6 +1133,33 @@ def create_app(
                 cast(RouterSupervisor, app.state.router_supervisor).pid, alias
             ),
             system_memory=system_memory,
+        )
+
+        def openrouter_key() -> str | None:
+            try:
+                return cast(SecretStore, app.state.secret_store).get(SecretName.OPENROUTER_API_KEY)
+            except SecretStoreUnavailableError:
+                return None
+
+        app.state.assistant_conversations = ConversationRegistry(engine)
+        app.state.assistant_conversations.interrupt_running()
+        app.state.assistant_engine = build_assistant_engine(
+            conversations=app.state.assistant_conversations,
+            client=assistant_client or OpenRouterClient(openrouter_key),
+            services=ToolServices(
+                catalog=app.state.argument_catalog,
+                runtimes=app.state.runtime_registry,
+                profiles=app.state.profile_registry,
+                artifacts=app.state.model_artifact_registry,
+                library=app.state.model_library,
+                downloads=app.state.download_registry,
+                supervisor=app.state.router_supervisor,
+                router_client=app.state.router_client,
+                hardware=app.state.hardware_detector,
+            ),
+            settings_store=app.state.settings_store,
+            profiles=app.state.profile_registry,
+            benchmarks=lambda: app.state.benchmarks,
         )
 
         def record_router_state(
@@ -1190,6 +1211,9 @@ def create_app(
                 "application_stopping",
                 extra={"component": "application", "event": "shutdown"},
             )
+            assistant = cast(AssistantEngine, app.state.assistant_engine)
+            if assistant.active_conversation_id is not None:
+                await assistant.stop(assistant.active_conversation_id)
             runner = cast(BenchmarkRunner, app.state.benchmark_runner)
             if runner.active_run_id is not None:
                 await runner.cancel(runner.active_run_id)
@@ -1206,6 +1230,7 @@ def create_app(
             )
 
     app = FastAPI(title="LlamaWebUI", version=__version__, lifespan=lifespan)
+    app.include_router(assistant_router)
 
     PUBLIC_API_PATHS = {"/api/health", "/api/auth/login", "/api/auth/logout"}
     BOOTSTRAP_ALLOWED_PATHS = {
@@ -1252,10 +1277,8 @@ def create_app(
                     status_code=status.HTTP_403_FORBIDDEN,
                     content={"detail": "insufficient privileges"},
                 )
+            request.state.user = user
         return await call_next(request)
-
-    def _generated_preset_path() -> Path:
-        return app_settings.data_dir / "generated" / "llama-models.ini"
 
     def _router_preview(request: Request, runtime: RuntimeRecord) -> list[str]:
         """The router-level arguments LlamaWebUI adds when it launches llama-server."""
@@ -1263,7 +1286,7 @@ def create_app(
         arguments = [
             runtime.executable_path,
             "--models-preset",
-            str(_generated_preset_path()),
+            str(_control_plane(request).preset_path),
             "--host",
             app_settings.router_host,
             "--port",
@@ -1274,140 +1297,14 @@ def create_app(
         return arguments
 
     async def start_router(runtime_id: str, owner: FastAPI) -> dict[str, object]:
-        runtimes = cast(RuntimeRegistry, owner.state.runtime_registry)
-        profiles = cast(ProfileRegistry, owner.state.profile_registry)
-        tokens = cast(TokenRegistry, owner.state.token_registry)
-        supervisor = cast(RouterSupervisor, owner.state.router_supervisor)
-        run_registry = cast(ServerRunRegistry, owner.state.server_run_registry)
-        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"router cannot start while {supervisor.state}",
-            )
+        """Start the router; the caller holds ``router_lifecycle_lock``."""
+        control_plane = cast(ControlPlane, owner.state.control_plane)
         try:
-            runtime = runtimes.get(runtime_id)
-        except RuntimeNotFoundError as error:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-        router_diagnostics = _router_diagnostics(runtime)
-        if router_diagnostics:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="; ".join(router_diagnostics),
-            )
-        enabled_profiles = profiles.list_enabled(runtime.id)
-        if not enabled_profiles:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="runtime has no enabled model profiles",
-            )
-        artifacts = cast(ModelArtifactRegistry, owner.state.model_artifact_registry)
-        broken = tuple(
-            profile.alias
-            for profile in enabled_profiles
-            if not artifacts.profile_available(profile)
-        )
-        if broken:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"enabled model profiles are broken: {', '.join(broken)}",
-            )
-        catalog = cast(ArgumentCatalog, owner.state.argument_catalog)
-        capabilities = runtime_capabilities(runtime)
-        launch_profiles = tuple(
-            profile_from_record(profile, catalog) for profile in enabled_profiles
-        )
-        launch_issues = {
-            profile.alias: validate_profile(profile, catalog, capabilities)
-            for profile in launch_profiles
-        }
-        blockers = [
-            f"{alias}: {message}"
-            for alias, issues in launch_issues.items()
-            for message in errors_of(issues)
-        ]
-        if blockers:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="enabled model profiles cannot launch: " + "; ".join(blockers),
-            )
+            await control_plane.start_router_locked(runtime_id)
+        except ControlPlaneError as error:
+            raise _control_plane_error(error) from error
+        return _server_payload(cast(RouterSupervisor, owner.state.router_supervisor), app_settings)
 
-        preset_path = _generated_preset_path()
-        write_combined_preset_atomic(
-            preset_path, tuple(profile.preset for profile in enabled_profiles)
-        )
-        tokens.materialize_enabled_tokens()
-        launch = RouterLaunch(
-            executable=Path(runtime.executable_path),
-            preset_path=preset_path,
-            host=app_settings.router_host,
-            port=app_settings.router_port,
-            api_key_file=tokens.key_file if tokens.has_enabled() else None,
-        )
-        supervisor.record_log("llama-server router command: " + " ".join(launch.arguments()))
-        for launch_profile in launch_profiles:
-            supervisor.record_log(
-                "llama-server model command (preset equivalent): "
-                + render_command(launch_profile, catalog, Path(runtime.executable_path))
-            )
-            for warning in warnings_of(launch_issues[launch_profile.alias]):
-                supervisor.record_log(f"profile {launch_profile.alias} warning: {warning}")
-        endpoint = f"http://{app_settings.router_host}:{app_settings.router_port}"
-        run = run_registry.create(runtime.id, endpoint)
-        owner.state.active_server_run_id = run.id
-        if not await router_port_probe(app_settings.router_host, app_settings.router_port):
-            detail = (
-                "router port is already in use: "
-                f"{app_settings.router_host}:{app_settings.router_port}"
-            )
-            run_registry.update(
-                run.id,
-                RouterState.CRASHED,
-                pid=None,
-                exit_code=None,
-                error=detail,
-            )
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
-
-        try:
-            await supervisor.start(launch)
-            await supervisor.wait_until_ready(
-                launch, timeout_seconds=app_settings.router_ready_timeout_seconds
-            )
-        except TimeoutError as error:
-            tokens.remove_materialized_tokens()
-            run_registry.update(
-                run.id,
-                supervisor.state,
-                pid=supervisor.pid,
-                exit_code=supervisor.last_exit_code,
-                error=str(error),
-            )
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(error)
-            ) from error
-        except (OSError, RuntimeError) as error:
-            tokens.remove_materialized_tokens()
-            run_registry.update(
-                run.id,
-                supervisor.state,
-                pid=supervisor.pid,
-                exit_code=supervisor.last_exit_code,
-                error=str(error),
-            )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)
-            ) from error
-        except ValueError as error:
-            tokens.remove_materialized_tokens()
-            run_registry.update(
-                run.id,
-                supervisor.state,
-                pid=supervisor.pid,
-                exit_code=supervisor.last_exit_code,
-                error=str(error),
-            )
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
-        return _server_payload(supervisor, app_settings)
 
     @app.get("/api/health")
     async def health() -> dict[str, object]:
@@ -1695,18 +1592,13 @@ def create_app(
 
     @app.post("/api/server/stop")
     async def stop_server(request: Request) -> dict[str, object]:
-        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
-        tokens = cast(TokenRegistry, request.app.state.token_registry)
-        lock = cast(asyncio.Lock, request.app.state.router_lifecycle_lock)
-        async with lock:
-            try:
-                await supervisor.stop()
-            except (RuntimeError, ValueError) as error:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT, detail=str(error)
-                ) from error
-            tokens.remove_materialized_tokens()
-        return _server_payload(supervisor, app_settings)
+        try:
+            await _control_plane(request).stop_router()
+        except ControlPlaneError as error:
+            raise _control_plane_error(error) from error
+        return _server_payload(
+            cast(RouterSupervisor, request.app.state.router_supervisor), app_settings
+        )
 
     @app.post("/api/server/restart")
     async def restart_server(
@@ -2258,6 +2150,7 @@ def create_app(
             "available": key_configured and model is not None,
             "openrouter_key_configured": key_configured,
             "model": model,
+            "name": load_assistant_settings(settings_store).name,
         }
 
     @app.get("/api/secrets")
@@ -2675,12 +2568,7 @@ def create_app(
     async def update_profile(
         profile_id: str, profile_request: ProfileCreateRequest, request: Request
     ) -> dict[str, object]:
-        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
-        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="stop the router before editing a profile",
-            )
+        _require_router_stopped(request, "editing a profile")
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
         catalog = _argument_catalog(request)
         try:
@@ -2693,7 +2581,14 @@ def create_app(
                 enabled=profile_request.enabled,
                 exclusive=profile_request.exclusive,
                 description=profile_request.description,
-                version=_next_version(current, profile, profile_request, catalog),
+                version=next_profile_version(
+                    current,
+                    profile,
+                    requested_version=profile_request.version,
+                    runtime_id=profile_request.runtime_id,
+                    exclusive=profile_request.exclusive,
+                    catalog=catalog,
+                ),
             )
         except RuntimeNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
@@ -2711,12 +2606,7 @@ def create_app(
     async def set_profile_enabled(
         profile_id: str, enabled_request: ProfileEnabledRequest, request: Request
     ) -> dict[str, object]:
-        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
-        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="stop the router before enabling or disabling a profile",
-            )
+        _require_router_stopped(request, "enabling or disabling a profile")
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
         try:
             record = registry.set_enabled(profile_id, enabled_request.enabled)
@@ -2736,12 +2626,7 @@ def create_app(
     @app.post("/api/profiles/{profile_id}/upgrade")
     async def upgrade_profile(profile_id: str, request: Request) -> dict[str, object]:
         """Move an unchanged recommended profile to the latest bundled version."""
-        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
-        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="stop the router before upgrading a profile",
-            )
+        _require_router_stopped(request, "upgrading a profile")
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
         catalog = _argument_catalog(request)
         try:
@@ -2783,12 +2668,7 @@ def create_app(
 
     @app.delete("/api/profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def remove_profile(profile_id: str, request: Request) -> None:
-        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
-        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="stop the router before deleting a model profile",
-            )
+        _require_router_stopped(request, "deleting a model profile")
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
         try:
             registry.remove(profile_id)
@@ -2817,11 +2697,7 @@ def create_app(
 
     @app.post("/api/profiles/{profile_id}/reset")
     async def reset_profile_configuration(profile_id: str, request: Request) -> dict[str, object]:
-        supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
-        if supervisor.state not in {RouterState.STOPPED, RouterState.CRASHED}:
-            raise HTTPException(
-                status_code=409, detail="stop the router before resetting a profile"
-            )
+        _require_router_stopped(request, "resetting a profile")
         registry = cast(ProfileRegistry, request.app.state.profile_registry)
         try:
             profile = registry.reset(profile_id)
@@ -3277,19 +3153,14 @@ def create_app(
     async def create_download(
         download: DownloadCreateRequest, request: Request
     ) -> dict[str, object]:
-        hub = cast(Catalog, request.app.state.huggingface_catalog)
-        registry = cast(DownloadRegistry, request.app.state.download_registry)
         try:
-            manifest = await hub.repository(download.repo_id, revision=download.revision)
-            job = registry.create(
-                manifest,
+            job = await _control_plane(request).queue_download(
+                download.repo_id,
                 download.group_key,
+                revision=download.revision,
                 include_projector=download.include_projector,
             )
-            payload = _download_payload(job)
-            coordinator = cast(DownloadCoordinator, request.app.state.download_coordinator)
-            coordinator.start(job.id)
-            return payload
+            return _download_payload(job)
         except HfHubHTTPError as error:
             raise _hub_error(error) from error
         except CatalogUnavailableError as error:
