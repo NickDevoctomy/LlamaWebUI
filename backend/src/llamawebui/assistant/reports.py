@@ -88,6 +88,17 @@ class Result(BaseModel):
     unit: str | None = Field(default=None, max_length=20)
 
 
+class Alternative(BaseModel):
+    """A setup measured along the way and kept as an option, without replacing the subject."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+    profile: str | None = Field(default=None, max_length=64)
+    summary: str = Field(default="", max_length=500)
+    results: list[Result] = Field(default_factory=list, max_length=12)
+
+
 def charts_in(body: str) -> list[Chart]:
     """The body's charts; raises ValueError naming the first one that is invalid."""
     charts = []
@@ -111,6 +122,10 @@ class ReportMeta(LibraryMeta):
     benchmark: str | None = Field(default=None, max_length=100)
     outcome: Outcome
     results: list[Result] = Field(default_factory=list, max_length=12)
+    alternatives: list[Alternative] = Field(default_factory=list, max_length=6)
+    # What the work left on the machine for the operator to keep or remove, such as
+    # test profiles and downloads.
+    left_behind: list[str] = Field(default_factory=list, max_length=20)
 
     def search_text(self) -> str:
         return " ".join(
@@ -135,8 +150,11 @@ class ReportLibrary(DocumentLibrary[ReportMeta]):
     def __init__(
         self,
         local: Path,
-        shipped: Path = SHIPPED_DIRECTORY,
+        shipped: Path | None = None,
         *,
         today: Callable[[], date] = date.today,
     ) -> None:
-        super().__init__(local, shipped, ReportMeta, noun="report", today=today)
+        # Read when built rather than bound as a default, so tests can point it elsewhere.
+        super().__init__(
+            local, shipped or SHIPPED_DIRECTORY, ReportMeta, noun="report", today=today
+        )

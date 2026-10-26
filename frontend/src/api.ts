@@ -279,6 +279,14 @@ export interface AssistantConversationDetail extends AssistantConversation {
   messages: AssistantMessage[]
   progress: AssistantProgress | null
   approvals: AssistantApproval[]
+  /** Benchmark runs this conversation started that still exist. */
+  benchmark_runs?: number
+}
+
+/** What a bulk delete removed, and why it skipped the rest. */
+export interface RunDeletion {
+  deleted: string[]
+  skipped: { run_id: string; reason: string }[]
 }
 
 export interface AssistantSettings {
@@ -289,6 +297,8 @@ export interface AssistantSettings {
   approvals: Record<ApprovalCategory, boolean>
   /** Write research and reports straight into the repository (source checkouts only). */
   auto_publish: boolean
+  /** The OpenRouter model that answers web searches; null uses the assistant's model. */
+  search_model: string | null
 }
 
 /** What every research document and report has in its frontmatter, and where it comes from. */
@@ -325,8 +335,14 @@ export interface ReportSummary extends LibrarySummary {
   runtime?: string | null
   benchmark?: string | null
   outcome: 'improved' | 'unchanged' | 'worse' | 'failed' | 'incomplete'
-  results: { metric: string; before?: number | null; after?: number | null; unit?: string | null }[]
+  results: ReportResult[]
+  /** Setups measured and kept as options without replacing the subject. */
+  alternatives?: { name: string; profile?: string | null; summary?: string; results: ReportResult[] }[]
+  /** What the work left on the machine for the operator to keep or remove. */
+  left_behind?: string[]
 }
+
+export interface ReportResult { metric: string; before?: number | null; after?: number | null; unit?: string | null }
 
 export interface ReportDocument extends ReportSummary {
   /** Markdown; ```chart blocks hold the charts. */
@@ -427,6 +443,8 @@ export interface BenchmarkRun {
   typescript_strict?: boolean | null
   /** Whether each tool call kept its arguments and whole result. */
   verbose_log?: boolean
+  /** The assistant conversation that started the run, if one did. */
+  conversation_id?: string | null
   state: BenchmarkState
   stage: BenchmarkStage
   error: string | null
@@ -1001,6 +1019,10 @@ export const api = {
   removeSecret: (name: SecretName) => request<SecretStatus>(`/api/secrets/${name}`, { method: 'DELETE' }),
   deleteBenchmarkRun: (runId: string) =>
     request<void>(`/api/benchmarks/runs/${runId}`, { method: 'DELETE' }),
+  deleteBenchmarkRuns: (runIds: string[]) =>
+    request<RunDeletion>('/api/benchmarks/runs/delete', { method: 'POST', body: JSON.stringify({ run_ids: runIds }) }),
+  deleteConversationRuns: (conversationId: string) =>
+    request<RunDeletion>(`/api/assistant/conversations/${conversationId}/benchmark-runs/delete`, { method: 'POST' }),
   upgradeProfile: (profileId: string) =>
     request<Profile>(`/api/profiles/${profileId}/upgrade`, { method: 'POST' }),
   setProfileEnabled: (profileId: string, enabled: boolean) =>

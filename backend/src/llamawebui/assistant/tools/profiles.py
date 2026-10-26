@@ -6,7 +6,8 @@ is never spent on a change that would be refused.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import json
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,7 +34,12 @@ from llamawebui.domain.profile_arguments import (
     errors_of,
     warnings_of,
 )
-from llamawebui.models import ModelProfileRecord, ProfileSnapshotRecord, RuntimeRecord
+from llamawebui.models import (
+    AssistantMessageRecord,
+    ModelProfileRecord,
+    ProfileSnapshotRecord,
+    RuntimeRecord,
+)
 from llamawebui.services.control_plane import (
     ControlPlaneError,
     next_profile_version,
@@ -252,11 +258,33 @@ async def describe_update(
     return f"Change profile {record.alias}", {"changes": changes, **other}
 
 
+def created_profiles(records: Iterable[AssistantMessageRecord]) -> set[str]:
+    """The ids of the profiles a conversation's create and clone calls made."""
+    created: set[str] = set()
+    for record in records:
+        if record.role != "tool" or record.tool_name not in {"create_profile", "clone_profile"}:
+            continue
+        if not (record.summary or {}).get("ok"):
+            continue
+        try:
+            payload = json.loads(record.content)
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("profile_id"), str):
+            created.add(payload["profile_id"])
+    return created
+
+
 def snapshot_once(context: ToolContext, record: ModelProfileRecord, name: str) -> str | None:
-    """Snapshot a profile the first time this conversation touches it; the new id, if any."""
+    """Snapshot a profile the first time this conversation touches it; the new id, if any.
+
+    A profile the conversation made itself has no earlier state worth keeping.
+    """
     snapshots = context.services.snapshots
-    if not context.conversation_id or snapshots.list(
-        profile_id=record.id, conversation_id=context.conversation_id
+    if (
+        not context.conversation_id
+        or record.id in context.created_profiles()
+        or snapshots.list(profile_id=record.id, conversation_id=context.conversation_id)
     ):
         return None
     return snapshots.create(
@@ -308,8 +336,10 @@ async def update_profile(context: ToolContext, arguments: Mapping[str, object]) 
         payload["note"] = "Not measured yet: benchmark this change before judging it."
     if snapshot_id:
         payload["snapshot_id"] = snapshot_id
-        payload["snapshot_note"] = "Snapshot of the profile before this change; restore it "
-        "with restore_snapshot if the work does not pay off."
+        payload["snapshot_note"] = (
+            "Snapshot of the profile before this change; restore it with restore_snapshot "
+            "if the work does not pay off."
+        )
     return json_result(
         payload,
         f"updated {saved.alias}"

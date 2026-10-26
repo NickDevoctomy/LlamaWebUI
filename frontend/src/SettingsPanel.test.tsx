@@ -164,7 +164,7 @@ describe('SettingsPanel', () => {
 
 describe('SettingsPanel assistant approvals', () => {
   it('switches each approval category on its own', async () => {
-    const saved = { name: 'Lama', spend_limit_usd: 2, max_rounds_per_turn: 40, approvals: { downloads: true, runtimes: false, profiles: true, benchmarks: true }, auto_publish: false }
+    const saved = { name: 'Lama', spend_limit_usd: 2, max_rounds_per_turn: 40, approvals: { downloads: true, runtimes: false, profiles: true, benchmarks: true }, auto_publish: false, search_model: null }
     vi.spyOn(api, 'benchmarkTools').mockResolvedValue({ eslint: missing })
     vi.spyOn(api, 'assistantSettings').mockResolvedValue(saved)
     const update = vi.spyOn(api, 'updateAssistantSettings').mockResolvedValue({ ...saved, approvals: { ...saved.approvals, runtimes: true } })
@@ -184,5 +184,24 @@ describe('SettingsPanel assistant approvals', () => {
     fireEvent.click(publish)
     await waitFor(() => expect(update.mock.calls[1]?.[0]).toMatchObject({ auto_publish: true }))
     await waitFor(() => expect(publish).toHaveAttribute('aria-checked', 'true'))
+  })
+
+  it('saves a model of its own for web searches, suggesting OpenRouter models', async () => {
+    const saved = { name: 'Lama', spend_limit_usd: 2, max_rounds_per_turn: 40, approvals: { downloads: true, runtimes: false, profiles: true, benchmarks: true }, auto_publish: false, search_model: 'old/model' }
+    vi.spyOn(api, 'benchmarkTools').mockResolvedValue({ eslint: missing })
+    vi.spyOn(api, 'assistantSettings').mockResolvedValue(saved)
+    const models = vi.spyOn(api, 'openRouterModels').mockResolvedValue({ models: [{ id: 'perplexity/sonar', name: 'Sonar' }] as never, total: 1 })
+    const update = vi.spyOn(api, 'updateAssistantSettings').mockImplementation(async (next) => next)
+    renderPanel()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Assistant' }))
+    const field = await screen.findByLabelText(/^Web search model/)
+    expect(field).toHaveValue('old/model')
+    fireEvent.change(field, { target: { value: 'sonar' } })
+    await waitFor(() => expect(models).toHaveBeenCalledWith('sonar'))
+    expect(await screen.findByRole('option', { hidden: true, name: 'Sonar' })).toHaveAttribute('value', 'perplexity/sonar')
+    fireEvent.change(field, { target: { value: ' ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(update.mock.calls[0]?.[0]).toMatchObject({ search_model: null }))
   })
 })

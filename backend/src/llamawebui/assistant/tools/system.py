@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -63,12 +64,22 @@ async def router_status(context: ToolContext, arguments: Mapping[str, object]) -
     return json_result(payload, f"router {supervisor.state.value}")
 
 
+def _release_tag(executable_path: str) -> str | None:
+    """The llama.cpp release (b1234) an installed runtime came from, by its folder name."""
+    match = re.match(r"b\d+", Path(executable_path).parent.name)
+    return match.group(0) if match else None
+
+
 async def list_runtimes(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
     runtimes = [
         {
             "id": runtime.id,
             "name": runtime.name,
             "build": runtime.build,
+            # The build's own version is often the same for every release, so these tell
+            # runtimes apart.
+            "commit": runtime.commit,
+            "release": _release_tag(runtime.executable_path),
             "backend": runtime.backend,
             "devices": runtime.devices,
             "router_compatible": "models-preset" in runtime.options and not runtime.probe_error,

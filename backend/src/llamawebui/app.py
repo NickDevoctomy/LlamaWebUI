@@ -390,6 +390,10 @@ class ProfileSnapshotRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 
 
+class BenchmarkRunDeleteRequest(BaseModel):
+    run_ids: list[str] = Field(min_length=1, max_length=1000)
+
+
 class BenchmarkRunRequest(BaseModel):
     profile_id: str = Field(min_length=1, max_length=36)
     benchmark_id: str = Field(min_length=1, max_length=64)
@@ -1172,6 +1176,11 @@ def create_app(
             model_id = model.get("id") if model else None
             return model_id if isinstance(model_id, str) else None
 
+        def search_model() -> str | None:
+            # A model of its own for web searches, else the assistant's.
+            chosen = load_assistant_settings(app.state.settings_store).search_model
+            return chosen or assistant_model()
+
         chat_client = assistant_client or OpenRouterClient(openrouter_key)
         app.state.research_library = ResearchLibrary(app_settings.data_dir / "research")
         app.state.report_library = ReportLibrary(app_settings.data_dir / "reports")
@@ -1197,7 +1206,7 @@ def create_app(
                 benchmark_runs=app.state.benchmark_runs,
                 benchmarks=lambda: app.state.benchmarks,
                 system_prompts=lambda: app.state.system_prompts,
-                web=web_access or WebAccess(chat_client, assistant_model),
+                web=web_access or WebAccess(chat_client, search_model),
                 research=app.state.research_library,
                 reports=app.state.report_library,
                 snapshots=app.state.profile_snapshots,
@@ -1823,6 +1832,7 @@ def create_app(
             "reasoning_level": record.reasoning_level,
             "typescript_strict": record.typescript_strict,
             "verbose_log": record.verbose_log,
+            "conversation_id": record.conversation_id,
             "state": record.state,
             "stage": progress["stage"] if progress else record.stage,
             "error": record.error,
@@ -2040,6 +2050,15 @@ def create_app(
         except WorkspaceError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         return {"path": path, "content": content}
+
+    @app.post("/api/benchmarks/runs/delete")
+    async def delete_benchmark_runs(
+        delete_request: BenchmarkRunDeleteRequest, request: Request
+    ) -> dict[str, object]:
+        """Delete several finished runs; a running or missing one is skipped with why."""
+        runs = cast(BenchmarkRunRegistry, request.app.state.benchmark_runs)
+        deleted, skipped = runs.delete_many(delete_request.run_ids)
+        return {"deleted": deleted, "skipped": skipped}
 
     @app.delete("/api/benchmarks/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def delete_benchmark_run(run_id: str, request: Request) -> None:

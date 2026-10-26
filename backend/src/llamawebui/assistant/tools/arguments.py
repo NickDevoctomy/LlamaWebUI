@@ -17,20 +17,26 @@ from llamawebui.assistant.tools import (
 )
 from llamawebui.domain.argument_catalog import ArgumentDefinition
 
-SEARCH_LIMIT = 20
+SEARCH_LIMIT = 12
+# Matches scoring under this share of the best match are dropped as noise.
+WEAK_MATCH = 0.35
 
 
 def _brief(definition: ArgumentDefinition) -> dict[str, object]:
-    return {
+    row: dict[str, object] = {
         "id": definition.id,
         "flag": definition.flag,
         "label": definition.label,
         "category": definition.category,
         "type": definition.value.type,
-        "default": definition.value.default,
         "summary": definition.help.summary,
-        "control": definition.control,
     }
+    # Left out when they say nothing: most arguments have no default and can be edited.
+    if definition.value.default is not None:
+        row["default"] = definition.value.default
+    if definition.control != "editable":
+        row["control"] = definition.control
+    return row
 
 
 _WORD = re.compile(r"[a-z0-9_.]+")
@@ -131,8 +137,18 @@ async def search_arguments(context: ToolContext, arguments: Mapping[str, object]
             for score, matched in [_score(definition, terms) if terms else (1, 0)]
             if score
         ),
-        key=lambda item: (-item[1], -item[0], item[2].common_rank or 10_000, item[2].id),
+        key=lambda item: (
+            # Removed arguments only point at their replacements, so they come last.
+            item[2].control == "removed",
+            -item[1],
+            -item[0],
+            item[2].common_rank or 10_000,
+            item[2].id,
+        ),
     )
+    if terms and ranked:
+        best = max(score for score, _, _ in ranked)
+        ranked = [item for item in ranked if item[0] >= best * WEAK_MATCH]
     payload: dict[str, object] = {
         "matches": [_brief(definition) for _, _, definition in ranked[:SEARCH_LIMIT]],
         "total": len(ranked),
@@ -159,7 +175,7 @@ ARGUMENT_TOOLS = (
         "search_arguments",
         "Search llama-server's arguments by words in their name, flag or help, e.g. "
         "'kv cache type', 'speculative draft' or 'gpu layers'. Matches any of the words, "
-        "best matches first, and forgives typos. Returns up to 20 with a summary each; with "
+        "best matches first, and forgives typos. Returns up to 12 with a summary each; with "
         "no matches it lists the categories, which can be browsed with category.",
         object_schema(
             {

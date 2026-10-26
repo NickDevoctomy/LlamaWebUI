@@ -28,6 +28,8 @@ from llamawebui.assistant.tools import (
     resolve_call,
     run_call,
 )
+from llamawebui.assistant.tools.benchmarks import measured_now
+from llamawebui.assistant.tools.profiles import created_profiles
 from llamawebui.models import AssistantConversationRecord, AssistantMessageRecord
 from llamawebui.services.chat_stream import (
     PendingCall,
@@ -331,6 +333,9 @@ class AssistantEngine:
             watch=lambda kind, job_id: self.watch(conversation_id, privileges, kind, job_id),
             conversation_id=conversation_id,
             model_id=setup.model_id,
+            created_profiles=lambda: created_profiles(
+                self._conversations.messages(conversation_id)
+            ),
         )
         limit = self._settings().max_rounds_per_turn
         for round_number in range(1, limit + 1):
@@ -434,6 +439,7 @@ class AssistantEngine:
             router_running=not self._services.control_plane.router_stopped,
             router_at_start=conversation.router_at_start,
             autonomous=conversation.brief.get("autonomous", True) is not False,
+            measured=lambda profile: measured_now(self._services, profile),
         )
 
     async def _call(

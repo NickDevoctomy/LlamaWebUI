@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, ArrowDown, ArrowUp, Bell, BookOpen, Bot, Check, ChevronRight, ClipboardCheck, FileBarChart, LoaderCircle, MessagesSquare, Pencil, Play, Plus, RotateCcw, Send, ShieldQuestion, Square, Trash2, Wrench, X } from 'lucide-react'
+import { AlertCircle, ArrowDown, ArrowUp, Bell, BookOpen, Bot, Check, ChevronRight, ClipboardCheck, Eraser, FileBarChart, LoaderCircle, MessagesSquare, Pencil, Play, Plus, RotateCcw, Send, ShieldQuestion, Square, Trash2, Wrench, X } from 'lucide-react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { api, type AssistantApproval, type AssistantConversation, type AssistantConversationDetail, type AssistantMessage, type AssistantStatus, type Brief, type BriefTarget } from './api'
 import { LazyMarkdown } from './LazyMarkdown'
@@ -68,7 +68,8 @@ function BriefDialog({ initial, initialMessage = '', creating, title, onClose, o
   ))
   const [slots, setSlots] = useState(String(initial?.parallel_slots ?? 1))
   const [benchmarkId, setBenchmarkId] = useState(initial?.benchmark_id ?? '')
-  const [reasoning, setReasoning] = useState(initial?.reasoning_level ?? '')
+  // Undefined until chosen, so a new brief takes the level of the profile's last result.
+  const [reasoning, setReasoning] = useState<string | undefined>(initial ? initial.reasoning_level ?? '' : undefined)
   const [priority, setPriority] = useState<BriefTarget[]>(initial?.priority ?? DEFAULT_PRIORITY)
   const [autonomous, setAutonomous] = useState(initial?.autonomous ?? true)
   const [conversationTitle, setConversationTitle] = useState('')
@@ -92,6 +93,11 @@ function BriefDialog({ initial, initialMessage = '', creating, title, onClose, o
     setPriority(next)
   }
   const valid = subject === 'model' ? repoId.trim().length >= 3 : Boolean(profileId)
+  // Runs only compare at the same level, so start from the one the profile was last measured at.
+  const measuredLevel = subject === 'profile'
+    ? profiles.data?.find((profile) => profile.id === profileId)?.benchmark_results?.[benchmarkId || benchmarks.data?.default_benchmark_id || '']?.reasoning_level ?? undefined
+    : undefined
+  const level = reasoning ?? measuredLevel ?? ''
   const submit = () => onSave({
     subject,
     model: subject === 'model' ? { repo_id: repoId.trim(), quantization: quantization.trim() || null } : null,
@@ -104,7 +110,7 @@ function BriefDialog({ initial, initialMessage = '', creating, title, onClose, o
     min_context_tokens: numberOrNull(fields.min_context_tokens),
     parallel_slots: numberOrNull(slots) ?? 1,
     benchmark_id: benchmarkId || null,
-    reasoning_level: reasoning || null,
+    reasoning_level: level || null,
     priority,
     autonomous,
   }, conversationTitle.trim(), firstMessage.trim())
@@ -144,8 +150,8 @@ function BriefDialog({ initial, initialMessage = '', creating, title, onClose, o
       <fieldset className="brief-section">
         <legend>Workload and priority</legend>
         <div className="brief-grid">
-          <label className="form-field"><span>Benchmark</span><select onChange={(event) => setBenchmarkId(event.target.value)} value={benchmarkId}><option value="">Default{benchmarks.data?.default_benchmark_id ? ` (${benchmarks.data.benchmarks.find((item) => item.id === benchmarks.data?.default_benchmark_id)?.title ?? benchmarks.data.default_benchmark_id})` : ''}</option>{(benchmarks.data?.benchmarks ?? []).map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
-          <label className="form-field"><span>Reasoning</span><select onChange={(event) => setReasoning(event.target.value)} value={reasoning}><option value="">Model default</option>{(benchmarks.data?.reasoning_levels ?? []).map((level) => <option key={level} value={level}>{level}</option>)}</select></label>
+          <label className="form-field"><span>Benchmark</span><select onChange={(event) => setBenchmarkId(event.target.value)} value={benchmarkId}><option value="">Default{benchmarks.data?.default_benchmark_id ? ` (${benchmarks.data.benchmarks.find((item) => item.id === benchmarks.data?.default_benchmark_id)?.title ?? benchmarks.data.default_benchmark_id})` : ''}</option>{(benchmarks.data?.benchmarks ?? []).map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select><small>Judges every change.</small></label>
+          <label className="form-field"><span>Reasoning</span><select onChange={(event) => setReasoning(event.target.value)} value={level}><option value="">Model default</option>{(benchmarks.data?.reasoning_levels ?? []).map((item) => <option key={item} value={item}>{item}</option>)}</select><small>{reasoning === undefined && measuredLevel ? 'As the profile was last measured.' : 'Every run uses it.'}</small></label>
         </div>
         <div className="form-field"><span>When targets conflict, favour</span>
           <ol className="priority-list">{priority.map((target, index) => <li key={target}>
@@ -298,7 +304,7 @@ function BriefSummary({ brief, profiles, onEdit, canEdit }: { brief: Brief; prof
   </div>
 }
 
-export function AssistantPanel({ status, canWrite }: { status: AssistantStatus; canWrite: boolean }) {
+export function AssistantPanel({ status, canWrite, canDeleteRuns = false }: { status: AssistantStatus; canWrite: boolean; canDeleteRuns?: boolean }) {
   const [tab, setTab] = useState<'chat' | 'research' | 'reports'>('chat')
   return <div className="assistant-page">
     <div aria-label="Assistant" className="segmented assistant-tabs" role="tablist">
@@ -306,13 +312,13 @@ export function AssistantPanel({ status, canWrite }: { status: AssistantStatus; 
       <button aria-selected={tab === 'research'} onClick={() => setTab('research')} role="tab" type="button"><BookOpen size={14} /> Research</button>
       <button aria-selected={tab === 'reports'} onClick={() => setTab('reports')} role="tab" type="button"><FileBarChart size={14} /> Reports</button>
     </div>
-    {tab === 'chat' && <ChatPanel canWrite={canWrite} status={status} />}
+    {tab === 'chat' && <ChatPanel canDeleteRuns={canDeleteRuns} canWrite={canWrite} status={status} />}
     {tab === 'research' && <ResearchPanel canWrite={canWrite} />}
     {tab === 'reports' && <ReportsPanel canWrite={canWrite} />}
   </div>
 }
 
-function ChatPanel({ status, canWrite }: { status: AssistantStatus; canWrite: boolean }) {
+function ChatPanel({ status, canWrite, canDeleteRuns }: { status: AssistantStatus; canWrite: boolean; canDeleteRuns: boolean }) {
   const queryClient = useQueryClient()
   const conversations = useQuery({
     queryKey: ['assistant-conversations'],
@@ -329,7 +335,9 @@ function ChatPanel({ status, canWrite }: { status: AssistantStatus; canWrite: bo
   })
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles })
   const profileNames = useMemo(() => new Map((profiles.data ?? []).map((profile) => [profile.id, profile.alias])), [profiles.data])
-  const [dialog, setDialog] = useState<'new' | 'edit' | 'rerun'>()
+  const [dialog, setDialog] = useState<'new' | 'edit' | 'rerun' | 'cleanup'>()
+  // What the last clean-up did, shown until another conversation is opened.
+  const [cleaned, setCleaned] = useState<{ conversation: string; deleted: number; skipped: number }>()
   const [draft, setDraft] = useState('')
   const settle = (conversation?: AssistantConversationDetail) => {
     if (conversation) queryClient.setQueryData(['assistant-conversation', conversation.id], conversation)
@@ -361,8 +369,20 @@ function ChatPanel({ status, canWrite }: { status: AssistantStatus; canWrite: bo
     mutationFn: (id: string) => api.deleteAssistantConversation(id),
     onSuccess: async () => { setSelected(undefined); await queryClient.invalidateQueries({ queryKey: ['assistant-conversations'] }) },
   })
+  const cleanup = useMutation({
+    mutationFn: (id: string) => api.deleteConversationRuns(id),
+    onSuccess: async (result, id) => {
+      setDialog(undefined)
+      setCleaned({ conversation: id, deleted: result.deleted.length, skipped: result.skipped.length })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['assistant-conversation', id] }),
+        queryClient.invalidateQueries({ queryKey: ['benchmark-runs'] }),
+      ])
+    },
+  })
   const conversation = detail.data
   const running = conversation ? isBusy(conversation.state) : false
+  const runCount = conversation?.benchmark_runs ?? 0
   const end = useRef<HTMLDivElement>(null)
   const lastSeen = `${conversation?.messages.length}:${conversation?.progress?.content.length ?? 0}`
   useEffect(() => { end.current?.scrollIntoView?.({ block: 'end' }) }, [lastSeen])
@@ -408,6 +428,7 @@ function ChatPanel({ status, canWrite }: { status: AssistantStatus; canWrite: bo
                 </p>
               </div>
               <div className="assistant-header-actions">
+                {canDeleteRuns && runCount > 0 && <button className="button secondary compact" disabled={running} onClick={() => setDialog('cleanup')} title={running ? 'Stop the assistant first' : 'Delete the benchmark runs this conversation started'} type="button"><Eraser size={14} /> Delete {runCount} {runCount === 1 ? 'run' : 'runs'}</button>}
                 <button className="button secondary compact" disabled={!canWrite} onClick={() => setDialog('rerun')} title="Start a new conversation with this brief and first message" type="button"><RotateCcw size={14} /> Run again</button>
                 <button aria-label={`Delete ${conversation.title}`} className="icon-button small danger-icon" disabled={!canWrite || running || remove.isPending} onClick={() => remove.mutate(conversation.id)} title="Delete conversation" type="button"><Trash2 size={14} /></button>
               </div>
@@ -421,6 +442,7 @@ function ChatPanel({ status, canWrite }: { status: AssistantStatus; canWrite: bo
             </div>
             {conversation.state === 'paused' && <div className="inline-notice assistant-notice"><AlertCircle size={15} /><span>This conversation reached its spending limit. Continuing raises the limit by the amount set in Settings.</span><button className="button primary compact" disabled={!canWrite || resume.isPending} onClick={() => resume.mutate()} type="button"><Play size={14} /> Continue</button></div>}
             {(conversation.state === 'failed' || conversation.state === 'interrupted') && <div className="inline-notice assistant-notice"><AlertCircle size={15} /><span>{conversation.state === 'failed' ? 'The last reply failed; the reason is shown above.' : 'This conversation stopped before it finished, for example because the app restarted.'}</span><button className="button primary compact" disabled={!canWrite || retry.isPending} onClick={() => retry.mutate()} type="button">{retry.isPending ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />} Try again</button></div>}
+            {cleaned?.conversation === conversation.id && <div className="research-notice cleanup-notice" role="status"><Check size={15} /><span>Deleted {cleaned.deleted} benchmark {cleaned.deleted === 1 ? 'run' : 'runs'}{cleaned.skipped ? `; ${cleaned.skipped} still running ${cleaned.skipped === 1 ? 'was' : 'were'} kept` : ''}.</span><button aria-label="Dismiss" className="icon-button small" onClick={() => setCleaned(undefined)} type="button"><X size={14} /></button></div>}
             {error && <div className="form-error assistant-notice" role="alert"><AlertCircle size={15} /> {error}</div>}
             <form className="assistant-composer" onSubmit={(event) => { event.preventDefault(); submit() }}>
               <label className="sr-only" htmlFor="assistant-draft">Message</label>
@@ -433,6 +455,10 @@ function ChatPanel({ status, canWrite }: { status: AssistantStatus; canWrite: bo
     </div>
     {dialog === 'new' && <BriefDialog creating error={create.error?.message} onClose={() => setDialog(undefined)} onSave={(brief, title, message) => create.mutate({ brief, title, message })} saving={create.isPending} title="New optimisation" />}
     {dialog === 'rerun' && conversation && <BriefDialog creating error={create.error?.message} initial={conversation.brief} initialMessage={firstMessage} onClose={() => setDialog(undefined)} onSave={(brief, title, message) => create.mutate({ brief, title, message })} saving={create.isPending} title="Run again" />}
+    {dialog === 'cleanup' && conversation && <Dialog description="Their timings and output are removed. The latest result already written to each profile is kept, and so are reports and research." onClose={() => setDialog(undefined)} title={`Delete ${runCount} benchmark ${runCount === 1 ? 'run' : 'runs'}?`}>
+      <div className="confirm-body"><Eraser size={24} /><p>Every benchmark run <strong>{conversation.title}</strong> started will be deleted. A run still going is kept.</p>{cleanup.error && <div className="form-error"><AlertCircle size={15} /> {cleanup.error.message}</div>}</div>
+      <footer className="dialog-actions"><button className="button secondary" onClick={() => setDialog(undefined)} type="button">Keep runs</button><button className="button danger" disabled={cleanup.isPending} onClick={() => cleanup.mutate(conversation.id)} type="button">{cleanup.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete runs</button></footer>
+    </Dialog>}
     {dialog === 'edit' && conversation && <BriefDialog creating={false} error={editBrief.error?.message} initial={conversation.brief} onClose={() => setDialog(undefined)} onSave={(brief) => editBrief.mutate(brief)} saving={editBrief.isPending} title="Edit brief" />}
   </section>
 }

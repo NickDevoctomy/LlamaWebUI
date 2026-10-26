@@ -170,6 +170,12 @@ class BenchmarkRunRecord(Base):
     reasoning: Mapped[str] = mapped_column(Text, default="")
     started_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # What the profile launched with (model file, runtime and arguments), and a hash of
+    # it, so runs of the same settings can be found; None for runs from before.
+    launch_settings: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    settings_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The assistant conversation that started the run, if one did.
+    conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
 
 
 class DownloadJobRecord(Base):

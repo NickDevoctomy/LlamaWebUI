@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from llamawebui.assistant.reports import ReportLibrary
@@ -70,6 +70,8 @@ class ToolContext:
     conversation_id: str = ""
     # The OpenRouter model answering, recorded as the author of research documents.
     model_id: str = ""
+    # The ids of profiles this conversation created, which need no snapshot to undo.
+    created_profiles: Callable[[], Collection[str]] = lambda: ()
 
 
 class ToolError(Exception):

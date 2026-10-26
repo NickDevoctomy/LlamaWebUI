@@ -29,6 +29,8 @@ class AssistantSettings(BaseModel):
     # Write research and reports straight into the repository's shipped folders (source
     # checkouts only) instead of waiting for them to be published by hand.
     auto_publish: bool = False
+    # The OpenRouter model that answers web searches; None uses the assistant's model.
+    search_model: str | None = Field(default=None, max_length=200, pattern=r"^[\w.:/-]+$")
 
     @field_validator("name")
     @classmethod

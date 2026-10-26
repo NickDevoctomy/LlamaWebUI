@@ -256,6 +256,20 @@ Stop for maintainer review at the end of each phase.
 - [x] "Work without asking questions" brief option
 - [x] Start-of-work routine: read reports and research, then look up speeds others report
 
+### After the third real run: comparable runs and clean-up (2026-10-26)
+- [x] Runs record their launch settings (`benchmark_runs.launch_settings`, `settings_fingerprint`, migration 0036) and the conversation that started them (`conversation_id`). A recommended profile keeps its version through edits, so the version could not tell runs apart. `services/launch_settings.py` holds the fingerprint and diff.
+- [x] `run_benchmark` always uses the brief's benchmark and reasoning level; it no longer takes either as an argument. The brief form starts the level at the one the profile's last result used.
+- [x] `evaluate_run` compares with a baseline (this conversation's first comparable run, else the latest earlier one; or `baseline_run_id`): settings that differ, the change in each figure, and a warning when prompt or generated tokens or peak context differ by more than 25%. `get_benchmark_run` lists `differs_from_profile_now`.
+- [x] The `unmeasured` check is skipped when a completed run measured the profile's current settings (`measured_now`), e.g. after a revert.
+- [x] No snapshot for profiles the conversation created (`ToolContext.created_profiles`); snapshot note no longer cut short.
+- [x] `list_runtimes` shows the commit and release tag; `list_runtime_releases` shows only this machine's builds unless `all_platforms`.
+- [x] Leaner output: argument search drops matches under 35% of the best score, caps at 12 and puts removed arguments last; `list_benchmark_runs` takes `limit` (default 10) and `benchmark_id`; `get_repository` leaves out unremarkable group fields.
+- [x] Web search: `search_model` setting (falls back to the assistant's model), a 90 s timeout, and a warning on answers with no sources (or a raw tool-call reply) telling the model not to cite them. Why the plugin returned no citations for `qwen/qwen3.8-omni-flash` is unconfirmed: it needs one real call, which only the maintainer runs.
+- [x] Reports gain `alternatives` and `left_behind`, shown in the reader.
+- [x] Benchmark runs can be selected and deleted together (`POST /api/benchmarks/runs/delete`), and a conversation's runs deleted from its header (`POST /api/assistant/conversations/{id}/benchmark-runs/delete`, which also needs `server.lifecycle.write`).
+- [x] Tests point the shipped research and report folders at a temporary folder (autouse fixture in `conftest.py`), since the libraries now read `SHIPPED_DIRECTORY` when built.
+- [ ] Not done: a fixed-workload speed probe (the maintainer put this aside; the big swings in the third run came from runs at different reasoning levels).
+
 ## Verification
 
 - **Engine tests:** a scripted fake OpenRouter (`httpx.MockTransport`) returns streamed tool calls. It drives the engine through:

@@ -531,6 +531,9 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   const [verboseLog, setVerboseLog] = useState(false)
   const [viewing, setViewing] = useState<string>()
   const [deleting, setDeleting] = useState<BenchmarkRun>()
+  // Runs ticked for deleting together, and whether that is being confirmed.
+  const [chosen, setChosen] = useState<string[]>([])
+  const [deletingChosen, setDeletingChosen] = useState(false)
   const runPanel = useRef<HTMLElement>(null)
   const enabled = profiles.filter((profile) => profile.enabled)
   const profile = profiles.find((item) => item.id === profileId) ?? enabled[0]
@@ -586,6 +589,19 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
       await queryClient.invalidateQueries({ queryKey: ['benchmark-runs'] })
     },
   })
+  const bulkRemoval = useMutation({
+    mutationFn: (runIds: string[]) => api.deleteBenchmarkRuns(runIds),
+    onSuccess: async (result) => {
+      setDeletingChosen(false)
+      setChosen((current) => current.filter((id) => !result.deleted.includes(id)))
+      await queryClient.invalidateQueries({ queryKey: ['benchmark-runs'] })
+    },
+  })
+  // A running run cannot be deleted, so it cannot be ticked either.
+  const deletable = (runs.data ?? []).filter((run) => run.state !== 'running').map((run) => run.id)
+  const picked = chosen.filter((id) => deletable.includes(id))
+  const allPicked = deletable.length > 0 && picked.length === deletable.length
+  const toggle = (runId: string, on: boolean) => setChosen((current) => on ? [...current, runId] : current.filter((id) => id !== runId))
 
   const blocker = !canRun ? 'Running a benchmark needs permission to start and stop the server.'
     : active ? 'A benchmark is already running.'
@@ -637,9 +653,15 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
     </section>
 
     <section className="data-panel">
-      <div className="panel-heading"><div><h2>Runs</h2><p>Every run keeps its timings and output until you delete it. The latest result of each benchmark also stays on its profile.</p></div></div>
+      <div className="panel-heading"><div><h2>Runs</h2><p>Every run keeps its timings and output until you delete it. The latest result of each benchmark also stays on its profile.</p></div>
+        {canRun && deletable.length > 0 && <div className="panel-heading-actions">
+          <label className="benchmark-select-all"><input aria-label="Select every finished run" checked={allPicked} onChange={(event) => setChosen(event.target.checked ? deletable : [])} ref={(input) => { if (input) input.indeterminate = picked.length > 0 && !allPicked }} type="checkbox" /> Select all</label>
+          <button className="button danger compact" disabled={!picked.length} onClick={() => setDeletingChosen(true)} type="button"><Trash2 size={14} /> Delete{picked.length ? ` ${picked.length}` : ''}</button>
+        </div>}
+      </div>
       {runs.data?.length ? <ul className="benchmark-runs">
-        {runs.data.map((run) => <li key={run.id}>
+        {runs.data.map((run) => <li data-selectable={canRun || undefined} key={run.id}>
+          {canRun && <input aria-label={`Select run ${run.benchmark_title} on ${run.profile_alias}, ${formatWhen(run.started_at)}`} checked={picked.includes(run.id)} className="benchmark-run-check" disabled={run.state === 'running'} onChange={(event) => toggle(run.id, event.target.checked)} type="checkbox" />}
           <span className="benchmark-run-copy">
             <strong><button aria-label={`View run ${run.benchmark_title} on ${run.profile_alias}`} className="benchmark-run-title" onClick={() => setViewing(run.id)} type="button">{run.benchmark_title} · {run.profile_alias}</button> <span className="profile-tag">v{run.profile_version}</span> <OutcomeTag run={run} /></strong>
             <span>{formatWhen(run.started_at)}{run.system_prompt_id ? ` · ${run.system_prompt_id}` : ''}{run.reasoning_level ? ` · reasoning ${reasoningLabel(run.reasoning_level).toLowerCase()}` : ''}{run.stats.files_written ? ` · ${run.stats.files_written} ${run.stats.files_written === 1 ? 'file' : 'files'}` : ''}{run.error && run.state === 'failed' ? ` · ${run.error}` : ''}</span>
@@ -667,6 +689,10 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
     </section>
 
     {viewing && <RunDetail onClose={() => setViewing(undefined)} runId={viewing} />}
+    {deletingChosen && <Dialog description="Their timings and output are removed. The latest result already written to each profile is kept." onClose={() => setDeletingChosen(false)} title={`Delete ${picked.length} benchmark ${picked.length === 1 ? 'run' : 'runs'}?`}>
+      <div className="confirm-body"><Trash2 size={24} /><p>{picked.length === deletable.length ? 'Every finished run' : `${picked.length} of ${deletable.length} finished runs`} will be deleted.</p>{bulkRemoval.error && <div className="form-error"><AlertCircle size={15} /> {bulkRemoval.error.message}</div>}</div>
+      <footer className="dialog-actions"><button className="button secondary" onClick={() => setDeletingChosen(false)} type="button">Keep runs</button><button className="button danger" disabled={bulkRemoval.isPending || !picked.length} onClick={() => bulkRemoval.mutate(picked)} type="button">{bulkRemoval.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete {picked.length === 1 ? 'run' : 'runs'}</button></footer>
+    </Dialog>}
     {deleting && <Dialog description="The run's timings and output are removed. The latest result already written to the profile is kept." onClose={() => setDeleting(undefined)} title="Delete benchmark run?">
       <div className="confirm-body"><Trash2 size={24} /><p><strong>{deleting.benchmark_title}</strong> on <strong>{deleting.profile_alias}</strong>, {formatWhen(deleting.started_at)}.</p>{removal.error && <div className="form-error"><AlertCircle size={15} /> {removal.error.message}</div>}</div>
       <footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep run</button><button className="button danger" disabled={removal.isPending} onClick={() => removal.mutate(deleting.id)} type="button">{removal.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete run</button></footer>

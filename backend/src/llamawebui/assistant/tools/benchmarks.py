@@ -7,6 +7,7 @@ waiting in a tool call for minutes.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import cast
 
 from pydantic import ValidationError
 
@@ -16,6 +17,7 @@ from llamawebui.assistant.tools import (
     ToolContext,
     ToolError,
     ToolResult,
+    ToolServices,
     json_result,
     object_schema,
     text_argument,
@@ -25,6 +27,12 @@ from llamawebui.domain.benchmark import DEFAULT_BENCHMARK_ID, DEFAULT_SYSTEM_PRO
 from llamawebui.models import BenchmarkRunRecord
 from llamawebui.services.benchmark_runner import BenchmarkBusyError, BenchmarkRunNotFoundError
 from llamawebui.services.control_plane import ControlPlaneError
+from llamawebui.services.launch_settings import (
+    launch_settings,
+    profile_fingerprint,
+    settings_changes,
+)
+from llamawebui.services.profile_registry import ProfileNotFoundError
 
 # The figures a run is judged by, as stats keys, with how they read.
 KEY_STATS = (
@@ -51,6 +59,9 @@ def run_summary(record: BenchmarkRunRecord) -> dict[str, object]:
         "profile": record.profile_alias,
         "profile_version": record.profile_version,
         "benchmark": record.benchmark_id,
+        "reasoning_level": record.reasoning_level,
+        # Runs with the same value measured the same launch settings.
+        "settings": record.settings_fingerprint[:10] if record.settings_fingerprint else None,
         "state": record.state,
         "error": record.error,
         "load_seconds": stats.get("load_seconds"),
@@ -64,9 +75,13 @@ def run_summary(record: BenchmarkRunRecord) -> dict[str, object]:
 
 def benchmark_notice(record: BenchmarkRunRecord) -> str:
     """How a finished run went, in one line for the conversation that started it."""
-    head = f"Benchmark run {record.id} ({record.benchmark_title} on {record.profile_alias}) "
+    level = record.reasoning_level or "the model's default"
+    head = (
+        f"Benchmark run {record.id} has finished ({record.state}): {record.benchmark_title} "
+        f"on {record.profile_alias}, reasoning {level}. "
+    )
     if record.state != "completed":
-        return head + f"{record.state}: {record.error or 'no reason given'}."
+        return head + f"{record.error or 'No reason given'}."
     stats = record.stats or {}
     figures = [
         f"{label} {stats[key]} {unit}"
@@ -77,7 +92,8 @@ def benchmark_notice(record: BenchmarkRunRecord) -> str:
     figures += [
         f"peak {name.split('_')[0].upper()} {value} GiB" for name, value in peak.items() if value
     ]
-    return head + "completed: " + (", ".join(figures) or "no figures recorded") + "."
+    text = ", ".join(figures) or "no figures recorded"
+    return head + text[0].upper() + text[1:] + "."
 
 
 def _run(context: ToolContext, run_id: str) -> BenchmarkRunRecord:
@@ -94,10 +110,34 @@ def _brief(context: ToolContext) -> Brief | None:
         return None
 
 
-def _benchmark(context: ToolContext, benchmark_id: str | None) -> Benchmark:
+def _reasoning_level(context: ToolContext) -> str | None:
+    """The brief's reasoning level; blank there means the model's default."""
+    brief = _brief(context)
+    return brief.reasoning_level if brief else None
+
+
+def measured_now(services: ToolServices, reference: str) -> bool:
+    """Whether a completed run measured the profile exactly as it launches now."""
+    registry = services.profiles
+    try:
+        profile = registry.get(reference)
+    except ProfileNotFoundError:
+        match = next((record for record in registry.list() if record.alias == reference), None)
+        if match is None:
+            return False
+        profile = match
+    current = profile_fingerprint(profile)
+    return any(
+        record.state == "completed" and record.settings_fingerprint == current
+        for record in services.benchmark_runs.list(profile.id)
+    )
+
+
+def _benchmark(context: ToolContext) -> Benchmark:
+    """The brief's benchmark: every run in a conversation uses it, so runs compare."""
     benchmarks: Sequence[Benchmark] = context.services.benchmarks()
     brief = _brief(context)
-    wanted = benchmark_id or (brief.benchmark_id if brief else None) or DEFAULT_BENCHMARK_ID
+    wanted = (brief.benchmark_id if brief else None) or DEFAULT_BENCHMARK_ID
     benchmark = next((item for item in benchmarks if item.id == wanted), None)
     if benchmark is None:
         raise ToolError(f"there is no benchmark {wanted!r}; see list_benchmarks")
@@ -132,10 +172,16 @@ async def describe_benchmark(
     record = find_profile(context, text_argument(arguments, "profile"))
     if not record.enabled:
         raise ToolError(f"{record.alias} is disabled; enable it with update_profile first")
-    benchmark = _benchmark(context, text_argument(arguments, "benchmark_id", required=False))
+    benchmark = _benchmark(context)
+    level = _reasoning_level(context)
     return (
         f"Benchmark {record.alias} with {benchmark.title}",
-        {"profile": record.alias, "version": record.version, "benchmark": benchmark.title},
+        {
+            "profile": record.alias,
+            "version": record.version,
+            "benchmark": benchmark.title,
+            "reasoning": level or "model default",
+        },
     )
 
 
@@ -143,11 +189,8 @@ async def run_benchmark(context: ToolContext, arguments: Mapping[str, object]) -
     _check_can_run(context, arguments)
     services = context.services
     record = find_profile(context, text_argument(arguments, "profile"))
-    benchmark = _benchmark(context, text_argument(arguments, "benchmark_id", required=False))
-    brief = _brief(context)
-    reasoning = text_argument(arguments, "reasoning_level", required=False) or (
-        brief.reasoning_level if brief else None
-    )
+    benchmark = _benchmark(context)
+    reasoning = _reasoning_level(context)
     system_prompt = next(
         (item for item in services.system_prompts() if item.id == DEFAULT_SYSTEM_PROMPT_ID), None
     )
@@ -159,6 +202,7 @@ async def run_benchmark(context: ToolContext, arguments: Mapping[str, object]) -
             tools=True,
             system_prompt=system_prompt,
             reasoning_level=reasoning,
+            conversation_id=context.conversation_id or None,
         )
     except (BenchmarkBusyError, ValueError) as error:
         raise ToolError(str(error)) from error
@@ -167,6 +211,8 @@ async def run_benchmark(context: ToolContext, arguments: Mapping[str, object]) -
         {
             "run_id": run.id,
             "profile": record.alias,
+            "benchmark": benchmark.id,
+            "reasoning_level": reasoning,
             "note": "The benchmark runs in the background and stops the router when done. "
             "You will be notified when it finishes; do not poll for it.",
         },
@@ -179,6 +225,16 @@ async def get_benchmark_run(context: ToolContext, arguments: Mapping[str, object
     payload = run_summary(record)
     stats = record.stats or {}
     payload["stats"] = stats
+    if record.launch_settings is not None:
+        try:
+            profile = context.services.profiles.get(record.profile_id)
+        except ProfileNotFoundError:
+            pass
+        else:
+            # Empty when the profile still launches exactly as this run measured it.
+            payload["differs_from_profile_now"] = settings_changes(
+                launch_settings(profile), record.launch_settings
+            )
     progress = context.services.benchmark_runner.progress(record.id)
     if progress is not None:
         payload["stage"] = progress.get("stage")
@@ -188,8 +244,17 @@ async def get_benchmark_run(context: ToolContext, arguments: Mapping[str, object
 async def list_benchmark_runs(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
     reference = text_argument(arguments, "profile", required=False)
     profile_id = find_profile(context, reference).id if reference else None
-    runs = [run_summary(record) for record in context.services.benchmark_runs.list(profile_id)]
-    return json_result(runs[:20], f"{len(runs)} runs")
+    limit = arguments.get("limit")
+    count = limit if isinstance(limit, int) and not isinstance(limit, bool) else 10
+    count = max(1, min(count, 30))
+    records = context.services.benchmark_runs.list(profile_id)
+    benchmark_id = text_argument(arguments, "benchmark_id", required=False)
+    if benchmark_id:
+        records = [record for record in records if record.benchmark_id == benchmark_id]
+    runs = [run_summary(record) for record in records[:count]]
+    return json_result(
+        {"runs": runs, "total": len(records)}, f"{len(runs)} of {len(records)} runs"
+    )
 
 
 def brief_target_count(brief: Brief) -> int:
@@ -275,6 +340,110 @@ def evaluation(brief: Brief, record: BenchmarkRunRecord) -> dict[str, object]:
     }
 
 
+# Lower is better for these; higher for the rest.
+_LOWER_IS_BETTER = frozenset({"load", "peak RAM", "peak VRAM"})
+# How much a run's workload may differ from its baseline's before speeds stop comparing.
+_WORKLOAD_TOLERANCE = 0.25
+_WORKLOAD = (
+    ("prompt_tokens", "prompt tokens"),
+    ("generated_tokens", "generated tokens"),
+    ("context_peak", "peak context"),
+)
+
+
+def _baseline(context: ToolContext, record: BenchmarkRunRecord) -> BenchmarkRunRecord | None:
+    """The run to compare with: this conversation's first comparable run, else the latest
+    comparable one before it. Comparable means completed, earlier, and the same benchmark
+    and reasoning level."""
+    runs = context.services.benchmark_runs
+
+    def comparable(item: BenchmarkRunRecord) -> bool:
+        return (
+            item.id != record.id
+            and item.state == "completed"
+            and item.benchmark_id == record.benchmark_id
+            and item.reasoning_level == record.reasoning_level
+            and item.started_at <= record.started_at
+        )
+
+    # Newest first, so the conversation's first run is the last.
+    mine = (
+        [item for item in runs.list(conversation_id=context.conversation_id) if comparable(item)]
+        if context.conversation_id
+        else []
+    )
+    brief = _brief(context)
+    for profile_id in (record.profile_id, brief.profile_id if brief else None):
+        matches = [item for item in mine if item.profile_id == profile_id]
+        if matches:
+            return matches[-1]
+    earlier = [item for item in runs.list(record.profile_id) if comparable(item)]
+    return earlier[0] if earlier else None
+
+
+def _figures(record: BenchmarkRunRecord) -> dict[str, float | None]:
+    stats = record.stats or {}
+    figures: dict[str, float | None] = {}
+    for key, label, _ in KEY_STATS:
+        value = stats.get(key)
+        figures[label] = float(value) if isinstance(value, int | float) else None
+    peak = peak_memory(record)
+    figures["peak RAM"] = peak["ram_gib"]
+    figures["peak VRAM"] = peak["vram_gib"]
+    return figures
+
+
+def comparison(baseline: BenchmarkRunRecord, record: BenchmarkRunRecord) -> dict[str, object]:
+    """How a run differs from its baseline: settings, figures and the work each did."""
+    before, after = _figures(baseline), _figures(record)
+    metrics: list[dict[str, object]] = []
+    for label, old in before.items():
+        new = after[label]
+        change = round((new - old) / old * 100, 1) if old and new is not None else None
+        better = None
+        if change:
+            better = (change < 0) == (label in _LOWER_IS_BETTER)
+        metrics.append(
+            {
+                "metric": label,
+                "baseline": old,
+                "run": new,
+                "change_percent": change,
+                "better": better,
+            }
+        )
+    old_stats, new_stats = baseline.stats or {}, record.stats or {}
+    workload = {
+        label: {"baseline": old_stats.get(key), "run": new_stats.get(key)}
+        for key, label in _WORKLOAD
+    }
+    warnings = []
+    for label, pair in workload.items():
+        old_value, new_value = pair["baseline"], pair["run"]
+        if (
+            isinstance(old_value, int | float)
+            and isinstance(new_value, int | float)
+            and old_value
+            and abs(new_value - old_value) / old_value > _WORKLOAD_TOLERANCE
+        ):
+            warnings.append(
+                f"{label} differ ({old_value:,} vs {new_value:,}), so speed differences may "
+                "come from the work the model chose to do rather than the settings"
+            )
+    return {
+        "baseline_run_id": baseline.id,
+        "baseline_profile": baseline.profile_alias,
+        "settings_changes": (
+            settings_changes(baseline.launch_settings, record.launch_settings)
+            if baseline.launch_settings is not None and record.launch_settings is not None
+            else None
+        ),
+        "metrics": metrics,
+        "workload": workload,
+        "warnings": warnings,
+    }
+
+
 async def evaluate_run(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
     record = _run(context, text_argument(arguments, "run_id"))
     brief = _brief(context)
@@ -283,8 +452,20 @@ async def evaluate_run(context: ToolContext, arguments: Mapping[str, object]) ->
     if record.state != "completed":
         raise ToolError(f"run {record.id} {record.state}, so it has no results to score")
     result = evaluation(brief, record)
-    targets = brief_target_count(brief)
-    return json_result(result, f"{result['targets_met']} of {targets} targets met")
+    baseline_id = text_argument(arguments, "baseline_run_id", required=False)
+    baseline = _run(context, baseline_id) if baseline_id else _baseline(context, record)
+    if baseline is not None and baseline.state != "completed":
+        raise ToolError(f"run {baseline.id} {baseline.state}, so it cannot be a baseline")
+    summary = f"{result['targets_met']} of {brief_target_count(brief)} targets met"
+    result["baseline"] = None
+    if baseline is not None:
+        compared = comparison(baseline, record)
+        result["baseline"] = compared
+        metrics = cast(list[dict[str, object]], compared["metrics"])
+        decode = next(item for item in metrics if item["metric"] == "decode")
+        if decode["change_percent"] is not None:
+            summary += f"; decode {decode['change_percent']:+}% vs baseline"
+    return json_result(result, summary)
 
 
 async def describe_stop(
@@ -341,15 +522,12 @@ BENCHMARK_TOOLS = (
     ),
     Tool(
         "run_benchmark",
-        "Benchmark an enabled profile: starts the router, loads only that profile, measures "
-        "load time, prefill and decode speed and memory, then stops the router. Needs the "
+        "Benchmark an enabled profile with the brief's benchmark and reasoning level, so "
+        "every run compares: starts the router, loads only that profile, measures load "
+        "time, prefill and decode speed and memory, then stops the router. Needs the "
         "router stopped. Runs in the background; you are notified when it ends.",
         object_schema(
-            {
-                "profile": {"type": "string", "description": "The profile's id or alias."},
-                "benchmark_id": {"type": "string", "description": "Defaults to the brief's."},
-                "reasoning_level": {"type": "string"},
-            },
+            {"profile": {"type": "string", "description": "The profile's id or alias."}},
             ["profile"],
         ),
         "server.lifecycle.write",
@@ -359,23 +537,35 @@ BENCHMARK_TOOLS = (
     ),
     Tool(
         "get_benchmark_run",
-        "One benchmark run in full: state, error, every statistic and peak memory.",
+        "One benchmark run in full: state, error, every statistic, peak memory, and how the "
+        "profile's settings now differ from what the run measured.",
         object_schema({"run_id": {"type": "string"}}, ["run_id"]),
         "server.read",
         get_benchmark_run,
     ),
     Tool(
         "list_benchmark_runs",
-        "Recent benchmark runs, newest first, with their key figures, for comparing changes.",
-        object_schema({"profile": {"type": "string", "description": "Only this profile."}}),
+        "Recent benchmark runs, newest first, with their key figures. Runs with the same "
+        "'settings' value measured the same launch settings.",
+        object_schema(
+            {
+                "profile": {"type": "string", "description": "Only this profile."},
+                "benchmark_id": {"type": "string", "description": "Only this benchmark."},
+                "limit": {"type": "integer", "description": "How many, 1 to 30; default 10."},
+            }
+        ),
         "server.read",
         list_benchmark_runs,
     ),
     Tool(
         "evaluate_run",
         "Score a completed run against the brief's targets, in priority order, with the gap "
-        "to each target.",
-        object_schema({"run_id": {"type": "string"}}, ["run_id"]),
+        "to each target, and compare it with a baseline run: the settings that differ, the "
+        "change in each figure, and a warning when the two runs did very different amounts "
+        "of work. The baseline defaults to this conversation's first comparable run.",
+        object_schema(
+            {"run_id": {"type": "string"}, "baseline_run_id": {"type": "string"}}, ["run_id"]
+        ),
         "server.read",
         evaluate_run,
     ),

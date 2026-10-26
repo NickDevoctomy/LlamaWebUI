@@ -36,9 +36,9 @@ const conversation: AssistantConversationDetail = {
   ],
 }
 
-function renderPanel(canWrite = true) {
+function renderPanel(canWrite = true, canDeleteRuns = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={client}><AssistantPanel canWrite={canWrite} status={status} /></QueryClientProvider>)
+  return render(<QueryClientProvider client={client}><AssistantPanel canDeleteRuns={canDeleteRuns} canWrite={canWrite} status={status} /></QueryClientProvider>)
 }
 
 beforeEach(() => {
@@ -94,6 +94,53 @@ describe('AssistantPanel', () => {
     const [brief, title] = create.mock.calls[0]
     expect(title).toBe('')
     expect(brief).toMatchObject({ subject: 'model', model: { repo_id: 'owner/Model-GGUF', quantization: null }, profile_id: null, min_decode_tps: 30, min_context_tokens: 65536, max_ram_gb: null, parallel_slots: 1, priority: ['prefill', 'decode', 'load', 'memory'] })
+  })
+
+  it('starts a profile brief at the reasoning level the profile was last benchmarked at', async () => {
+    vi.spyOn(api, 'assistantConversations').mockResolvedValue([])
+    vi.spyOn(api, 'profiles').mockResolvedValue([
+      { id: 'p1', alias: 'qwen', benchmark_results: { tetris: { reasoning_level: 'low' } } },
+      { id: 'p2', alias: 'fresh' },
+    ] as never)
+    const create = vi.spyOn(api, 'createAssistantConversation').mockResolvedValue({ ...conversation, messages: [] })
+    renderPanel()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'New optimisation' }))
+    const dialog = screen.getByRole('dialog', { name: 'New optimisation' })
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Optimise a profile' }))
+    await within(dialog).findByRole('option', { name: 'qwen' })
+    fireEvent.change(within(dialog).getByLabelText('Profile'), { target: { value: 'p1' } })
+    expect(within(dialog).getByLabelText(/^Reasoning/)).toHaveValue('low')
+    expect(within(dialog).getByText('As the profile was last measured.')).toBeInTheDocument()
+    fireEvent.change(within(dialog).getByLabelText('Profile'), { target: { value: 'p2' } })
+    expect(within(dialog).getByLabelText(/^Reasoning/)).toHaveValue('')
+    fireEvent.change(within(dialog).getByLabelText('Profile'), { target: { value: 'p1' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Start' }))
+    await waitFor(() => expect(create.mock.calls[0]?.[0]).toMatchObject({ profile_id: 'p1', reasoning_level: 'low' }))
+  })
+
+  it('deletes the benchmark runs a conversation started', async () => {
+    const withRuns = { ...conversation, benchmark_runs: 3 }
+    vi.spyOn(api, 'assistantConversations').mockResolvedValue([withRuns])
+    vi.spyOn(api, 'assistantConversation').mockResolvedValue(withRuns)
+    const cleanup = vi.spyOn(api, 'deleteConversationRuns').mockResolvedValue({ deleted: ['a', 'b'], skipped: [{ run_id: 'c', reason: 'running' }] })
+    renderPanel(true, true)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete 3 runs' }))
+    const dialog = screen.getByRole('dialog', { name: 'Delete 3 benchmark runs?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete runs' }))
+    await waitFor(() => expect(cleanup).toHaveBeenCalledWith('c1'))
+    expect(await screen.findByRole('status')).toHaveTextContent('Deleted 2 benchmark runs; 1 still running was kept.')
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByText(/Deleted 2 benchmark runs/)).not.toBeInTheDocument()
+  })
+
+  it('offers no run clean-up without permission or runs', async () => {
+    vi.spyOn(api, 'assistantConversations').mockResolvedValue([conversation])
+    vi.spyOn(api, 'assistantConversation').mockResolvedValue({ ...conversation, benchmark_runs: 2 })
+    renderPanel(true, false)
+    expect(await screen.findByRole('heading', { name: conversation.title })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Delete 2 runs/ })).not.toBeInTheDocument()
   })
 
   it('shows the conversation, its tool calls and cost, and sends a message', async () => {

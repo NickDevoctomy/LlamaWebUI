@@ -32,6 +32,19 @@ def isolated_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(keyring, "delete_password", delete_password)
 
 
+@pytest.fixture(autouse=True)
+def isolated_shipped_documents(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep tests away from the research and reports shipped in the repository, which
+    change as the maintainer publishes, and never let a test publish into them."""
+    from llamawebui.assistant import reports, research
+
+    shipped = tmp_path_factory.mktemp("shipped")
+    monkeypatch.setattr(research, "SHIPPED_DIRECTORY", shipped / "research")
+    monkeypatch.setattr(reports, "SHIPPED_DIRECTORY", shipped / "reports")
+
+
 @pytest.fixture
 def login() -> Login:
     """Return a helper that authenticates a TestClient against the default admin account.
@@ -41,9 +54,7 @@ def login() -> Login:
     """
 
     def _login(client: TestClient, username: str = "admin", password: str = "admin") -> TestClient:
-        response = client.post(
-            "/api/auth/login", json={"username": username, "password": password}
-        )
+        response = client.post("/api/auth/login", json={"username": username, "password": password})
         if response.status_code == 401 and username == "admin" and password == "admin":
             password = "test-admin-password"
             response = client.post(

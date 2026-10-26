@@ -466,10 +466,12 @@ def test_benchmark_results_are_summarised_and_scored() -> None:
     record = _run()
     assert peak_memory(record) == {"ram_gib": 12.0, "vram_gib": 4.0}
     assert benchmark_notice(record) == (
-        "Benchmark run run-1 (Tetris on test-model) completed: load 12.5 s, prefill 900.0 "
-        "tok/s, decode 25.0 tok/s, peak RAM 12.0 GiB, peak VRAM 4.0 GiB."
+        "Benchmark run run-1 has finished (completed): Tetris on test-model, reasoning the "
+        "model's default. Load 12.5 s, prefill 900.0 tok/s, decode 25.0 tok/s, peak RAM "
+        "12.0 GiB, peak VRAM 4.0 GiB."
     )
-    assert "failed: boom" in benchmark_notice(_run(state="failed", error="boom"))
+    failed = benchmark_notice(_run(state="failed", error="boom", reasoning_level="medium"))
+    assert failed.endswith("has finished (failed): Tetris on test-model, reasoning medium. boom.")
     brief = Brief.model_validate(
         {
             "subject": "profile",
@@ -548,7 +550,15 @@ def test_benchmark_tools_read_and_score_runs(tmp_path: Path, login: Login) -> No
     with TestClient(app, client=LOCAL) as client:
         runtime_id, _ = _setup(client, login, tmp_path)
         listed = _call(client, "list_benchmarks", {})
-        unknown = _call(client, "run_benchmark", {"profile": "test-model", "benchmark_id": "nope"})
+        # Runs always use the brief's benchmark.
+        unknown = _call(
+            client,
+            "run_benchmark",
+            {"profile": "test-model"},
+            subject="profile",
+            profile_id="p",
+            benchmark_id="nope",
+        )
         profile = app.state.profile_registry.list()[0]
         run = app.state.benchmark_runs.create(profile, app.state.benchmarks[0], None)
         app.state.benchmark_runs.update(
@@ -571,7 +581,7 @@ def test_benchmark_tools_read_and_score_runs(tmp_path: Path, login: Login) -> No
     assert json.loads(listed.text)[0]["id"]
     assert "there is no benchmark 'nope'" in unknown.text
     assert json.loads(detail.text)["peak"] == {"ram_gib": 2.0, "vram_gib": None}
-    assert json.loads(runs.text)[0]["run_id"] == run.id
+    assert json.loads(runs.text)["runs"][0]["run_id"] == run.id
     assert scored.summary == "1 of 1 targets met"
     assert missing.ok is False
     assert "brief could not be read" in bad_brief.text

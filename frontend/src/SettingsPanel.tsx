@@ -168,11 +168,18 @@ const APPROVAL_CATEGORIES: { key: ApprovalCategory; label: string; description: 
 function AssistantTab({ canManage }: { canManage: boolean }) {
   const queryClient = useQueryClient()
   const settings = useQuery({ queryKey: ['assistant-settings'], queryFn: api.assistantSettings })
-  const [draft, setDraft] = useState<{ name: string; spend: string; rounds: string }>()
+  const [draft, setDraft] = useState<{ name: string; spend: string; rounds: string; search: string }>()
   const saved = settings.data
-  const values = draft ?? (saved ? { name: saved.name, spend: String(saved.spend_limit_usd), rounds: String(saved.max_rounds_per_turn) } : undefined)
+  const values = draft ?? (saved ? { name: saved.name, spend: String(saved.spend_limit_usd), rounds: String(saved.max_rounds_per_turn), search: saved.search_model ?? '' } : undefined)
+  // Suggestions for the search model, from OpenRouter's list as it is typed.
+  const searchQuery = (values?.search ?? '').trim()
+  const searchModels = useQuery({
+    queryKey: ['openrouter-models', searchQuery],
+    queryFn: () => api.openRouterModels(searchQuery),
+    enabled: canManage && searchQuery.length >= 2,
+  })
   const save = useMutation({
-    mutationFn: () => api.updateAssistantSettings({ ...saved!, name: values!.name, spend_limit_usd: Number(values!.spend), max_rounds_per_turn: Number(values!.rounds) }),
+    mutationFn: () => api.updateAssistantSettings({ ...saved!, name: values!.name, spend_limit_usd: Number(values!.spend), max_rounds_per_turn: Number(values!.rounds), search_model: values!.search.trim() || null }),
     onSuccess: async (next) => {
       queryClient.setQueryData(['assistant-settings'], next)
       setDraft(undefined)
@@ -190,7 +197,7 @@ function AssistantTab({ canManage }: { canManage: boolean }) {
   })
   if (settings.isError) return <div className="settings-body"><div className="capability-note error" role="alert"><AlertCircle size={16} /><span>{settings.error.message}</span></div></div>
   if (!values) return <div className="settings-body"><div className="capability-note" role="status"><LoaderCircle className="spin" size={16} /><span>Loading assistant settings…</span></div></div>
-  const change = (key: 'name' | 'spend' | 'rounds') => (event: React.ChangeEvent<HTMLInputElement>) => setDraft({ ...values, [key]: event.target.value })
+  const change = (key: 'name' | 'spend' | 'rounds' | 'search') => (event: React.ChangeEvent<HTMLInputElement>) => setDraft({ ...values, [key]: event.target.value })
   const hint = canManage ? undefined : SETTINGS_WRITE_HINT
   return <>
     <div className="settings-section"><h3>Assistant</h3><p>What the assistant is called, and how far one conversation may go before it stops to check with you.</p></div>
@@ -198,6 +205,8 @@ function AssistantTab({ canManage }: { canManage: boolean }) {
       <label className="form-field"><span>Name</span><input disabled={!canManage} maxLength={40} onChange={change('name')} title={hint} value={values.name} /><small>Used in its replies and its instructions.</small></label>
       <label className="form-field"><span>Spending limit (USD)</span><input disabled={!canManage} inputMode="decimal" min="0.01" onChange={change('spend')} step="0.01" title={hint} type="number" value={values.spend} /><small>A conversation pauses at this cost; continuing adds the same again.</small></label>
       <label className="form-field"><span>Model calls per message</span><input disabled={!canManage} inputMode="numeric" min="1" onChange={change('rounds')} step="1" title={hint} type="number" value={values.rounds} /><small>Tool calls included, before it stops and waits.</small></label>
+      <label className="form-field"><span>Web search model</span><input autoComplete="off" disabled={!canManage} list="search-models" onChange={change('search')} placeholder="Same as the assistant" spellCheck={false} title={hint} value={values.search} /><small>An OpenRouter model that answers web searches. One built for search returns answers with sources.</small></label>
+      <datalist id="search-models">{(searchModels.data?.models ?? []).map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</datalist>
       <button className="button primary" disabled={!canManage || !draft || !values.name.trim() || save.isPending} title={hint} type="submit">{save.isPending ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />} Save</button>
       {save.error && <div className="form-error" role="alert"><AlertCircle size={15} /> {save.error.message}</div>}
     </form>

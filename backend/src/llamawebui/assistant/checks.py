@@ -8,7 +8,7 @@ because the assistant is then rightly waiting for its notification.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from llamawebui.models import AssistantMessageRecord
 
@@ -48,8 +48,13 @@ def turn_checks(
     router_running: bool,
     router_at_start: Mapping[str, object] | None,
     autonomous: bool = False,
+    measured: Callable[[str], bool] = lambda profile: False,
 ) -> list[tuple[str, str]]:
-    """What the assistant still has to do, or explain, before it finishes: (kind, text)."""
+    """What the assistant still has to do, or explain, before it finishes: (kind, text).
+
+    ``measured`` says whether a completed run already measured a profile's current
+    settings, as after reverting a change.
+    """
     unmeasured: dict[str, None] = {}
     # How the assistant's latest router action left the router (True: running).
     left_running: bool | None = None
@@ -84,6 +89,7 @@ def turn_checks(
         elif name == "write_report":
             unreported = False
     reminders: list[tuple[str, str]] = []
+    unmeasured = {name: None for name in unmeasured if not measured(name)}
     if unmeasured:
         reminders.append(
             (

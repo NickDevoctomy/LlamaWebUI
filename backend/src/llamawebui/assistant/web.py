@@ -31,6 +31,8 @@ TEXT_TYPES = (
     "text/markdown",
     "application/json",
 )
+# A search that streams for longer than this is abandoned.
+SEARCH_TIMEOUT_SECONDS = 90
 SEARCH_PROMPT = (
     "Answer the question using the web search results. Be factual and concise, give exact "
     "figures, versions and flags where the sources state them, and cite the sources you use "
@@ -283,14 +285,22 @@ class WebAccess:
         sources: dict[str, dict[str, str]] = {}
         usage: Mapping[str, object] = {}
         try:
-            async for chunk in self._client.chat_stream(
-                model,
-                [{"role": "system", "content": SEARCH_PROMPT}, {"role": "user", "content": query}],
-                options={"plugins": [{"id": "web", "max_results": SEARCH_RESULTS}]},
-            ):
-                if isinstance(chunk.get("usage"), dict):
-                    usage = cast(dict[str, object], chunk["usage"])
-                _take_search_chunk(chunk, answer, sources)
+            async with asyncio.timeout(SEARCH_TIMEOUT_SECONDS):
+                async for chunk in self._client.chat_stream(
+                    model,
+                    [
+                        {"role": "system", "content": SEARCH_PROMPT},
+                        {"role": "user", "content": query},
+                    ],
+                    options={"plugins": [{"id": "web", "max_results": SEARCH_RESULTS}]},
+                ):
+                    if isinstance(chunk.get("usage"), dict):
+                        usage = cast(dict[str, object], chunk["usage"])
+                    _take_search_chunk(chunk, answer, sources)
+        except TimeoutError as error:
+            raise WebError(
+                f"the search took longer than {SEARCH_TIMEOUT_SECONDS} s and was abandoned"
+            ) from error
         except OpenRouterError as error:
             raise WebError(str(error)) from error
         cost = usage.get("cost")

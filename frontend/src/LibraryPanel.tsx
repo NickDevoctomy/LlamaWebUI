@@ -1,7 +1,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, BookOpen, Check, ExternalLink, FileBarChart, LoaderCircle, Search as SearchIcon, Trash2, Upload, type LucideIcon } from 'lucide-react'
 import { useDeferredValue, useState, type ReactNode } from 'react'
-import { api, type LibraryKind, type ReportDocument, type ReportSummary, type ResearchDocument, type ResearchSummary } from './api'
+import { api, type LibraryKind, type ReportDocument, type ReportResult, type ReportSummary, type ResearchDocument, type ResearchSummary } from './api'
 import { LazyMarkdown } from './LazyMarkdown'
 import { Dialog } from './SetupPanels'
 
@@ -193,6 +193,38 @@ export function change(before: number | null | undefined, after: number | null |
   return `${percent > 0 ? '+' : ''}${percent.toFixed(1)}%`
 }
 
+function ResultsTable({ results, label }: { results: ReportResult[]; label: string }) {
+  return <table className="report-results" aria-label={label}>
+    <thead><tr><th scope="col">Result</th><th scope="col">Before</th><th scope="col">After</th><th scope="col">Change</th></tr></thead>
+    <tbody>{results.map((result) => <tr key={result.metric}>
+      <th scope="row">{result.metric}{result.unit ? <small> {result.unit}</small> : null}</th>
+      <td>{number(result.before)}</td>
+      <td>{number(result.after)}</td>
+      <td>{change(result.before, result.after)}</td>
+    </tr>)}</tbody>
+  </table>
+}
+
+/** Options measured on the way, and what the work left behind for the operator. */
+function ReportExtras({ document }: { document: ReportDocument }) {
+  const alternatives = document.alternatives ?? []
+  const leftBehind = document.left_behind ?? []
+  return <>
+    {alternatives.length > 0 && <section className="research-sources report-alternatives" aria-label="Alternatives">
+      <h3>Alternatives</h3>
+      {alternatives.map((item) => <div className="report-alternative" key={item.name}>
+        <p><strong>{item.name}</strong>{item.profile ? <code>{item.profile}</code> : null}</p>
+        {item.summary && <p>{item.summary}</p>}
+        {item.results.length > 0 && <ResultsTable label={`${item.name} results`} results={item.results} />}
+      </div>)}
+    </section>}
+    {leftBehind.length > 0 && <section className="research-sources" aria-label="Left on this machine">
+      <h3>Left on this machine</h3>
+      <ul>{leftBehind.map((item) => <li key={item}>{item}</li>)}</ul>
+    </section>}
+  </>
+}
+
 const REPORTS: LibraryConfig<ReportSummary, ReportDocument> = {
   kind: 'reports',
   title: 'Reports',
@@ -210,15 +242,8 @@ const REPORTS: LibraryConfig<ReportSummary, ReportDocument> = {
     ...fact('Runtime', document.runtime),
     ...fact('Benchmark', document.benchmark),
   ],
-  before: (document) => document.results.length > 0 && <table className="report-results" aria-label="Results">
-    <thead><tr><th scope="col">Result</th><th scope="col">Before</th><th scope="col">After</th><th scope="col">Change</th></tr></thead>
-    <tbody>{document.results.map((result) => <tr key={result.metric}>
-      <th scope="row">{result.metric}{result.unit ? <small> {result.unit}</small> : null}</th>
-      <td>{number(result.before)}</td>
-      <td>{number(result.after)}</td>
-      <td>{change(result.before, result.after)}</td>
-    </tr>)}</tbody>
-  </table>,
+  before: (document) => document.results.length > 0 && <ResultsTable label="Results" results={document.results} />,
+  after: (document) => <ReportExtras document={document} />,
   charts: true,
 }
 

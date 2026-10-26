@@ -98,8 +98,15 @@ class ResearchLibrary(DocumentLibrary[ResearchMeta]):
     def __init__(
         self,
         local: Path,
-        shipped: Path = SHIPPED_DIRECTORY,
+        shipped: Path | None = None,
         *,
         today: Callable[[], date] = date.today,
     ) -> None:
-        super().__init__(local, shipped, ResearchMeta, noun="research document", today=today)
+        # Read when built rather than bound as a default, so tests can point it elsewhere.
+        super().__init__(
+            local,
+            shipped or SHIPPED_DIRECTORY,
+            ResearchMeta,
+            noun="research document",
+            today=today,
+        )

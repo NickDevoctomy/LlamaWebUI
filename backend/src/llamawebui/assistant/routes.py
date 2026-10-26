@@ -34,7 +34,7 @@ from llamawebui.assistant.settings import AssistantSettings, load_settings, save
 from llamawebui.domain.benchmark import DEFAULT_BENCHMARK_ID, Benchmark
 from llamawebui.local_requests import is_local_request
 from llamawebui.services.auth_service import AuthenticatedUser
-from llamawebui.services.benchmark_runner import REASONING_LEVELS
+from llamawebui.services.benchmark_runner import REASONING_LEVELS, BenchmarkRunRegistry
 from llamawebui.services.profile_registry import ProfileNotFoundError, ProfileRegistry
 from llamawebui.services.settings_store import SettingsStore
 
@@ -118,11 +118,18 @@ def _checked_brief(request: Request, brief: Brief) -> tuple[Brief, str]:
     return brief.model_copy(update={"benchmark_id": benchmark_id}), title
 
 
+def _benchmark_runs(request: Request) -> BenchmarkRunRegistry:
+    return cast(BenchmarkRunRegistry, request.app.state.benchmark_runs)
+
+
 def _detail(request: Request, conversation_id: str) -> dict[str, object]:
     engine = _engine(request)
     record = _conversations(request).get(conversation_id)
+    runs = _benchmark_runs(request).list(conversation_id=conversation_id)
     return {
         **conversation_payload(record, running=engine.active_conversation_id == conversation_id),
+        # Runs the assistant started here that still exist, for cleaning up afterwards.
+        "benchmark_runs": len(runs),
         "messages": [
             message_payload(message)
             for message in _conversations(request).messages(conversation_id)
@@ -193,6 +200,23 @@ async def delete_conversation(conversation_id: str, request: Request) -> None:
             detail="stop the assistant before deleting the conversation",
         )
     _conversations(request).delete(conversation_id)
+
+
+@router.post("/assistant/conversations/{conversation_id}/benchmark-runs/delete")
+async def delete_conversation_runs(conversation_id: str, request: Request) -> dict[str, object]:
+    """Delete the finished benchmark runs this conversation started."""
+    _conversation_or_404(request, conversation_id)
+    # The same privilege the benchmark API asks for to delete a run.
+    if "server.lifecycle.write" not in _user(request).privileges:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="deleting benchmark runs needs the server lifecycle write privilege",
+        )
+    runs = _benchmark_runs(request)
+    deleted, skipped = runs.delete_many(
+        [record.id for record in runs.list(conversation_id=conversation_id)]
+    )
+    return {"deleted": deleted, "skipped": skipped}
 
 
 @router.post("/assistant/conversations/{conversation_id}/messages", status_code=202)

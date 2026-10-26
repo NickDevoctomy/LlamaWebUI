@@ -555,4 +555,38 @@ describe('BenchmarksPanel', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Delete run' }))
     await waitFor(() => expect(remove).toHaveBeenCalledWith('run-1'))
   })
+
+  it('selects finished runs and deletes them together', async () => {
+    const older = { ...finished, id: 'run-3', started_at: '2026-10-22T09:00:00' }
+    mockApi([running, finished, older])
+    const remove = vi.spyOn(api, 'deleteBenchmarkRuns').mockResolvedValue({ deleted: ['run-1', 'run-3'], skipped: [] })
+    renderPanel()
+
+    const deleteButton = await screen.findByRole('button', { name: 'Delete' })
+    expect(deleteButton).toBeDisabled()
+    // A running run cannot be chosen.
+    expect(screen.getAllByRole('checkbox', { name: /^Select run/ })[0]).toBeDisabled()
+    fireEvent.click(screen.getAllByRole('checkbox', { name: /^Select run/ })[1])
+    expect(screen.getByRole('checkbox', { name: 'Select every finished run' })).toHaveProperty('indeterminate', true)
+    fireEvent.click(screen.getByRole('button', { name: 'Delete 1' }))
+    expect(await screen.findByRole('dialog', { name: 'Delete 1 benchmark run?' })).toHaveTextContent('1 of 2 finished runs will be deleted.')
+    fireEvent.click(screen.getByRole('button', { name: 'Keep runs' }))
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select every finished run' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete 2' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete 2 benchmark runs?' })
+    expect(dialog).toHaveTextContent('Every finished run will be deleted.')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete runs' }))
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(['run-1', 'run-3']))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select every finished run' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select every finished run' }))
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled()
+  })
+
+  it('offers no selection without permission to run benchmarks', async () => {
+    mockApi([finished])
+    renderPanel('stopped', false)
+    expect(await screen.findByText(/Tetris · qwen-24gb/)).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: /^Select/ })).not.toBeInTheDocument()
+  })
 })

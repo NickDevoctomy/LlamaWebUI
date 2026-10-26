@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import platform
+import sys
 from collections.abc import Mapping
 
 from huggingface_hub.errors import HfHubHTTPError
@@ -16,6 +18,7 @@ from llamawebui.assistant.tools import (
     text_argument,
 )
 from llamawebui.assistant.tools.system import GIB, gib
+from llamawebui.domain.model_manifest import GgufGroup
 from llamawebui.models import DownloadJobRecord
 from llamawebui.services.download_registry import DownloadPlanError
 from llamawebui.services.huggingface_catalog import CatalogUnavailableError, RepositoryManifest
@@ -23,6 +26,15 @@ from llamawebui.services.llama_release_installer import ReleaseInstallError, gro
 from llamawebui.services.runtime_registry import RuntimeAlreadyRegisteredError
 
 README_CHARACTERS = 4000
+# How release file names name this machine's system and processor.
+_SYSTEM = {"win32": "win", "darwin": "macos"}.get(sys.platform, "ubuntu")
+_ARCH = "arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "x64"
+
+
+def for_this_machine(name: str) -> bool:
+    """Whether a release file is built for this system and processor."""
+    lowered = name.lower()
+    return f"-{_SYSTEM}-" in lowered and f"-{_ARCH}" in lowered
 BACKENDS = ("cpu", "cuda", "vulkan", "rocm", "sycl", "metal")
 
 
@@ -55,6 +67,22 @@ async def search_models(context: ToolContext, arguments: Mapping[str, object]) -
     return json_result(models, f"{len(models)} repositories")
 
 
+def _group(group: GgufGroup) -> dict[str, object]:
+    """A quantization group, leaving out what is true of almost every group."""
+    row: dict[str, object] = {
+        "group_key": group.key,
+        "quantization": group.quantization,
+        "size_gib": gib(group.total_size),
+    }
+    if len(group.files) != 1:
+        row["files"] = len(group.files)
+    if not group.complete:
+        row["complete"] = False
+    if group.projector_files:
+        row["projector_files"] = len(group.projector_files)
+    return row
+
+
 async def get_repository(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
     repo_id = text_argument(arguments, "repo_id")
     manifest = await _repository(context, repo_id)
@@ -63,17 +91,7 @@ async def get_repository(context: ToolContext, arguments: Mapping[str, object]) 
         {
             "repo_id": manifest.repo_id,
             "revision": manifest.revision,
-            "quantization_groups": [
-                {
-                    "group_key": group.key,
-                    "quantization": group.quantization,
-                    "size_gib": gib(group.total_size),
-                    "files": len(group.files),
-                    "complete": group.complete,
-                    "projector_files": len(group.projector_files),
-                }
-                for group in manifest.groups
-            ],
+            "quantization_groups": [_group(group) for group in manifest.groups],
             "readme": readme[:README_CHARACTERS]
             + ("… (cut)" if len(readme) > README_CHARACTERS else ""),
         },
@@ -125,20 +143,24 @@ async def list_runtime_releases(
     context: ToolContext, arguments: Mapping[str, object]
 ) -> ToolResult:
     tag = text_argument(arguments, "tag", required=False) or "latest"
+    every_platform = arguments.get("all_platforms") is True
     try:
         release = await context.services.releases.release(tag)
     except ReleaseInstallError as error:
         raise ToolError(str(error)) from error
+    builds = {
+        backend: [
+            group.primary.name
+            for group in group_runtime_assets(release.assets, backend=backend)
+            if every_platform or for_this_machine(group.primary.name)
+        ]
+        for backend in BACKENDS
+    }
     return json_result(
         {
             "tag": release.tag,
-            "builds": {
-                backend: [
-                    group.primary.name
-                    for group in group_runtime_assets(release.assets, backend=backend)
-                ]
-                for backend in BACKENDS
-            },
+            "platform": "all" if every_platform else f"{_SYSTEM} {_ARCH}",
+            "builds": {backend: names for backend, names in builds.items() if names},
         },
         release.tag,
     )
@@ -215,8 +237,17 @@ MODEL_TOOLS = (
     ),
     Tool(
         "list_runtime_releases",
-        "llama.cpp release builds on GitHub, by backend, for install_runtime.",
-        object_schema({"tag": {"type": "string", "description": "A release tag, or latest."}}),
+        "llama.cpp release builds on GitHub for this machine's system, by backend, for "
+        "install_runtime.",
+        object_schema(
+            {
+                "tag": {"type": "string", "description": "A release tag, or latest."},
+                "all_platforms": {
+                    "type": "boolean",
+                    "description": "List builds for every system, not only this machine's.",
+                },
+            }
+        ),
         "runtimes.read",
         list_runtime_releases,
     ),

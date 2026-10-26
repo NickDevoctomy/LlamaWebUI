@@ -19,6 +19,8 @@ const report: ReportDocument = {
   slug: 'qwen-tuning', title: 'Tuning Qwen3.8 27B', summary: 'Decode up 7%.', tags: [], updated: '2026-10-26', created: '2026-10-26', origin: 'local', replaces_shipped: false, author: null,
   subject: { profile: 'qwen3.8-27b' }, hardware: ['RTX 4090'], runtime: 'b11815', benchmark: 'Tetris', outcome: 'improved',
   results: [{ metric: 'decode', before: 112.2, after: 120.6, unit: 'tok/s' }, { metric: 'load', before: null, after: 6 }],
+  alternatives: [{ name: 'IQ4_XS clone', profile: 'qwen-iq4xs', summary: 'Less memory, same speed.', results: [{ metric: 'peak VRAM', before: 19.49, after: 17.59, unit: 'GiB' }] }, { name: 'Bare', results: [] }],
+  left_behind: ['Disabled profile qwen-iq4xs'],
   body: `## Changes\n\n\`\`\`chart\n${JSON.stringify(CHART)}\n\`\`\`\n\n\`\`\`chart\nnot json\n\`\`\``,
 }
 
@@ -96,6 +98,11 @@ describe('ReportsPanel', () => {
     expect(within(chart).getByText('target 115')).toBeInTheDocument()
     // A block that is not a valid chart stays as code.
     expect(screen.getByText('not json')).toBeInTheDocument()
+    const alternatives = screen.getByRole('region', { name: 'Alternatives' })
+    expect(within(alternatives).getByText('qwen-iq4xs')).toBeInTheDocument()
+    expect(within(alternatives).getByRole('table', { name: 'IQ4_XS clone results' })).toHaveTextContent('-9.7%')
+    expect(within(alternatives).getAllByRole('table')).toHaveLength(1)
+    expect(within(screen.getByRole('region', { name: 'Left on this machine' })).getByText('Disabled profile qwen-iq4xs')).toBeInTheDocument()
   })
 
   it('shows the empty reports state', async () => {

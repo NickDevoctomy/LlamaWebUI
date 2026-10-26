@@ -27,6 +27,15 @@ from llamawebui.assistant.web import WebError
 PAGE_CHARACTERS = 16_000
 
 
+# Said with an answer that cites no web pages.
+UNSOURCED = (
+    "No web results came back, so this answer is only the search model's own knowledge: it "
+    "may be out of date or wrong, and any [1] style citations in it are made up. Do not "
+    "cite it or record it as a source. Search again with other words, or fetch a page you "
+    "know, such as the llama.cpp README or the model card."
+)
+
+
 async def web_search(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
     query = text_argument(arguments, "query")
     try:
@@ -34,8 +43,15 @@ async def web_search(context: ToolContext, arguments: Mapping[str, object]) -> T
     except WebError as error:
         raise ToolError(str(error)) from error
     count = len(result.sources)
+    payload: dict[str, object] = {"answer": result.answer, "sources": result.sources}
+    if "<tool_call>" in result.answer or "<function=" in result.answer:
+        # The search model tried to call a tool instead of answering.
+        payload["answer"] = ""
+        payload["warning"] = "The search failed: no answer came back. Try different words."
+    elif not count:
+        payload["warning"] = UNSOURCED
     return ToolResult(
-        json_result({"answer": result.answer, "sources": result.sources}).text,
+        json_result(payload).text,
         f"{count} {'source' if count == 1 else 'sources'} for {query!r}",
         cost_usd=result.cost_usd,
     )
@@ -125,6 +141,17 @@ def _write(kind: str) -> Handler:
 
 
 NOUNS = {"research": "research documents", "reports": "reports"}
+
+RESULT = {
+    "type": "object",
+    "properties": {
+        "metric": {"type": "string"},
+        "before": {"type": "number"},
+        "after": {"type": "number"},
+        "unit": {"type": "string"},
+    },
+    "required": ["metric"],
+}
 
 SOURCE = {
     "type": "object",
@@ -239,18 +266,27 @@ KNOWLEDGE_TOOLS = (
                     "type": "string",
                     "enum": ["improved", "unchanged", "worse", "failed", "incomplete"],
                 },
-                "results": {
+                "results": {"type": "array", "items": RESULT},
+                "alternatives": {
                     "type": "array",
+                    "description": "Setups measured and kept as options without replacing "
+                    "the subject, such as a clone on a smaller quant.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "metric": {"type": "string"},
-                            "before": {"type": "number"},
-                            "after": {"type": "number"},
-                            "unit": {"type": "string"},
+                            "name": {"type": "string"},
+                            "profile": {"type": "string"},
+                            "summary": {"type": "string"},
+                            "results": {"type": "array", "items": RESULT},
                         },
-                        "required": ["metric"],
+                        "required": ["name"],
                     },
+                },
+                "left_behind": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "What you left on the machine for the operator to keep or "
+                    "remove: test profiles, downloads, runtimes.",
                 },
                 "body": {"type": "string", "description": "The report, in markdown."},
             },

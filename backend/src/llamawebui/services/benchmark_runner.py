@@ -44,6 +44,7 @@ from llamawebui.services.chat_stream import (
     ordered_calls,
     shorten,
 )
+from llamawebui.services.launch_settings import fingerprint, launch_settings
 from llamawebui.services.router_client import RouterAPIError, RouterModel, RouterUnavailableError
 
 LOGGER = logging.getLogger("llamawebui.benchmarks")
@@ -765,7 +766,9 @@ class BenchmarkRunRegistry:
         tasks: Sequence[dict[str, object]] = (),
         typescript_strict: bool | None = None,
         verbose_log: bool = False,
+        conversation_id: str | None = None,
     ) -> BenchmarkRunRecord:
+        settings = launch_settings(profile)
         with self._sessions() as session:
             record = BenchmarkRunRecord(
                 id=str(uuid4()),
@@ -792,6 +795,9 @@ class BenchmarkRunRegistry:
                 samples=[],
                 output="",
                 reasoning="",
+                launch_settings=settings,
+                settings_fingerprint=fingerprint(settings),
+                conversation_id=conversation_id,
             )
             session.add(record)
             session.commit()
@@ -813,12 +819,31 @@ class BenchmarkRunRegistry:
                 raise BenchmarkRunNotFoundError(f"benchmark run not found: {run_id}")
             return record
 
-    def list(self, profile_id: str | None = None) -> list[BenchmarkRunRecord]:
+    def list(
+        self, profile_id: str | None = None, *, conversation_id: str | None = None
+    ) -> list[BenchmarkRunRecord]:
         with self._sessions() as session:
             query = select(BenchmarkRunRecord).order_by(BenchmarkRunRecord.started_at.desc())
             if profile_id is not None:
                 query = query.where(BenchmarkRunRecord.profile_id == profile_id)
+            if conversation_id is not None:
+                query = query.where(BenchmarkRunRecord.conversation_id == conversation_id)
             return list(session.scalars(query))
+
+    def delete_many(
+        self, run_ids: Sequence[str]
+    ) -> tuple[Sequence[str], Sequence[Mapping[str, str]]]:
+        """Delete finished runs: the ids deleted, and why each other one was skipped."""
+        deleted: list[str] = []
+        skipped: list[dict[str, str]] = []
+        for run_id in dict.fromkeys(run_ids):
+            try:
+                self.delete(run_id)
+            except (BenchmarkRunNotFoundError, BenchmarkBusyError) as error:
+                skipped.append({"run_id": run_id, "reason": str(error)})
+            else:
+                deleted.append(run_id)
+        return deleted, skipped
 
     def delete(self, run_id: str) -> None:
         """Delete a finished run. Results written to its profile are kept."""
@@ -962,6 +987,7 @@ class BenchmarkRunner:
         system_prompt: SystemPrompt | None = None,
         reasoning_level: str | None = None,
         verbose_log: bool = False,
+        conversation_id: str | None = None,
     ) -> BenchmarkRunRecord:
         if reasoning_level is not None and reasoning_level not in REASONING_LEVELS:
             raise ValueError(f"unknown reasoning level: {reasoning_level}")
@@ -999,6 +1025,7 @@ class BenchmarkRunner:
             ),
             # Only tool calls are logged, so a run without tools has nothing to keep.
             verbose_log=tools and verbose_log,
+            conversation_id=conversation_id,
         )
         self._active = record.id
         self._progress = {

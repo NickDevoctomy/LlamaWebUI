@@ -368,7 +368,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
               running={running}
             />
           ) : section === 'Assistant' ? (
-            assistant.data ? <AssistantPanel canWrite={canRead('assistant.write')} status={assistant.data} /> : null
+            assistant.data ? <AssistantPanel canDeleteRuns={canRead('server.lifecycle.write')} canWrite={canRead('assistant.write')} status={assistant.data} /> : null
           ) : section === 'Benchmarks' ? (
             <BenchmarksPanel canRun={canRead('server.lifecycle.write')} profiles={profiles.data ?? []} routerState={status.data?.state} />
           ) : section === 'Server' ? (
