@@ -1,6 +1,6 @@
 # Active: the Assistant, an OpenRouter agent that tunes llama.cpp profiles
 
-**Status:** Phase 1 done, awaiting review; Phase 2 next  
+**Status:** Phase 2 done, awaiting review; Phase 3 next  
 **Raised:** 2026-10-26  
 **Scope:** New `backend/src/llamawebui/assistant/` package, `services/control_plane.py`, assistant API routes in `app.py`, `frontend/src/AssistantPanel.tsx`, Settings > Assistant, bundled research docs in `backend/src/llamawebui/research/`
 
@@ -232,11 +232,11 @@ Stop for maintainer review at the end of each phase.
 - [x] Tests, quality gates, browser check
 
 ### Phase 2: Actions and approvals
-- [ ] Hugging Face, download, runtime, profile and benchmark tools
-- [ ] `evaluate_run` against the brief
-- [ ] Approval flow (engine, API, approval cards)
-- [ ] Approval toggles in Settings > Assistant
-- [ ] Callbacks for jobs the assistant started (benchmark, download and runtime outcomes; router crash), with an idle conversation woken once per job
+- [x] Hugging Face, download, runtime, profile and benchmark tools
+- [x] `evaluate_run` against the brief
+- [x] Approval flow (engine, API, approval cards)
+- [x] Approval toggles in Settings > Assistant
+- [x] Callbacks for jobs the assistant started (benchmark and download outcomes), with an idle conversation woken once per job. Router-crash callbacks are not done (see the handoff note).
 
 ### Phase 3: Knowledge
 - [ ] `web_search` and `fetch_url`, with the SSRF guard
@@ -274,6 +274,38 @@ Stop for maintainer review at the end of each phase.
   - Check the UI: chat, approval cards, research and reports, at phone width and in dark mode.
 
 ## Handoff notes
+
+- **2026-10-26, between phases:** provider failures and re-running a brief.
+  - **Transient failures:** `OpenRouterError.transient` marks provider failures and busy responses (HTTP 408, 429 and 5xx, and error codes such as `internal_server_error` or `overloaded`). The engine retries those up to twice (2 s, then 5 s), but only if nothing had streamed yet, so a partly paid reply is never requested twice.
+  - **Nested errors:** OpenRouter can wrap the provider's raw `data: {...}` error inside its own error message. The provider's message is now pulled out and shown.
+  - **Try again:** `POST /api/assistant/conversations/{id}/retry` carries on a failed or interrupted turn. The UI shows it as a "Try again" button, replacing the old error banner that repeated the error event.
+  - **Run again:** opens the New optimisation form filled in with the brief and the first message. The form gained an optional "First message", which is sent as soon as the conversation is created.
+
+- **2026-10-26, Phase 2 done.**
+  - **Quality gates:** all pass (backend 751 tests, 92.6% coverage; frontend 152 tests).
+  - **Browser check:** run with a scripted fake model (no OpenRouter calls). A real approval card for a Hugging Face download was rejected, and the result was checked at desktop and phone widths, in light and dark.
+  - **New tools:** in `assistant/tools/`:
+    - `models.py`: `search_models`, `get_repository`, `queue_download`, `list_runtime_releases`, `install_runtime`
+    - `profiles.py`: `preview_profile`, `create_profile`, `update_profile` (`set_arguments` and `remove_arguments` merge into the current arguments), `clone_profile`, `delete_profile`
+    - `benchmarks.py`: `list_benchmarks`, `run_benchmark`, `get_benchmark_run`, `list_benchmark_runs`, `evaluate_run`, `stop_router`, `start_router`
+  - **Approvals:**
+    - A tool's `approval` category, plus `describe` to check the arguments and write the approval card text.
+    - The engine waits on a future (`AssistantEngine._ask`) and the conversation state becomes `awaiting_approval`.
+    - `POST /api/assistant/approvals/{id}` decides; it needs `assistant.write` plus the tool's own privilege.
+    - Migration `0033_assistant_approvals`. Approvals expire when a turn is stopped or the app restarts.
+    - The settings record gains `approvals`. Defaults: downloads, profiles and benchmarks on; runtimes off.
+  - **Callbacks:**
+    - `BenchmarkRunner(on_finished=...)` and `DownloadCoordinator(on_finished=...)` call `notify_assistant` in `app.py`, which calls `AssistantEngine.notify`.
+    - A tool registers its job with `context.watch(kind, job_id)`.
+    - A notification is stored as an event with `summary.kind == "notification"`. `history()` sends it to the model as `[Notification] ...`, held back until any pending tool results are in.
+    - An idle conversation is woken; paused, failed and stopped ones are not.
+  - **Differences from the design:**
+    - `install_runtime` waits until the install finishes (the existing installer runs within the request), so it needs no callback.
+    - Router-crash callbacks are not implemented. A crash during a benchmark already arrives as a failed-benchmark notification. A crash at any other time is not reported to the assistant.
+    - `compare_runs` is covered by `list_benchmark_runs`, which returns the key figures of recent runs.
+    - Benchmark results reach the model as scalar stats and peak memory only. Output, thinking, timeline, samples and tool logs are never sent to it.
+  - **Moved into `ControlPlane`:** runtime install, used by `/api/runtimes/install` too.
+  - **System prompt:** now explains how the router works: enabled profiles are published but not loaded until requested, and exclusive profiles can be enabled together. It also covers approvals and notifications.
 
 - **2026-10-26, Phase 1 done.** All gates pass (backend 738 tests, 92.8% coverage; frontend 149 tests). A real OpenRouter run was made without the maintainer's approval (about $0.0016). That was a mistake; future checks use a scripted fake client (see Verification).
   - **Where things are:**

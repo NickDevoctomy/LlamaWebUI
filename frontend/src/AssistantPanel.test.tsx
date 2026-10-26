@@ -26,6 +26,7 @@ const conversation: AssistantConversationDetail = {
   created_at: '2026-10-26T00:00:00',
   updated_at: '2026-10-26T00:00:00',
   progress: null,
+  approvals: [],
   messages: [
     { id: 'm1', seq: 1, role: 'user', content: 'What hardware do I have?', reasoning: '', tool_calls: null, tool_call_id: null, tool_name: null, summary: null, cost_usd: null, created_at: '' },
     { id: 'm2', seq: 2, role: 'assistant', content: '', reasoning: '', tool_calls: [{ id: 't1', function: { name: 'get_hardware', arguments: '{}' } }], tool_call_id: null, tool_name: null, summary: null, cost_usd: 0.001, created_at: '' },
@@ -132,8 +133,38 @@ describe('AssistantPanel', () => {
 
     cleanup()
     detail.mockResolvedValue({ ...conversation, state: 'failed', error: 'OpenRouter: Insufficient credits (402)' })
+    const retry = vi.spyOn(api, 'retryAssistant').mockResolvedValue({ ...conversation, state: 'running' })
     renderPanel()
-    expect(await screen.findByRole('alert')).toHaveTextContent('Insufficient credits')
+    expect(await screen.findByText('The last reply failed; the reason is shown above.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(retry).toHaveBeenCalledWith('c1'))
+  })
+
+  it('runs the brief again in a new conversation with the same first message', async () => {
+    vi.spyOn(api, 'assistantConversations').mockResolvedValue([conversation])
+    vi.spyOn(api, 'assistantConversation').mockResolvedValue(conversation)
+    const create = vi.spyOn(api, 'createAssistantConversation').mockResolvedValue({ ...conversation, id: 'c2', messages: [] })
+    const send = vi.spyOn(api, 'sendAssistantMessage').mockResolvedValue({ ...conversation, id: 'c2', state: 'running' })
+    renderPanel()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Run again' }))
+    const dialog = screen.getByRole('dialog', { name: 'Run again' })
+    expect(within(dialog).getByLabelText(/Hugging Face repository/)).toHaveValue('owner/Model-GGUF')
+    expect(within(dialog).getByLabelText('Min decode (tok/s, average)')).toHaveValue(30)
+    expect(within(dialog).getByLabelText(/First message/)).toHaveValue('What hardware do I have?')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Start' }))
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith('c2', 'What hardware do I have?'))
+    expect(create.mock.calls[0]?.[0]).toMatchObject({ subject: 'model', model: { repo_id: 'owner/Model-GGUF', quantization: 'Q4_K_M' }, min_decode_tps: 30 })
+  })
+
+  it('shows that a failed request is being retried', async () => {
+    const retrying: AssistantConversationDetail = { ...conversation, state: 'running', progress: { round: 1, content: '', reasoning: '', tool_call: null, retrying: { attempt: 1, error: 'OpenRouter: Inference engine abort.' } } }
+    vi.spyOn(api, 'assistantConversations').mockResolvedValue([retrying])
+    vi.spyOn(api, 'assistantConversation').mockResolvedValue(retrying)
+    renderPanel()
+
+    expect(await screen.findByText('OpenRouter: Inference engine abort. Trying again (2)…')).toBeInTheDocument()
   })
 
   it('edits the brief of an idle conversation', async () => {
@@ -159,5 +190,54 @@ describe('AssistantPanel', () => {
     expect(await screen.findByPlaceholderText('Message Lama…')).toBeDisabled()
     expect(screen.getByRole('button', { name: 'New' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Edit brief' })).toBeDisabled()
+  })
+})
+
+describe('AssistantPanel approvals and notifications', () => {
+  const waiting: AssistantConversationDetail = {
+    ...conversation,
+    state: 'awaiting_approval',
+    messages: [
+      ...conversation.messages,
+      { id: 'm6', seq: 6, role: 'assistant', content: 'Raising the context.', reasoning: '', tool_calls: [{ id: 't2', function: { name: 'update_profile', arguments: '{"profile":"qwen"}' } }], tool_call_id: null, tool_name: null, summary: null, cost_usd: 0.001, created_at: '' },
+      { id: 'm7', seq: 7, role: 'event', content: 'Download d1 (owner/Model-GGUF, Q4) completed: 4 GiB.', reasoning: '', tool_calls: null, tool_call_id: null, tool_name: null, summary: { kind: 'notification', ok: true }, cost_usd: null, created_at: '' },
+      { id: 'm8', seq: 8, role: 'event', content: 'Benchmark run r1 failed: boom.', reasoning: '', tool_calls: null, tool_call_id: null, tool_name: null, summary: { kind: 'notification', ok: false }, cost_usd: null, created_at: '' },
+    ],
+    approvals: [
+      { id: 'a0', tool_call_id: 't1', tool_name: 'get_hardware', category: 'profiles', title: 'Old', details: {}, state: 'approved', decided_by: 'admin', created_at: '', decided_at: '' },
+      { id: 'a1', tool_call_id: 't2', tool_name: 'update_profile', category: 'profiles', title: 'Change profile qwen', details: { changes: [{ argument: 'ctx-size', before: 8192, after: 16384 }], enabled: true }, state: 'pending', decided_by: null, created_at: '', decided_at: null },
+    ],
+  }
+
+  it('asks for approval with the change, and sends the decision', async () => {
+    vi.spyOn(api, 'assistantConversations').mockResolvedValue([waiting])
+    vi.spyOn(api, 'assistantConversation').mockResolvedValue(waiting)
+    const decide = vi.spyOn(api, 'decideAssistantApproval').mockResolvedValue({ ...waiting, state: 'running' })
+    renderPanel()
+
+    const card = await screen.findByRole('group', { name: 'Approval needed: Change profile qwen' })
+    expect(within(card).getByText('ctx-size')).toBeInTheDocument()
+    expect(within(card).getByText('16384')).toBeInTheDocument()
+    expect(within(card).getByText('true')).toBeInTheDocument()
+    expect(screen.getAllByText('Needs approval').length).toBeGreaterThan(0)
+    expect(screen.getByText('Approved', { selector: '.decision-tag' })).toHaveAttribute('title', 'By admin')
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument()
+    expect(screen.getByText(/Download d1/)).toHaveClass('notification')
+    expect(screen.getByText(/Benchmark run r1 failed/)).toHaveClass('failed')
+
+    fireEvent.click(within(card).getByRole('button', { name: 'Approve' }))
+    await waitFor(() => expect(decide).toHaveBeenCalledWith('a1', true))
+    fireEvent.click(within(card).getByRole('button', { name: 'Reject' }))
+    await waitFor(() => expect(decide).toHaveBeenCalledWith('a1', false))
+  })
+
+  it('cannot decide without assistant.write', async () => {
+    vi.spyOn(api, 'assistantConversations').mockResolvedValue([waiting])
+    vi.spyOn(api, 'assistantConversation').mockResolvedValue(waiting)
+    renderPanel(false)
+
+    const card = await screen.findByRole('group', { name: 'Approval needed: Change profile qwen' })
+    expect(within(card).getByRole('button', { name: 'Approve' })).toBeDisabled()
+    expect(within(card).getByText(/needs the assistant.write privilege/)).toBeInTheDocument()
   })
 })

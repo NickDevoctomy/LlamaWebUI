@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, ArrowDown, ArrowUp, Bot, ChevronRight, LoaderCircle, Pencil, Play, Plus, Send, Square, Trash2, Wrench } from 'lucide-react'
+import { AlertCircle, ArrowDown, ArrowUp, Bell, Bot, Check, ChevronRight, LoaderCircle, Pencil, Play, Plus, RotateCcw, Send, ShieldQuestion, Square, Trash2, Wrench, X } from 'lucide-react'
 import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { api, type AssistantConversation, type AssistantConversationDetail, type AssistantMessage, type AssistantStatus, type Brief, type BriefTarget } from './api'
+import { api, type AssistantApproval, type AssistantConversation, type AssistantConversationDetail, type AssistantMessage, type AssistantStatus, type Brief, type BriefTarget } from './api'
 import { priceSummary } from './openRouterPricing'
 import { Dialog } from './SetupPanels'
 
@@ -17,6 +17,7 @@ const DEFAULT_PRIORITY: BriefTarget[] = ['decode', 'prefill', 'load', 'memory']
 const STATE_LABELS: Record<AssistantConversation['state'], string> = {
   idle: 'Ready',
   running: 'Working',
+  awaiting_approval: 'Needs approval',
   paused: 'Paused',
   interrupted: 'Interrupted',
   failed: 'Failed',
@@ -49,11 +50,15 @@ function numberOrNull(value: string) {
 }
 
 /** The New optimisation form: what to work on and the targets to reach. */
-function BriefDialog({ initial, title, onClose, onSave, saving, error }: {
+/** The brief form: for a new conversation (optionally filled from an earlier one), or to edit one. */
+function BriefDialog({ initial, initialMessage = '', creating, title, onClose, onSave, saving, error }: {
   initial?: Brief
+  /** The first message to send once a new conversation is created. */
+  initialMessage?: string
+  creating: boolean
   title: string
   onClose: () => void
-  onSave: (brief: Brief, title: string) => void
+  onSave: (brief: Brief, title: string, message: string) => void
   saving: boolean
   error?: string
 }) {
@@ -70,6 +75,7 @@ function BriefDialog({ initial, title, onClose, onSave, saving, error }: {
   const [reasoning, setReasoning] = useState(initial?.reasoning_level ?? '')
   const [priority, setPriority] = useState<BriefTarget[]>(initial?.priority ?? DEFAULT_PRIORITY)
   const [conversationTitle, setConversationTitle] = useState('')
+  const [firstMessage, setFirstMessage] = useState(initialMessage)
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles })
   const library = useQuery({ queryKey: ['library'], queryFn: api.library })
   const benchmarks = useQuery({ queryKey: ['benchmarks'], queryFn: api.benchmarks })
@@ -103,7 +109,7 @@ function BriefDialog({ initial, title, onClose, onSave, saving, error }: {
     benchmark_id: benchmarkId || null,
     reasoning_level: reasoning || null,
     priority,
-  }, conversationTitle.trim())
+  }, conversationTitle.trim(), firstMessage.trim())
   return <Dialog description="What to work on, and the targets to reach. Targets are optional; leave one empty to let the assistant decide." onClose={onClose} title={title} wide>
     <form className="form-body brief-form" onSubmit={(event) => { event.preventDefault(); if (valid) submit() }}>
       <fieldset className="brief-section">
@@ -151,17 +157,60 @@ function BriefDialog({ initial, title, onClose, onSave, saving, error }: {
           </li>)}</ol>
         </div>
       </fieldset>
-      {!initial && <label className="form-field"><span>Title <small>(optional)</small></span><input onChange={(event) => setConversationTitle(event.target.value)} placeholder="Named from the subject if left empty" value={conversationTitle} /></label>}
+      {creating && <>
+        <label className="form-field"><span>Title <small>(optional)</small></span><input onChange={(event) => setConversationTitle(event.target.value)} placeholder="Named from the subject if left empty" value={conversationTitle} /></label>
+        <label className="form-field"><span>First message <small>(optional)</small></span><textarea onChange={(event) => setFirstMessage(event.target.value)} placeholder="Sent as soon as the conversation starts, e.g. “Get this working and tune it to the targets.”" rows={3} value={firstMessage} /></label>
+      </>}
       {error && <div className="form-error" role="alert"><AlertCircle size={15} /> {error}</div>}
-      <footer className="dialog-actions"><button className="button secondary" onClick={onClose} type="button">Cancel</button><button className="button primary" disabled={!valid || saving} type="submit">{saving ? <LoaderCircle className="spin" size={15} /> : initial ? <Pencil size={15} /> : <Plus size={15} />} {initial ? 'Save brief' : 'Start'}</button></footer>
+      <footer className="dialog-actions"><button className="button secondary" onClick={onClose} type="button">Cancel</button><button className="button primary" disabled={!valid || saving} type="submit">{saving ? <LoaderCircle className="spin" size={15} /> : creating ? <Plus size={15} /> : <Pencil size={15} />} {creating ? 'Start' : 'Save brief'}</button></footer>
     </form>
   </Dialog>
 }
 
-function ToolRow({ call, result, running }: {
+/** A conversation is busy while a turn runs, including while it waits for an approval. */
+export function isBusy(state: AssistantConversation['state']) {
+  return state === 'running' || state === 'awaiting_approval'
+}
+
+function detailValue(value: unknown) {
+  if (value == null) return '—'
+  return typeof value === 'string' ? value : JSON.stringify(value)
+}
+
+/** What the assistant wants to do, waiting for the operator to approve or reject it. */
+function ApprovalCard({ approval, canDecide, onDecide, deciding }: {
+  approval: AssistantApproval
+  canDecide: boolean
+  onDecide: (approve: boolean) => void
+  deciding: boolean
+}) {
+  const { changes, ...rest } = approval.details
+  const entries = Object.entries(rest).filter(([, value]) => value !== null && value !== undefined && !(Array.isArray(value) && !value.length))
+  return <li className="assistant-approval" role="group" aria-label={`Approval needed: ${approval.title}`}>
+    <div className="assistant-approval-head"><ShieldQuestion size={16} /><strong>{approval.title}</strong><span className="profile-tag warning-tag">{approval.category}</span></div>
+    {changes?.length ? <table className="approval-changes"><thead><tr><th>Argument</th><th>Now</th><th>After</th></tr></thead><tbody>
+      {changes.map((change) => <tr key={change.argument}><td><code>{change.argument}</code></td><td>{detailValue(change.before)}</td><td>{detailValue(change.after)}</td></tr>)}
+    </tbody></table> : null}
+    {entries.length ? <dl className="approval-details">{entries.map(([key, value]) => <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd>{detailValue(value)}</dd></div>)}</dl> : null}
+    <div className="assistant-approval-actions">
+      <button className="button primary compact" disabled={!canDecide || deciding} onClick={() => onDecide(true)} type="button"><Check size={14} /> Approve</button>
+      <button className="button secondary compact" disabled={!canDecide || deciding} onClick={() => onDecide(false)} type="button"><X size={14} /> Reject</button>
+      {!canDecide && <small>Deciding needs the assistant.write privilege and the action's own.</small>}
+    </div>
+  </li>
+}
+
+const DECISION_LABELS: Partial<Record<AssistantApproval['state'], string>> = {
+  approved: 'Approved',
+  // A rejected call already reads Rejected; an expired one was never decided.
+  expired: 'Not decided',
+}
+
+function ToolRow({ call, result, running, approval }: {
   call: { id: string; function: { name: string; arguments: string } }
   result?: AssistantMessage
   running: boolean
+  approval?: AssistantApproval
 }) {
   const pretty = (text: string) => {
     try { return JSON.stringify(JSON.parse(text), null, 2) } catch { return text }
@@ -174,6 +223,7 @@ function ToolRow({ call, result, running }: {
         <Wrench aria-hidden="true" size={13} />
         <code>{call.function.name}</code>
         <span>{result ? result.summary?.summary || (ok === false ? 'Failed' : 'Done') : running ? 'Running…' : 'Not run'}</span>
+        {approval && DECISION_LABELS[approval.state] && <span className={`profile-tag decision-tag ${approval.state}`} title={approval.decided_by ? `By ${approval.decided_by}` : undefined}>{DECISION_LABELS[approval.state]}</span>}
         {!result && running && <LoaderCircle className="spin" size={13} />}
       </summary>
       <div className="assistant-tool-body">
@@ -184,31 +234,48 @@ function ToolRow({ call, result, running }: {
   </li>
 }
 
-function Messages({ detail, name }: { detail: AssistantConversationDetail; name: string }) {
+function Messages({ detail, name, canDecide, onDecide, deciding }: {
+  detail: AssistantConversationDetail
+  name: string
+  canDecide: boolean
+  onDecide: (id: string, approve: boolean) => void
+  deciding: boolean
+}) {
   const results = new Map(detail.messages.filter((message) => message.role === 'tool').map((message) => [message.tool_call_id, message]))
-  const running = detail.state === 'running'
+  const approvals = new Map((detail.approvals ?? []).map((approval) => [approval.tool_call_id, approval]))
+  const running = isBusy(detail.state)
   const progress = detail.progress
   return <ol className="assistant-messages" aria-label="Conversation">
     {detail.messages.map((message) => {
       if (message.role === 'tool') return null
       if (message.role === 'user') return <li className="assistant-message user" key={message.id}><div className="assistant-bubble">{message.content}</div></li>
-      if (message.role === 'event') return <li className={`assistant-event${message.summary?.kind === 'error' ? ' error' : ''}`} key={message.id}>{message.content}</li>
+      if (message.role === 'event') {
+        const kind = message.summary?.kind
+        if (kind === 'notification') return <li className={`assistant-event notification${message.summary?.ok === false ? ' failed' : ''}`} key={message.id}><Bell size={13} /> {message.content}</li>
+        return <li className={`assistant-event${kind === 'error' ? ' error' : ''}`} key={message.id}>{message.content}</li>
+      }
       return <Fragment key={message.id}>
         {(message.content || message.reasoning) && <li className="assistant-message reply">
           <span className="assistant-author"><Bot size={14} /> {name}</span>
           {message.reasoning && <details className="assistant-reasoning"><summary>Thinking</summary><p>{message.reasoning}</p></details>}
           {message.content && <Markdown content={message.content} />}
         </li>}
-        {message.tool_calls?.length ? <li className="assistant-tools"><ol>{message.tool_calls.map((call) => <ToolRow call={call} key={call.id} result={results.get(call.id)} running={running} />)}</ol></li> : null}
+        {message.tool_calls?.length ? <li className="assistant-tools"><ol>{message.tool_calls.map((call) => {
+          const approval = approvals.get(call.id)
+          return approval?.state === 'pending' && !results.has(call.id)
+            ? <ApprovalCard approval={approval} canDecide={canDecide} deciding={deciding} key={call.id} onDecide={(approve) => onDecide(approval.id, approve)} />
+            : <ToolRow approval={approval} call={call} key={call.id} result={results.get(call.id)} running={running} />
+        })}</ol></li> : null}
       </Fragment>
     })}
-    {running && progress && <li className="assistant-message reply live" aria-live="polite">
+    {detail.state === 'running' && progress && <li className="assistant-message reply live" aria-live="polite">
       <span className="assistant-author"><Bot size={14} /> {name}</span>
       {progress.reasoning && !progress.content && <p className="assistant-status-line"><LoaderCircle className="spin" size={13} /> Thinking…</p>}
       {progress.content && <Markdown content={progress.content} />}
       {progress.tool_call && <p className="assistant-status-line"><LoaderCircle className="spin" size={13} /> Preparing <code>{progress.tool_call.name || 'a tool call'}</code>…</p>}
       {progress.running_tool && <p className="assistant-status-line"><LoaderCircle className="spin" size={13} /> Running <code>{progress.running_tool}</code>…</p>}
-      {!progress.content && !progress.reasoning && !progress.tool_call && !progress.running_tool && <p className="assistant-status-line"><LoaderCircle className="spin" size={13} /> Waiting for {name}…</p>}
+      {progress.retrying && <p className="assistant-status-line warning"><LoaderCircle className="spin" size={13} /> {progress.retrying.error.replace(/\.$/, '')}. Trying again ({progress.retrying.attempt + 1})…</p>}
+      {!progress.retrying && !progress.content && !progress.reasoning && !progress.tool_call && !progress.running_tool && <p className="assistant-status-line"><LoaderCircle className="spin" size={13} /> Waiting for {name}…</p>}
     </li>}
   </ol>
 }
@@ -233,7 +300,7 @@ export function AssistantPanel({ status, canWrite }: { status: AssistantStatus; 
   const conversations = useQuery({
     queryKey: ['assistant-conversations'],
     queryFn: api.assistantConversations,
-    refetchInterval: (query) => query.state.data?.some((item) => item.state === 'running') ? 2000 : false,
+    refetchInterval: (query) => query.state.data?.some((item) => isBusy(item.state)) ? 2000 : false,
   })
   const [selected, setSelected] = useState<string>()
   const current = selected ?? conversations.data?.[0]?.id
@@ -241,18 +308,21 @@ export function AssistantPanel({ status, canWrite }: { status: AssistantStatus; 
     queryKey: ['assistant-conversation', current],
     queryFn: () => api.assistantConversation(current!),
     enabled: Boolean(current),
-    refetchInterval: (query) => query.state.data?.state === 'running' ? 1000 : false,
+    refetchInterval: (query) => query.state.data && isBusy(query.state.data.state) ? 1000 : false,
   })
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles })
   const profileNames = useMemo(() => new Map((profiles.data ?? []).map((profile) => [profile.id, profile.alias])), [profiles.data])
-  const [dialog, setDialog] = useState<'new' | 'edit'>()
+  const [dialog, setDialog] = useState<'new' | 'edit' | 'rerun'>()
   const [draft, setDraft] = useState('')
   const settle = (conversation?: AssistantConversationDetail) => {
     if (conversation) queryClient.setQueryData(['assistant-conversation', conversation.id], conversation)
     return queryClient.invalidateQueries({ queryKey: ['assistant-conversations'] })
   }
   const create = useMutation({
-    mutationFn: ({ brief, title }: { brief: Brief; title: string }) => api.createAssistantConversation(brief, title),
+    mutationFn: async ({ brief, title, message }: { brief: Brief; title: string; message: string }) => {
+      const created = await api.createAssistantConversation(brief, title)
+      return message ? api.sendAssistantMessage(created.id, message) : created
+    },
     onSuccess: async (conversation) => { setSelected(conversation.id); setDialog(undefined); await settle(conversation) },
   })
   const editBrief = useMutation({
@@ -265,16 +335,22 @@ export function AssistantPanel({ status, canWrite }: { status: AssistantStatus; 
   })
   const stop = useMutation({ mutationFn: () => api.stopAssistant(current!), onSuccess: settle })
   const resume = useMutation({ mutationFn: () => api.continueAssistant(current!), onSuccess: settle })
+  const retry = useMutation({ mutationFn: () => api.retryAssistant(current!), onSuccess: settle })
+  const decide = useMutation({
+    mutationFn: ({ id, approve }: { id: string; approve: boolean }) => api.decideAssistantApproval(id, approve),
+    onSuccess: settle,
+  })
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteAssistantConversation(id),
     onSuccess: async () => { setSelected(undefined); await queryClient.invalidateQueries({ queryKey: ['assistant-conversations'] }) },
   })
   const conversation = detail.data
-  const running = conversation?.state === 'running'
+  const running = conversation ? isBusy(conversation.state) : false
   const end = useRef<HTMLDivElement>(null)
   const lastSeen = `${conversation?.messages.length}:${conversation?.progress?.content.length ?? 0}`
   useEffect(() => { end.current?.scrollIntoView?.({ block: 'end' }) }, [lastSeen])
-  const error = send.error?.message ?? stop.error?.message ?? resume.error?.message ?? remove.error?.message
+  const error = send.error?.message ?? stop.error?.message ?? resume.error?.message ?? retry.error?.message ?? remove.error?.message ?? decide.error?.message
+  const firstMessage = conversation?.messages.find((message) => message.role === 'user')?.content
   const submit = () => { if (draft.trim() && !send.isPending) send.mutate(draft.trim()) }
 
   return <section className="data-panel assistant-panel">
@@ -309,22 +385,25 @@ export function AssistantPanel({ status, canWrite }: { status: AssistantStatus; 
               <div>
                 <h2>{conversation.title}</h2>
                 <p>
-                  <span className={`state-pill ${conversation.state === 'running' ? 'loading' : conversation.state === 'failed' ? 'failed' : conversation.state === 'paused' || conversation.state === 'interrupted' ? 'warning' : 'ready'}`}>{STATE_LABELS[conversation.state]}</span>
+                  <span className={`state-pill ${conversation.state === 'running' ? 'loading' : conversation.state === 'failed' ? 'failed' : conversation.state === 'idle' ? 'ready' : 'warning'}`}>{STATE_LABELS[conversation.state]}</span>
                   <span>{status.model?.name ?? conversation.model_id ?? 'No model'}{status.model ? ` · ${priceSummary(status.model.pricing)}` : ''}</span>
                   <span>Spent {formatCost(conversation.cost_usd)} of {formatCost(conversation.spend_limit_usd)}</span>
                 </p>
               </div>
-              <button aria-label={`Delete ${conversation.title}`} className="icon-button small danger-icon" disabled={!canWrite || running || remove.isPending} onClick={() => remove.mutate(conversation.id)} title="Delete conversation" type="button"><Trash2 size={14} /></button>
+              <div className="assistant-header-actions">
+                <button className="button secondary compact" disabled={!canWrite} onClick={() => setDialog('rerun')} title="Start a new conversation with this brief and first message" type="button"><RotateCcw size={14} /> Run again</button>
+                <button aria-label={`Delete ${conversation.title}`} className="icon-button small danger-icon" disabled={!canWrite || running || remove.isPending} onClick={() => remove.mutate(conversation.id)} title="Delete conversation" type="button"><Trash2 size={14} /></button>
+              </div>
             </header>
             <BriefSummary brief={conversation.brief} canEdit={canWrite && !running} onEdit={() => setDialog('edit')} profiles={profileNames} />
             <div className="assistant-scroll">
               {conversation.messages.length || running
-                ? <Messages detail={conversation} name={status.name} />
+                ? <Messages canDecide={canWrite} deciding={decide.isPending} detail={conversation} name={status.name} onDecide={(id, approve) => decide.mutate({ id, approve })} />
                 : <p className="assistant-hint">Tell {status.name} what to do first, for example “Check this machine and suggest where to start.”</p>}
               <div ref={end} />
             </div>
             {conversation.state === 'paused' && <div className="inline-notice assistant-notice"><AlertCircle size={15} /><span>This conversation reached its spending limit. Continuing raises the limit by the amount set in Settings.</span><button className="button primary compact" disabled={!canWrite || resume.isPending} onClick={() => resume.mutate()} type="button"><Play size={14} /> Continue</button></div>}
-            {conversation.state === 'failed' && conversation.error && <div className="form-error assistant-notice" role="alert"><AlertCircle size={15} /> {conversation.error}</div>}
+            {(conversation.state === 'failed' || conversation.state === 'interrupted') && <div className="inline-notice assistant-notice"><AlertCircle size={15} /><span>{conversation.state === 'failed' ? 'The last reply failed; the reason is shown above.' : 'This conversation stopped before it finished, for example because the app restarted.'}</span><button className="button primary compact" disabled={!canWrite || retry.isPending} onClick={() => retry.mutate()} type="button">{retry.isPending ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />} Try again</button></div>}
             {error && <div className="form-error assistant-notice" role="alert"><AlertCircle size={15} /> {error}</div>}
             <form className="assistant-composer" onSubmit={(event) => { event.preventDefault(); submit() }}>
               <label className="sr-only" htmlFor="assistant-draft">Message</label>
@@ -335,7 +414,8 @@ export function AssistantPanel({ status, canWrite }: { status: AssistantStatus; 
             </form>
           </>}
     </div>
-    {dialog === 'new' && <BriefDialog error={create.error?.message} onClose={() => setDialog(undefined)} onSave={(brief, title) => create.mutate({ brief, title })} saving={create.isPending} title="New optimisation" />}
-    {dialog === 'edit' && conversation && <BriefDialog error={editBrief.error?.message} initial={conversation.brief} onClose={() => setDialog(undefined)} onSave={(brief) => editBrief.mutate(brief)} saving={editBrief.isPending} title="Edit brief" />}
+    {dialog === 'new' && <BriefDialog creating error={create.error?.message} onClose={() => setDialog(undefined)} onSave={(brief, title, message) => create.mutate({ brief, title, message })} saving={create.isPending} title="New optimisation" />}
+    {dialog === 'rerun' && conversation && <BriefDialog creating error={create.error?.message} initial={conversation.brief} initialMessage={firstMessage} onClose={() => setDialog(undefined)} onSave={(brief, title, message) => create.mutate({ brief, title, message })} saving={create.isPending} title="Run again" />}
+    {dialog === 'edit' && conversation && <BriefDialog creating={false} error={editBrief.error?.message} initial={conversation.brief} onClose={() => setDialog(undefined)} onSave={(brief) => editBrief.mutate(brief)} saving={editBrief.isPending} title="Edit brief" />}
   </section>
 }

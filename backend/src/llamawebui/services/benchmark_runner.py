@@ -891,8 +891,11 @@ class BenchmarkRunner:
         memory: Callable[[str], Mapping[str, object] | None] = lambda _alias: None,
         system_memory: Callable[[], Mapping[str, object] | None] = lambda: None,
         resource_seconds: float = 2.0,
+        on_finished: Callable[[BenchmarkRunRecord], object] | None = None,
     ) -> None:
         self._runs = runs
+        # Told about each run once it is saved as completed, failed or cancelled.
+        self._on_finished = on_finished
         self._linter = linter
         # Tokens in use and the slot's size for a model, from llama-server's own log.
         self._context = context
@@ -1120,6 +1123,18 @@ class BenchmarkRunner:
                 )
             self._active = None
             self._progress = {}
+            if self._on_finished is not None:
+                try:
+                    self._on_finished(self._runs.get(record.id))
+                except Exception as caught:  # A listener's failure must not fail the run.
+                    LOGGER.warning(
+                        "benchmark_finished_hook_failed",
+                        extra={
+                            "component": "benchmarks",
+                            "event": "hook_failed",
+                            "error": str(caught),
+                        },
+                    )
 
     async def _watch_resources(self, alias: str) -> None:
         """Every few seconds while generating, note the context and memory in use."""

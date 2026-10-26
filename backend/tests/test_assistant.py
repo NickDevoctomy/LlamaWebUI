@@ -105,6 +105,8 @@ class ScriptedClient:
         for chunk in reply:
             if self.gate is not None:
                 await self.gate.wait()
+            if isinstance(chunk, Exception):
+                raise chunk
             yield chunk
 
 
@@ -414,7 +416,12 @@ def test_the_name_setting_reaches_the_prompt_and_status(tmp_path: Path, login: L
         )
         wait(client)
 
-    assert defaults == {"name": "Lama", "spend_limit_usd": 2.0, "max_rounds_per_turn": 40}
+    assert defaults == {
+        "name": "Lama",
+        "spend_limit_usd": 2.0,
+        "max_rounds_per_turn": 40,
+        "approvals": {"downloads": True, "runtimes": False, "profiles": True, "benchmarks": True},
+    }
     assert saved.json()["name"] == "Max"
     assert rejected.status_code == 422
     assert status_payload["name"] == "Max"
@@ -603,7 +610,13 @@ def test_tools_follow_the_senders_privileges(tmp_path: Path, login: Login) -> No
 
         client.portal.call(send)  # type: ignore[union-attr]
 
-    assert [tool["function"]["name"] for tool in scripted.requests[0]["tools"]] == ["router_status"]
+    assert [tool["function"]["name"] for tool in scripted.requests[0]["tools"]] == [
+        "router_status",
+        "list_benchmarks",
+        "get_benchmark_run",
+        "list_benchmark_runs",
+        "evaluate_run",
+    ]
 
 
 def test_assistant_routes_are_classified() -> None:
@@ -639,3 +652,134 @@ def test_status_needs_a_saved_key_and_model(tmp_path: Path, login: Login) -> Non
     assert before["available"] is False
     assert after["available"] is True
     assert after["name"] == "Lama"
+
+
+# Provider failures and retries --------------------------------------------------------------
+
+NESTED = {
+    "error": {
+        "code": 502,
+        "message": 'data: {"error":{"code":"internal_server_error","message":"Inference engine '
+        'abort.","type":"internal_server_error"}}',
+    }
+}
+
+
+@pytest.mark.asyncio
+async def test_provider_failures_are_unwrapped_and_marked_transient() -> None:
+    def respond(response: httpx.Response) -> OpenRouterClient:
+        return OpenRouterClient(
+            lambda: "k",
+            client=httpx.AsyncClient(transport=httpx.MockTransport(lambda request: response)),
+        )
+
+    with pytest.raises(OpenRouterError) as nested:
+        await _collect(respond(httpx.Response(200, content=_sse(NESTED))))
+    with pytest.raises(OpenRouterError) as busy:
+        await _collect(respond(httpx.Response(503, json={"error": {"message": "busy"}})))
+    with pytest.raises(OpenRouterError) as refused:
+        await _collect(respond(httpx.Response(402, json={"error": {"message": "no credits"}})))
+    with pytest.raises(OpenRouterError) as named:
+        await _collect(
+            respond(httpx.Response(200, content=_sse({"error": {"code": "overloaded"}})))
+        )
+    with pytest.raises(OpenRouterError) as bad_nested:
+        await _collect(
+            respond(httpx.Response(200, content=_sse({"error": {"message": "data: {nope"}})))
+        )
+
+    assert str(nested.value) == "OpenRouter: Inference engine abort."
+    assert nested.value.transient is True
+    assert busy.value.transient is True
+    assert refused.value.transient is False
+    assert named.value.transient is True
+    assert str(bad_nested.value) == "OpenRouter: data: {nope"
+    assert bad_nested.value.transient is False
+
+
+def _fast_retries(client: TestClient) -> None:
+    client.app.state.assistant_engine._retry_delays = (0, 0)  # type: ignore[attr-defined]
+
+
+def _transient() -> OpenRouterError:
+    return OpenRouterError("OpenRouter: Inference engine abort.", transient=True)
+
+
+def test_a_provider_failure_before_anything_streams_is_retried(
+    tmp_path: Path, login: Login
+) -> None:
+    scripted = ScriptedClient(_transient(), _transient(), text_reply("Recovered."))
+    with TestClient(make_app(tmp_path, scripted), client=LOCAL) as client:
+        started(client, login)
+        _fast_retries(client)
+        conversation_id = new_conversation(client)["id"]
+        client.post(
+            f"/api/assistant/conversations/{conversation_id}/messages", json={"content": "go"}
+        )
+        wait(client)
+        detail = client.get(f"/api/assistant/conversations/{conversation_id}").json()
+
+    assert len(scripted.requests) == 3
+    assert detail["state"] == "idle"
+    assert detail["messages"][-1]["content"] == "Recovered."
+    assert [message["role"] for message in detail["messages"]] == ["user", "assistant"]
+
+
+def test_retries_give_up_and_never_repeat_a_paid_or_refused_reply(
+    tmp_path: Path, login: Login
+) -> None:
+    partly = [{"choices": [{"delta": {"content": "Half an ans"}}]}, _transient()]
+    scripted = ScriptedClient(
+        _transient(),
+        _transient(),
+        _transient(),
+        partly,
+        OpenRouterError("OpenRouter: no credits (402)"),
+    )
+    with TestClient(make_app(tmp_path, scripted), client=LOCAL) as client:
+        started(client, login)
+        _fast_retries(client)
+        conversation_id = new_conversation(client)["id"]
+        base = f"/api/assistant/conversations/{conversation_id}"
+        client.post(f"{base}/messages", json={"content": "go"})
+        wait(client)
+        exhausted = len(scripted.requests)
+        client.post(f"{base}/retry")
+        wait(client)
+        after_partial = len(scripted.requests)
+        client.post(f"{base}/retry")
+        wait(client)
+        detail = client.get(base).json()
+
+    assert exhausted == 3
+    assert after_partial == 4
+    assert len(scripted.requests) == 5
+    assert detail["state"] == "failed"
+    assert detail["error"] == "OpenRouter: no credits (402)"
+
+
+def test_try_again_carries_on_a_failed_turn(tmp_path: Path, login: Login) -> None:
+    scripted = ScriptedClient(OpenRouterError("OpenRouter: down"), text_reply("Back again."))
+    with TestClient(make_app(tmp_path, scripted), client=LOCAL) as client:
+        started(client, login)
+        conversation_id = new_conversation(client)["id"]
+        base = f"/api/assistant/conversations/{conversation_id}"
+        idle_retry = client.post(f"{base}/retry")
+        client.post(f"{base}/messages", json={"content": "go"})
+        wait(client)
+        failed = client.get(base).json()
+        retried = client.post(f"{base}/retry")
+        wait(client)
+        detail = client.get(base).json()
+
+    assert idle_retry.status_code == 409
+    assert failed["state"] == "failed"
+    assert retried.status_code == 202
+    assert detail["state"] == "idle"
+    assert [message["summary"] for message in detail["messages"] if message["role"] == "event"] == [
+        {"kind": "error"},
+        {"kind": "retry"},
+    ]
+    assert detail["messages"][-1]["content"] == "Back again."
+    # The retried request still ends with the user's message.
+    assert scripted.requests[-1]["messages"][-1] == {"role": "user", "content": "go"}

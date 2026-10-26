@@ -23,11 +23,14 @@ class DownloadCoordinator:
         *,
         event_broker: EventBroker | None = None,
         on_completed: Callable[[str], object] | None = None,
+        on_finished: Callable[[str, DownloadState], object] | None = None,
     ) -> None:
         self._registry = registry
         self._worker = worker
         self._event_broker = event_broker
         self._on_completed = on_completed
+        # Told when a transfer ends as completed or failed (not paused or cancelled).
+        self._on_finished = on_finished
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
     def start_pending(self) -> None:
@@ -99,6 +102,8 @@ class DownloadCoordinator:
                 failed = self._registry.fail(job_id, str(error))
                 if self._event_broker is not None and failed.state == DownloadState.FAILED:
                     self._publish(job_id, DownloadState.FAILED.value)
+                if failed.state == DownloadState.FAILED:
+                    self._finished(job_id, DownloadState.FAILED)
             except Exception as failure:
                 LOGGER.error(
                     "download_task_failure_persist_failed",
@@ -124,10 +129,28 @@ class DownloadCoordinator:
                         "error": str(failure),
                     },
                 )
+        if state in {DownloadState.COMPLETED, DownloadState.FAILED}:
+            self._finished(job_id, state)
         if self._event_broker is None:
             return
         if state in {DownloadState.COMPLETED, DownloadState.FAILED}:
             self._publish(job_id, state.value)
+
+    def _finished(self, job_id: str, state: DownloadState) -> None:
+        if self._on_finished is None:
+            return
+        try:
+            self._on_finished(job_id, state)
+        except Exception as failure:  # A listener's failure must not affect the download.
+            LOGGER.error(
+                "download_finished_hook_failed",
+                extra={
+                    "component": "download",
+                    "event": "finished_hook_failed",
+                    "job_id": job_id,
+                    "error": str(failure),
+                },
+            )
 
     async def pause(self, job_id: str) -> DownloadJobRecord:
         record = self._registry.transition(job_id, DownloadState.PAUSED)

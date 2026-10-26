@@ -40,18 +40,7 @@ def _app(tmp_path: Path) -> Any:
 
 
 def _services(app: Any) -> ToolServices:
-    state = app.state
-    return ToolServices(
-        catalog=state.argument_catalog,
-        runtimes=state.runtime_registry,
-        profiles=state.profile_registry,
-        artifacts=state.model_artifact_registry,
-        library=state.model_library,
-        downloads=state.download_registry,
-        supervisor=state.router_supervisor,
-        router_client=state.router_client,
-        hardware=state.hardware_detector,
-    )
+    return app.state.assistant_engine.services  # type: ignore[no-any-return]
 
 
 def _call(

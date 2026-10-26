@@ -30,7 +30,7 @@ from llamawebui.services.runtime_registry import RuntimeNotFoundError, runtime_c
 GIB = 1024**3
 
 
-def _gib(value: int | None) -> float | None:
+def gib(value: int | None) -> float | None:
     return round(value / GIB, 2) if value else None
 
 
@@ -39,10 +39,10 @@ async def get_hardware(context: ToolContext, arguments: Mapping[str, object]) ->
     return json_result(
         {
             "cpu": hardware.cpu,
-            "memory_gib": _gib(hardware.memory_bytes),
+            "memory_gib": gib(hardware.memory_bytes),
             "gpus": list(hardware.gpus),
             # Only NVIDIA cards report this; unified memory and other cards show null.
-            "discrete_vram_gib": _gib(hardware.discrete_vram_bytes),
+            "discrete_vram_gib": gib(hardware.discrete_vram_bytes),
         },
         hardware.cpu or "hardware",
     )
@@ -96,7 +96,7 @@ async def list_profiles(context: ToolContext, arguments: Mapping[str, object]) -
     return json_result(profiles, f"{len(profiles)} profiles")
 
 
-def _find_profile(context: ToolContext, reference: str) -> ModelProfileRecord:
+def find_profile(context: ToolContext, reference: str) -> ModelProfileRecord:
     registry = context.services.profiles
     try:
         return registry.get(reference)
@@ -108,7 +108,7 @@ def _find_profile(context: ToolContext, reference: str) -> ModelProfileRecord:
 
 
 async def get_profile(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
-    record = _find_profile(context, text_argument(arguments, "profile"))
+    record = find_profile(context, text_argument(arguments, "profile"))
     services = context.services
     payload: dict[str, object] = {
         **_profile_summary(record),
@@ -140,7 +140,7 @@ async def list_library(context: ToolContext, arguments: Mapping[str, object]) ->
             "quantization_group": model.group_key,
             "path": str(model.primary_path),
             "files": model.file_count,
-            "size_gib": _gib(model.total_bytes),
+            "size_gib": gib(model.total_bytes),
         }
         for model in context.services.library.list()
     ]
@@ -154,8 +154,8 @@ async def list_downloads(context: ToolContext, arguments: Mapping[str, object]) 
             "repo_id": job.repo_id,
             "quantization_group": job.group_key,
             "state": job.state,
-            "completed_gib": _gib(job.completed_bytes),
-            "total_gib": _gib(job.total_bytes),
+            "completed_gib": gib(job.completed_bytes),
+            "total_gib": gib(job.total_bytes),
             "error": job.error,
         }
         for job in context.services.downloads.list()

@@ -16,6 +16,7 @@ from llamawebui.assistant.brief import Brief
 from llamawebui.assistant.conversations import (
     ConversationNotFoundError,
     ConversationRegistry,
+    approval_payload,
     conversation_payload,
     message_payload,
 )
@@ -37,6 +38,10 @@ class ConversationCreateRequest(BaseModel):
 
 class MessageCreateRequest(BaseModel):
     content: str = Field(min_length=1, max_length=20_000)
+
+
+class ApprovalDecisionRequest(BaseModel):
+    approve: bool
 
 
 def _engine(request: Request) -> AssistantEngine:
@@ -111,6 +116,10 @@ def _detail(request: Request, conversation_id: str) -> dict[str, object]:
             for message in _conversations(request).messages(conversation_id)
         ],
         "progress": engine.progress(conversation_id),
+        "approvals": [
+            approval_payload(approval)
+            for approval in _conversations(request).approvals(conversation_id)
+        ],
     }
 
 
@@ -193,6 +202,16 @@ async def stop_turn(conversation_id: str, request: Request) -> dict[str, object]
     return _detail(request, conversation_id)
 
 
+@router.post("/assistant/conversations/{conversation_id}/retry", status_code=202)
+async def retry_turn(conversation_id: str, request: Request) -> dict[str, object]:
+    _conversation_or_404(request, conversation_id)
+    try:
+        _engine(request).retry(conversation_id, _user(request).privileges)
+    except AssistantBusyError as error:
+        raise _busy(error) from error
+    return _detail(request, conversation_id)
+
+
 @router.post("/assistant/conversations/{conversation_id}/continue", status_code=202)
 async def continue_turn(conversation_id: str, request: Request) -> dict[str, object]:
     _conversation_or_404(request, conversation_id)
@@ -202,6 +221,30 @@ async def continue_turn(conversation_id: str, request: Request) -> dict[str, obj
     except AssistantBusyError as error:
         raise _busy(error) from error
     return _detail(request, conversation_id)
+
+
+@router.post("/assistant/approvals/{approval_id}")
+async def decide_approval(
+    approval_id: str, decision: ApprovalDecisionRequest, request: Request
+) -> dict[str, object]:
+    engine = _engine(request)
+    try:
+        approval = _conversations(request).approval(approval_id)
+    except ConversationNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    tool = engine.tool(approval.tool_name)
+    user = _user(request)
+    # Approving an action takes the privilege the action itself needs.
+    if tool is None or tool.privilege not in user.privileges:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"deciding this needs the {tool.privilege if tool else 'matching'} privilege",
+        )
+    try:
+        engine.decide(approval_id, decision.approve, user.username)
+    except AssistantBusyError as error:
+        raise _busy(error) from error
+    return _detail(request, approval.conversation_id)
 
 
 @router.get("/settings/assistant")

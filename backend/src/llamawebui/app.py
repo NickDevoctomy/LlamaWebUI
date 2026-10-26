@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import sys
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
@@ -24,6 +23,8 @@ from llamawebui.assistant.routes import router as assistant_router
 from llamawebui.assistant.settings import load_settings as load_assistant_settings
 from llamawebui.assistant.setup import build_engine as build_assistant_engine
 from llamawebui.assistant.tools import ToolServices
+from llamawebui.assistant.tools.benchmarks import benchmark_notice
+from llamawebui.assistant.tools.models import download_notice
 from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.domain.argument_catalog import ArgumentCatalog, default_catalog
@@ -1019,6 +1020,15 @@ def create_app(
         app.state.huggingface_catalog = catalog or HuggingFaceCatalog(huggingface_token)
         transfer = file_transfer or HuggingFaceFileTransfer(huggingface_token)
 
+        def notify_assistant(
+            kind: str, job_id: str, notice: Callable[[], str], *, ok: bool
+        ) -> None:
+            """Tell the assistant how a job it may have started ended."""
+            # Downloads resumed at startup can finish before the assistant exists.
+            engine = getattr(app.state, "assistant_engine", None)
+            if engine is not None:
+                cast(AssistantEngine, engine).notify(kind, job_id, notice(), ok)
+
         def enable_ready(download_id: str) -> object:
             return app.state.profile_registry.enable_ready(
                 download_id,
@@ -1039,6 +1049,12 @@ def create_app(
             ),
             event_broker=app.state.event_broker,
             on_completed=enable_ready,
+            on_finished=lambda job_id, state: notify_assistant(
+                "download",
+                job_id,
+                lambda: download_notice(app.state.download_registry.get(job_id)),
+                ok=state is DownloadState.COMPLETED,
+            ),
         )
         app.state.download_coordinator.start_pending()
         # Catch up on profiles whose download finished while the app was not watching.
@@ -1100,6 +1116,7 @@ def create_app(
             hub=app.state.huggingface_catalog,
             downloads=app.state.download_registry,
             coordinator=app.state.download_coordinator,
+            installer=app.state.runtime_installer,
             port_probe=router_port_probe,
             on_server_run=record_server_run,
         )
@@ -1133,6 +1150,12 @@ def create_app(
                 cast(RouterSupervisor, app.state.router_supervisor).pid, alias
             ),
             system_memory=system_memory,
+            on_finished=lambda record: notify_assistant(
+                "benchmark",
+                record.id,
+                lambda: benchmark_notice(record),
+                ok=record.state == "completed",
+            ),
         )
 
         def openrouter_key() -> str | None:
@@ -1156,6 +1179,13 @@ def create_app(
                 supervisor=app.state.router_supervisor,
                 router_client=app.state.router_client,
                 hardware=app.state.hardware_detector,
+                control_plane=app.state.control_plane,
+                hub=app.state.huggingface_catalog,
+                releases=app.state.release_client,
+                benchmark_runner=app.state.benchmark_runner,
+                benchmark_runs=app.state.benchmark_runs,
+                benchmarks=lambda: app.state.benchmarks,
+                system_prompts=lambda: app.state.system_prompts,
             ),
             settings_store=app.state.settings_store,
             profiles=app.state.profile_registry,
@@ -2249,21 +2279,10 @@ def create_app(
     async def install_runtime(
         install_request: RuntimeInstallRequest, request: Request
     ) -> dict[str, object]:
-        installer = cast(RuntimeInstaller, request.app.state.runtime_installer)
-        registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
         try:
-            destination = await installer.install(
-                tag=install_request.tag,
-                asset_name=install_request.asset_name,
-                backend=install_request.backend,
-            )
-            executable_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
-            executable = next(destination.rglob(executable_name), None)
-            if executable is None:
-                raise ReleaseInstallError("installed runtime executable was not found")
-            runtime = await registry.register(
-                name=f"{install_request.tag} {install_request.backend or 'auto'}",
-                executable_path=executable,
+            runtime = await _control_plane(request).install_runtime(
+                install_request.tag,
+                install_request.asset_name,
                 backend=install_request.backend,
             )
         except ReleaseInstallError as error:

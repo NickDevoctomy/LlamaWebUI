@@ -23,6 +23,7 @@ def test_upgrade_database_creates_schema_and_is_idempotent(tmp_path: Path) -> No
         assert set(inspect(engine).get_table_names()) == {
             "access_tokens",
             "alembic_version",
+            "assistant_approvals",
             "assistant_conversations",
             "assistant_messages",
             "benchmark_runs",

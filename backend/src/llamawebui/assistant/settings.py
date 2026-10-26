@@ -8,6 +8,13 @@ from llamawebui.services.settings_store import SettingsStore
 
 ASSISTANT_SETTINGS = "assistant.settings"
 DEFAULT_NAME = "Lama"
+# Actions the operator approves before the assistant takes them, and whether each needs it.
+APPROVAL_DEFAULTS: dict[str, bool] = {
+    "downloads": True,
+    "runtimes": False,
+    "profiles": True,
+    "benchmarks": True,
+}
 
 
 class AssistantSettings(BaseModel):
@@ -18,6 +25,7 @@ class AssistantSettings(BaseModel):
     spend_limit_usd: float = Field(default=2.0, gt=0, le=1000)
     # Model calls one message may lead to, tool calls included, before the turn stops.
     max_rounds_per_turn: int = Field(default=40, ge=1, le=500)
+    approvals: dict[str, bool] = Field(default_factory=lambda: dict(APPROVAL_DEFAULTS))
 
     @field_validator("name")
     @classmethod
@@ -26,6 +34,18 @@ class AssistantSettings(BaseModel):
         if not name or not name.isprintable():
             raise ValueError("the name must be printable text on one line")
         return name
+
+    @field_validator("approvals")
+    @classmethod
+    def _known_categories(cls, value: dict[str, bool]) -> dict[str, bool]:
+        unknown = set(value) - set(APPROVAL_DEFAULTS)
+        if unknown:
+            raise ValueError(f"unknown approval categories: {', '.join(sorted(unknown))}")
+        # Categories added since the settings were saved take their defaults.
+        return {**APPROVAL_DEFAULTS, **value}
+
+    def needs_approval(self, category: str | None) -> bool:
+        return category is not None and self.approvals.get(category, True)
 
 
 def load_settings(store: SettingsStore) -> AssistantSettings:

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Download, FileCheck2, Info, KeyRound, LoaderCircle, Save, Settings, ShieldCheck, Trash2 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
-import { api, type LinterStatus, type SecretName } from './api'
+import { api, type ApprovalCategory, type LinterStatus, type SecretName } from './api'
 import { OpenRouterModelPicker } from './OpenRouterModelPicker'
 import { formatBytes } from './Dashboard'
 
@@ -158,6 +158,13 @@ function SecurityTab({ canManage }: { canManage: boolean }) {
 }
 
 /** The assistant's name, and the limits on what one conversation may spend and do. */
+const APPROVAL_CATEGORIES: { key: ApprovalCategory; label: string; description: string }[] = [
+  { key: 'downloads', label: 'Model downloads', description: 'Downloading a model from Hugging Face into the library.' },
+  { key: 'profiles', label: 'Profile changes', description: 'Creating, changing, copying or deleting a profile.' },
+  { key: 'benchmarks', label: 'Benchmarks and router restarts', description: 'Running a benchmark, or starting or stopping the router, which unloads any models in use.' },
+  { key: 'runtimes', label: 'Runtime installs', description: 'Downloading and registering a llama.cpp build.' },
+]
+
 function AssistantTab({ canManage }: { canManage: boolean }) {
   const queryClient = useQueryClient()
   const settings = useQuery({ queryKey: ['assistant-settings'], queryFn: api.assistantSettings })
@@ -165,12 +172,17 @@ function AssistantTab({ canManage }: { canManage: boolean }) {
   const saved = settings.data
   const values = draft ?? (saved ? { name: saved.name, spend: String(saved.spend_limit_usd), rounds: String(saved.max_rounds_per_turn) } : undefined)
   const save = useMutation({
-    mutationFn: () => api.updateAssistantSettings({ name: values!.name, spend_limit_usd: Number(values!.spend), max_rounds_per_turn: Number(values!.rounds) }),
+    mutationFn: () => api.updateAssistantSettings({ ...saved!, name: values!.name, spend_limit_usd: Number(values!.spend), max_rounds_per_turn: Number(values!.rounds) }),
     onSuccess: async (next) => {
       queryClient.setQueryData(['assistant-settings'], next)
       setDraft(undefined)
       await queryClient.invalidateQueries({ queryKey: ['assistant-status'] })
     },
+  })
+  // Each switch saves at once, keeping the other saved settings as they are.
+  const toggle = useMutation({
+    mutationFn: (category: ApprovalCategory) => api.updateAssistantSettings({ ...saved!, approvals: { ...saved!.approvals, [category]: !saved!.approvals[category] } }),
+    onSuccess: (next) => queryClient.setQueryData(['assistant-settings'], next),
   })
   if (settings.isError) return <div className="settings-body"><div className="capability-note error" role="alert"><AlertCircle size={16} /><span>{settings.error.message}</span></div></div>
   if (!values) return <div className="settings-body"><div className="capability-note" role="status"><LoaderCircle className="spin" size={16} /><span>Loading assistant settings…</span></div></div>
@@ -185,6 +197,20 @@ function AssistantTab({ canManage }: { canManage: boolean }) {
       <button className="button primary" disabled={!canManage || !draft || !values.name.trim() || save.isPending} title={hint} type="submit">{save.isPending ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />} Save</button>
       {save.error && <div className="form-error" role="alert"><AlertCircle size={15} /> {save.error.message}</div>}
     </form>
+    <div className="settings-section"><h3>Approvals</h3><p>Actions that wait for you to approve them in the conversation before the assistant takes them.</p></div>
+    <div className="record-list">{APPROVAL_CATEGORIES.map(({ key, label, description }) => {
+      const required = saved?.approvals[key] ?? true
+      return <div className="record-row" key={key}>
+        <span className="record-icon"><ShieldCheck size={17} /></span>
+        <div className="record-copy"><strong className="record-title">{label}</strong><span className="record-description">{description}</span></div>
+        <span className="row-actions">
+          <button aria-checked={required} aria-label={`Ask before ${label.toLowerCase()}`} className="profile-switch" disabled={!canManage || toggle.isPending} onClick={() => toggle.mutate(key)} role="switch" title={hint} type="button">
+            <span aria-hidden="true" className="switch-track"><span /></span>{required ? 'Ask first' : 'Allowed'}
+          </button>
+        </span>
+      </div>
+    })}</div>
+    {toggle.error && <div className="settings-body"><div className="form-error" role="alert"><AlertCircle size={15} /> {toggle.error.message}</div></div>}
   </>
 }
 

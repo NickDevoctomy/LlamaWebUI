@@ -338,3 +338,25 @@ class AssistantMessageRecord(Base):
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     usage: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AssistantApprovalRecord(Base):
+    """An action the assistant asked the operator to approve before taking it."""
+
+    __tablename__ = "assistant_approvals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("assistant_conversations.id", ondelete="CASCADE"), index=True
+    )
+    tool_call_id: Mapped[str] = mapped_column(String(100))
+    tool_name: Mapped[str] = mapped_column(String(100))
+    # downloads, runtimes, profiles or benchmarks.
+    category: Mapped[str] = mapped_column(String(20))
+    title: Mapped[str] = mapped_column(String(300))
+    details: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    # pending, approved, rejected, or expired when its turn ended before a decision.
+    state: Mapped[str] = mapped_column(String(20), default="pending")
+    decided_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

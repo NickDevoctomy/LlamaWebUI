@@ -13,6 +13,9 @@ from llamawebui.assistant.prompt import render_prompt, system_template
 from llamawebui.assistant.settings import AssistantSettings, load_settings
 from llamawebui.assistant.tools import Tool, ToolServices
 from llamawebui.assistant.tools.arguments import ARGUMENT_TOOLS
+from llamawebui.assistant.tools.benchmarks import BENCHMARK_TOOLS
+from llamawebui.assistant.tools.models import MODEL_TOOLS
+from llamawebui.assistant.tools.profiles import PROFILE_TOOLS
 from llamawebui.assistant.tools.system import SYSTEM_TOOLS
 from llamawebui.domain.benchmark import Benchmark
 from llamawebui.models import AssistantConversationRecord
@@ -20,7 +23,13 @@ from llamawebui.services.hardware_profile import HardwareProfile
 from llamawebui.services.profile_registry import ProfileNotFoundError, ProfileRegistry
 from llamawebui.services.settings_store import OPENROUTER_MODEL, SettingsStore
 
-TOOLS: tuple[Tool, ...] = (*SYSTEM_TOOLS, *ARGUMENT_TOOLS)
+TOOLS: tuple[Tool, ...] = (
+    *SYSTEM_TOOLS,
+    *ARGUMENT_TOOLS,
+    *MODEL_TOOLS,
+    *PROFILE_TOOLS,
+    *BENCHMARK_TOOLS,
+)
 GIB = 1024**3
 
 

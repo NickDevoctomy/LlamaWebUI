@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import builtins
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import Engine, func, select, update
 from sqlalchemy.orm import sessionmaker
 
-from llamawebui.models import AssistantConversationRecord, AssistantMessageRecord
+from llamawebui.models import (
+    AssistantApprovalRecord,
+    AssistantConversationRecord,
+    AssistantMessageRecord,
+)
 
 
 class ConversationNotFoundError(LookupError):
@@ -125,12 +130,77 @@ class ConversationRegistry:
             session.commit()
             return record
 
+    def create_approval(
+        self,
+        conversation_id: str,
+        *,
+        tool_call_id: str,
+        tool_name: str,
+        category: str,
+        title: str,
+        details: dict[str, object],
+    ) -> AssistantApprovalRecord:
+        record = AssistantApprovalRecord(
+            id=str(uuid4()),
+            conversation_id=conversation_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            category=category,
+            title=title,
+            details=details,
+            state="pending",
+        )
+        with self._sessions() as session:
+            session.add(record)
+            session.commit()
+        return record
+
+    def approval(self, approval_id: str) -> AssistantApprovalRecord:
+        with self._sessions() as session:
+            record = session.get(AssistantApprovalRecord, approval_id)
+        if record is None:
+            raise ConversationNotFoundError(f"approval not found: {approval_id}")
+        return record
+
+    def approvals(self, conversation_id: str) -> builtins.list[AssistantApprovalRecord]:
+        with self._sessions() as session:
+            statement = (
+                select(AssistantApprovalRecord)
+                .where(AssistantApprovalRecord.conversation_id == conversation_id)
+                .order_by(AssistantApprovalRecord.created_at)
+            )
+            return list(session.scalars(statement))
+
+    def decide(
+        self, approval_id: str, state: str, decided_by: str | None = None
+    ) -> AssistantApprovalRecord:
+        with self._sessions() as session:
+            record = session.get(AssistantApprovalRecord, approval_id)
+            if record is None:
+                raise ConversationNotFoundError(f"approval not found: {approval_id}")
+            record.state = state
+            record.decided_by = decided_by
+            record.decided_at = datetime.now()
+            session.commit()
+            return record
+
+    def expire_pending(self, conversation_id: str | None = None) -> None:
+        """Expire pending approvals: of one conversation, or all of them at startup."""
+        statement = update(AssistantApprovalRecord).where(
+            AssistantApprovalRecord.state == "pending"
+        )
+        if conversation_id is not None:
+            statement = statement.where(AssistantApprovalRecord.conversation_id == conversation_id)
+        with self._sessions() as session:
+            session.execute(statement.values(state="expired", decided_at=datetime.now()))
+            session.commit()
+
     def interrupt_running(self) -> int:
         """Mark turns left running by a stopped app as interrupted; returns how many."""
         with self._sessions() as session:
             result = session.execute(
                 update(AssistantConversationRecord)
-                .where(AssistantConversationRecord.state == "running")
+                .where(AssistantConversationRecord.state.in_(("running", "awaiting_approval")))
                 .values(state="interrupted")
             )
             session.commit()
@@ -147,7 +217,9 @@ def conversation_payload(
         "model_id": record.model_id,
         "brief": record.brief,
         # A turn left "running" by a stopped app is reported as it really is.
-        "state": record.state if running or record.state != "running" else "interrupted",
+        "state": "interrupted"
+        if not running and record.state in {"running", "awaiting_approval"}
+        else record.state,
         "error": record.error,
         "cost_usd": record.cost_usd,
         "spend_limit_usd": record.spend_limit_usd,
@@ -171,4 +243,19 @@ def message_payload(record: AssistantMessageRecord) -> dict[str, object]:
         "summary": record.summary,
         "cost_usd": record.cost_usd,
         "created_at": record.created_at,
+    }
+
+
+def approval_payload(record: AssistantApprovalRecord) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "tool_call_id": record.tool_call_id,
+        "tool_name": record.tool_name,
+        "category": record.category,
+        "title": record.title,
+        "details": record.details,
+        "state": record.state,
+        "decided_by": record.decided_by,
+        "created_at": record.created_at,
+        "decided_at": record.decided_at,
     }

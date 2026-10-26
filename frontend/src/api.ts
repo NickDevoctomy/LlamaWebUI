@@ -218,7 +218,7 @@ export interface AssistantConversation {
   model_id: string | null
   brief: Brief
   /** paused: the spending limit was reached; continuing raises it. */
-  state: 'idle' | 'running' | 'paused' | 'interrupted' | 'failed'
+  state: 'idle' | 'running' | 'awaiting_approval' | 'paused' | 'interrupted' | 'failed'
   error: string | null
   cost_usd: number
   spend_limit_usd: number
@@ -251,17 +251,40 @@ export interface AssistantProgress {
   reasoning: string
   tool_call: { name: string; bytes: number } | null
   running_tool?: string | null
+  /** Set while waiting to retry a request the provider failed. */
+  retrying?: { attempt: number; error: string } | null
+}
+
+export type ApprovalCategory = 'downloads' | 'runtimes' | 'profiles' | 'benchmarks'
+
+/** An action the assistant asked to take; the turn waits while it is pending. */
+export interface AssistantApproval {
+  id: string
+  tool_call_id: string
+  tool_name: string
+  category: ApprovalCategory
+  title: string
+  /** What to decide on; a profile change lists its arguments before and after. */
+  details: Record<string, unknown> & { changes?: { argument: string; before: unknown; after: unknown }[] }
+  /** expired: the turn ended before anyone decided. */
+  state: 'pending' | 'approved' | 'rejected' | 'expired'
+  decided_by: string | null
+  created_at: string
+  decided_at: string | null
 }
 
 export interface AssistantConversationDetail extends AssistantConversation {
   messages: AssistantMessage[]
   progress: AssistantProgress | null
+  approvals: AssistantApproval[]
 }
 
 export interface AssistantSettings {
   name: string
   spend_limit_usd: number
   max_rounds_per_turn: number
+  /** Whether each kind of action waits for the operator's approval. */
+  approvals: Record<ApprovalCategory, boolean>
 }
 
 export interface SecuritySettings {
@@ -909,7 +932,9 @@ export const api = {
   updateAssistantBrief: (id: string, brief: Brief) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/brief`, { method: 'PUT', body: JSON.stringify(brief) }),
   deleteAssistantConversation: (id: string) => request<void>(`/api/assistant/conversations/${id}`, { method: 'DELETE' }),
   sendAssistantMessage: (id: string, content: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/messages`, { method: 'POST', body: JSON.stringify({ content }) }),
+  decideAssistantApproval: (id: string, approve: boolean) => request<AssistantConversationDetail>(`/api/assistant/approvals/${id}`, { method: 'POST', body: JSON.stringify({ approve }) }),
   stopAssistant: (id: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/stop`, { method: 'POST' }),
+  retryAssistant: (id: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/retry`, { method: 'POST' }),
   continueAssistant: (id: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/continue`, { method: 'POST' }),
   assistantSettings: () => request<AssistantSettings>('/api/settings/assistant'),
   updateAssistantSettings: (settings: AssistantSettings) => request<AssistantSettings>('/api/settings/assistant', { method: 'PUT', body: JSON.stringify(settings) }),

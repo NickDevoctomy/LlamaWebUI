@@ -161,3 +161,21 @@ describe('SettingsPanel', () => {
     expect(download).toHaveAttribute('title', 'Changing settings needs the settings.write privilege')
   })
 })
+
+describe('SettingsPanel assistant approvals', () => {
+  it('switches each approval category on its own', async () => {
+    const saved = { name: 'Lama', spend_limit_usd: 2, max_rounds_per_turn: 40, approvals: { downloads: true, runtimes: false, profiles: true, benchmarks: true } }
+    vi.spyOn(api, 'benchmarkTools').mockResolvedValue({ eslint: missing })
+    vi.spyOn(api, 'assistantSettings').mockResolvedValue(saved)
+    const update = vi.spyOn(api, 'updateAssistantSettings').mockResolvedValue({ ...saved, approvals: { ...saved.approvals, runtimes: true } })
+    renderPanel()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Assistant' }))
+    const runtimes = await screen.findByRole('switch', { name: 'Ask before runtime installs' })
+    expect(runtimes).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByRole('switch', { name: 'Ask before model downloads' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(runtimes)
+    await waitFor(() => expect(update.mock.calls[0]?.[0]).toEqual({ ...saved, approvals: { ...saved.approvals, runtimes: true } }))
+    await waitFor(() => expect(runtimes).toHaveAttribute('aria-checked', 'true'))
+  })
+})

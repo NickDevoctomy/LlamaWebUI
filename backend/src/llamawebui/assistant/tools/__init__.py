@@ -7,9 +7,14 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from llamawebui.domain.argument_catalog import ArgumentCatalog
+from llamawebui.domain.benchmark import Benchmark, SystemPrompt
+from llamawebui.services.benchmark_runner import BenchmarkRunner, BenchmarkRunRegistry
 from llamawebui.services.chat_stream import function_tool, shorten
+from llamawebui.services.control_plane import ControlPlane
 from llamawebui.services.download_registry import DownloadRegistry
 from llamawebui.services.hardware_profile import HardwareProfile
+from llamawebui.services.huggingface_catalog import Catalog
+from llamawebui.services.llama_release_installer import GitHubReleaseClient
 from llamawebui.services.model_artifact_registry import ModelArtifactRegistry
 from llamawebui.services.model_library import ModelLibrary
 from llamawebui.services.profile_registry import ProfileRegistry
@@ -34,6 +39,13 @@ class ToolServices:
     supervisor: RouterSupervisor
     router_client: RouterClient
     hardware: Callable[[], HardwareProfile]
+    control_plane: ControlPlane
+    hub: Catalog
+    releases: GitHubReleaseClient
+    benchmark_runner: BenchmarkRunner
+    benchmark_runs: BenchmarkRunRegistry
+    benchmarks: Callable[[], Sequence[Benchmark]]
+    system_prompts: Callable[[], Sequence[SystemPrompt]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +53,10 @@ class ToolContext:
     services: ToolServices
     # The privileges of the user whose message started the turn.
     privileges: frozenset[str]
+    # The conversation's optimisation brief, as stored.
+    brief: Mapping[str, object] = field(default_factory=dict)
+    # Ask to be told when a background job ends: watch("benchmark", run_id).
+    watch: Callable[[str, str], None] = lambda kind, job_id: None
 
 
 class ToolError(Exception):
@@ -56,6 +72,8 @@ class ToolResult:
 
 
 Handler = Callable[[ToolContext, Mapping[str, object]], Awaitable[ToolResult]]
+# What an approval card shows: a title and the details to decide on.
+Describer = Callable[[ToolContext, Mapping[str, object]], Awaitable[tuple[str, dict[str, object]]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +85,15 @@ class Tool:
     handler: Handler
     # Actions needing the operator's approval name their category; None runs freely.
     approval: str | None = field(default=None)
+    # Checks the arguments and words the approval request; raises ToolError if invalid.
+    describe: Describer | None = field(default=None)
+
+    async def approval_request(
+        self, context: ToolContext, arguments: Mapping[str, object]
+    ) -> tuple[str, dict[str, object]]:
+        if self.describe is not None:
+            return await self.describe(context, arguments)
+        return self.name, dict(arguments)
 
     def definition(self) -> dict[str, object]:
         return function_tool(self.name, self.description, self.parameters)
@@ -101,21 +128,41 @@ def text_argument(arguments: Mapping[str, object], key: str, *, required: bool =
     return ""
 
 
-async def call_tool(
+def error_result(message: str, summary: str | None = None) -> ToolResult:
+    return ToolResult(f"Error: {message}", summary or message, ok=False)
+
+
+def resolve_call(
     tools: Mapping[str, Tool], context: ToolContext, name: str, arguments: str
-) -> ToolResult:
-    """Run one call; any refusal or failure comes back as an error result, never raised."""
+) -> tuple[Tool, dict[str, object]] | ToolResult:
+    """The tool and parsed arguments for a call, or the error to answer it with."""
     tool = tools.get(name)
     if tool is None or tool.privilege not in context.privileges:
-        return ToolResult(f"Error: there is no tool named {name!r}.", "unknown tool", ok=False)
+        return error_result(f"there is no tool named {name!r}.", "unknown tool")
     try:
         parsed = json.loads(arguments or "{}")
     except json.JSONDecodeError:
         parsed = None
     if not isinstance(parsed, dict):
-        return ToolResult("Error: the arguments must be a JSON object.", "bad arguments", ok=False)
+        return error_result("the arguments must be a JSON object.", "bad arguments")
+    return tool, parsed
+
+
+async def run_call(tool: Tool, context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
+    """Run a resolved call; a refusal or failure comes back as an error result."""
     try:
-        result = await tool.handler(context, parsed)
+        result = await tool.handler(context, arguments)
     except ToolError as error:
-        return ToolResult(f"Error: {error}", str(error), ok=False)
+        return error_result(str(error))
     return ToolResult(shorten(result.text, MAX_RESULT_CHARACTERS), result.summary, result.ok)
+
+
+async def call_tool(
+    tools: Mapping[str, Tool], context: ToolContext, name: str, arguments: str
+) -> ToolResult:
+    """Resolve and run one call without asking for approval."""
+    resolved = resolve_call(tools, context, name, arguments)
+    if isinstance(resolved, ToolResult):
+        return resolved
+    tool, parsed = resolved
+    return await run_call(tool, context, parsed)

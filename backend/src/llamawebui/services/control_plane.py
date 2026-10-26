@@ -8,6 +8,7 @@ cannot bypass a check the UI is held to.
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Literal
@@ -26,6 +27,7 @@ from llamawebui.models import DownloadJobRecord, ModelProfileRecord, RuntimeReco
 from llamawebui.services.download_coordinator import DownloadCoordinator
 from llamawebui.services.download_registry import DownloadRegistry
 from llamawebui.services.huggingface_catalog import Catalog
+from llamawebui.services.llama_release_installer import ReleaseInstallError, RuntimeInstaller
 from llamawebui.services.model_artifact_registry import ModelArtifactRegistry
 from llamawebui.services.profile_registry import (
     ProfileRegistry,
@@ -130,6 +132,7 @@ class ControlPlane:
         hub: Catalog,
         downloads: DownloadRegistry,
         coordinator: DownloadCoordinator,
+        installer: RuntimeInstaller,
         port_probe: Callable[[str, int], Awaitable[bool]],
         on_server_run: Callable[[str], None],
     ) -> None:
@@ -144,6 +147,7 @@ class ControlPlane:
         self._hub = hub
         self._downloads = downloads
         self._coordinator = coordinator
+        self._installer = installer
         self._port_probe = port_probe
         self._on_server_run = on_server_run
         self.lock = asyncio.Lock()
@@ -289,3 +293,22 @@ class ControlPlane:
         job = self._downloads.create(manifest, group_key, include_projector=include_projector)
         self._coordinator.start(job.id)
         return job
+
+    async def install_runtime(
+        self, tag: str, asset_name: str, *, backend: str | None = None
+    ) -> RuntimeRecord:
+        """Download a llama.cpp release asset and register its llama-server.
+
+        Raises ``ReleaseInstallError``, ``FileNotFoundError`` and
+        ``RuntimeAlreadyRegisteredError`` for the caller to report.
+        """
+        destination = await self._installer.install(
+            tag=tag, asset_name=asset_name, backend=backend
+        )
+        executable_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
+        executable = next(destination.rglob(executable_name), None)
+        if executable is None:
+            raise ReleaseInstallError("installed runtime executable was not found")
+        return await self._runtimes.register(
+            name=f"{tag} {backend or 'auto'}", executable_path=executable, backend=backend
+        )
