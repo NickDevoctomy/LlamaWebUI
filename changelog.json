@@ -19,7 +19,11 @@
         {
           "type": "change",
           "description": "Huggingface env var removed from template."
-        }           
+        },
+        {
+          "type": "feat",
+          "description": "Lama the assistant which can tune your profiles for you automatically, get models running, optimise them etc."
+        }         
       ]
     },    
     {
