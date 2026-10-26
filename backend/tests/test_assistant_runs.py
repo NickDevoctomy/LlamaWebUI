@@ -21,7 +21,7 @@ from llamawebui.assistant.library import LibraryError
 from llamawebui.assistant.reports import ReportLibrary
 from llamawebui.assistant.setup import TOOLS
 from llamawebui.assistant.tools import ToolContext, ToolResult, call_tool
-from llamawebui.assistant.tools.benchmarks import measured_now
+from llamawebui.assistant.tools.benchmarks import benchmark_notice, measured_now
 from llamawebui.assistant.tools.models import _ARCH, _SYSTEM, for_this_machine
 from llamawebui.assistant.tools.profiles import created_profiles, snapshot_once
 from llamawebui.assistant.tools.system import _release_tag
@@ -471,3 +471,48 @@ def test_reports_keep_alternatives_and_what_was_left_behind(tmp_path: Path) -> N
             },
             "x",
         )
+
+
+def test_failed_runs_carry_the_router_log(tmp_path: Path, login: Login) -> None:
+    with TestClient(_app(tmp_path, ScriptedClient()), client=LOCAL) as client:
+        _setup(client, login, tmp_path)
+        app: Any = client.app
+        profile = app.state.profile_registry.list()[0]
+        lines = [f"llama_model_load: line {number}" for number in range(30)]
+        lines[25] = "error: CUDA out of memory " + "x" * 500
+        failed = app.state.benchmark_runs.create(profile, app.state.benchmarks[0], None)
+        app.state.benchmark_runs.update(
+            failed.id, state="failed", error="test-model failed to load", server_log=lines
+        )
+        completed = _completed(client, None, datetime(2026, 10, 26), decode=1.0, generated=1)
+        supervisor = app.state.router_supervisor
+        supervisor.record_log("router started")
+        supervisor.record_log("srv  load_model: error loading model")
+        record = app.state.benchmark_runs.get(failed.id)
+        context = _context(client)
+        notice = benchmark_notice(record)
+        detail = json.loads(_call(context, client, "get_benchmark_run", {"run_id": failed.id}).text)
+        searched = _call(
+            context, client, "read_server_log", {"run_id": failed.id, "contains": "ERROR"}
+        )
+        last = json.loads(
+            _call(context, client, "read_server_log", {"run_id": failed.id, "lines": 3}).text
+        )
+        live = json.loads(_call(context, client, "read_server_log", {"contains": "error"}).text)
+        none_kept = _call(context, client, "read_server_log", {"run_id": completed})
+
+    assert "The router's last 20 log lines:" in notice
+    assert "llama_model_load: line 10" in notice
+    assert "llama_model_load: line 9\n" not in notice
+    assert notice.endswith(f"Read more with read_server_log and run_id {failed.id}.")
+    assert len(detail["server_log_tail"]) == 20
+    assert detail["server_log_tail"][15].endswith("x…")
+    assert len(detail["server_log_tail"][15]) == 401
+    found = json.loads(searched.text)
+    assert (found["matching"], found["kept"], len(found["lines"])) == (1, 30, 1)
+    assert searched.summary == f"1 log lines from benchmark run {failed.id}"
+    assert last["lines"] == [f"llama_model_load: line {number}" for number in (27, 28, 29)]
+    assert "matching" not in last
+    assert live["source"] == "the router, most recent output"
+    assert live["lines"] == ["srv  load_model: error loading model"]
+    assert "kept no router log" in none_kept.text

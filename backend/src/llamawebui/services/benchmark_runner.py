@@ -52,6 +52,8 @@ LOGGER = logging.getLogger("llamawebui.benchmarks")
 DEFAULT_MAX_TOKENS: int | None = None
 # Speeds are measured over this window, matching llama.cpp's own tg_3s figure.
 RATE_WINDOW_SECONDS = 3.0
+# The most router log lines kept with a failed run.
+SERVER_LOG_LINES = 200
 
 
 # Reasoning levels a run can ask for. "off" turns thinking off; the rest are passed to
@@ -917,8 +919,13 @@ class BenchmarkRunner:
         system_memory: Callable[[], Mapping[str, object] | None] = lambda: None,
         resource_seconds: float = 2.0,
         on_finished: Callable[[BenchmarkRunRecord], object] | None = None,
+        log_mark: Callable[[], int] = lambda: 0,
+        logs_since: Callable[[int], Sequence[str]] = lambda _mark: (),
     ) -> None:
         self._runs = runs
+        # The router's log: a point to read from, and the lines after it, kept on failure.
+        self._log_mark = log_mark
+        self._logs_since = logs_since
         # Told about each run once it is saved as completed, failed or cancelled.
         self._on_finished = on_finished
         self._linter = linter
@@ -1076,6 +1083,8 @@ class BenchmarkRunner:
         started = self._clock()
         stats = self._stats()
         state, error = "completed", None
+        log_mark = self._log_mark()
+        server_log: list[str] | None = None
         try:
             begun = self._clock()
             await self._start_router(record.runtime_id)
@@ -1114,6 +1123,8 @@ class BenchmarkRunner:
                 "benchmark_failed",
                 extra={"component": "benchmarks", "event": "failed", "error": error},
             )
+            # Why a load or generation failed is usually only in llama-server's output.
+            server_log = list(self._logs_since(log_mark))[-SERVER_LOG_LINES:]
         finally:
             # A finished run is done; otherwise keep the step it stopped at.
             stage = "done" if state == "completed" else cast(str, self._progress["stage"])
@@ -1142,6 +1153,7 @@ class BenchmarkRunner:
                 tool_calls=list(cast(list[dict[str, object]], self._progress["tool_calls"])),
                 tasks=list(cast(list[dict[str, object]], self._progress["tasks"])),
                 timeline=list(cast(list[dict[str, object]], self._progress["timeline"])),
+                server_log=server_log,
                 finished_at=_now(),
             )
             if state == "completed":

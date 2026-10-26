@@ -4,7 +4,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from conftest import Login
@@ -155,7 +155,7 @@ def _database(tmp_path: Path) -> tuple[Engine, ModelProfileRecord]:
 
 
 def _runner(
-    engine: Engine, client: FakeBenchmarkClient, *, router_stopped: bool = True
+    engine: Engine, client: FakeBenchmarkClient, *, router_stopped: bool = True, **options: Any
 ) -> tuple[BenchmarkRunner, BenchmarkRunRegistry, list[str]]:
     events: list[str] = []
 
@@ -173,6 +173,7 @@ def _runner(
         stop_router=stop_router,
         router_stopped=lambda: router_stopped,
         sample_seconds=0,
+        **options,
     )
     return runner, runs, events
 
@@ -357,13 +358,23 @@ async def test_a_model_that_fails_to_load_fails_the_run_and_stops_the_router(
     client = FakeBenchmarkClient(
         load_states=[{"value": "unloaded", "failed": True, "exit_code": 1}]
     )
-    runner, runs, events = _runner(engine, client)
+    marks: list[int] = []
+
+    def logs_since(mark: int) -> list[str]:
+        marks.append(mark)
+        return [f"line {number}" for number in range(mark, mark + 250)]
+
+    runner, runs, events = _runner(engine, client, log_mark=lambda: 7, logs_since=logs_since)
 
     record = runner.start(profile, BENCHMARK, 256)
     await runner.wait()
 
     finished = runs.get(record.id)
     assert (finished.state, finished.stage) == ("failed", "loading")
+    # Only the run's own lines are kept, and only the newest of them.
+    assert marks == [7]
+    assert finished.server_log is not None
+    assert (len(finished.server_log), finished.server_log[-1]) == (200, "line 256")
     assert finished.error == "qwen failed to load (exit code 1)"
     assert events == ["start:runtime-1", "stop"]
     assert ProfileRegistry(engine, default_catalog()).get(profile.id).benchmark_results is None

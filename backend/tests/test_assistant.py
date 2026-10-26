@@ -617,6 +617,7 @@ def test_tools_follow_the_senders_privileges(tmp_path: Path, login: Login) -> No
         "list_benchmarks",
         "get_benchmark_run",
         "list_benchmark_runs",
+        "read_server_log",
         "evaluate_run",
     ]
 

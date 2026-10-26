@@ -176,6 +176,8 @@ class BenchmarkRunRecord(Base):
     settings_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # The assistant conversation that started the run, if one did.
     conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # For a failed run, the router's log lines from the run (redacted), newest last.
+    server_log: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
 
 class DownloadJobRecord(Base):

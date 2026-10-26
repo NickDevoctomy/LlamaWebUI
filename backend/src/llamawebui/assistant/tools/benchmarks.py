@@ -73,6 +73,21 @@ def run_summary(record: BenchmarkRunRecord) -> dict[str, object]:
     }
 
 
+# Router log lines in a failure notice, and the longest a line may be anywhere it is shown.
+NOTICE_LOG_LINES = 20
+LOG_LINE_CHARACTERS = 400
+
+
+def log_tail(lines: Sequence[str], count: int, contains: str = "") -> list[str]:
+    """The last lines of a log, optionally only those containing some text, each cut short."""
+    wanted = contains.lower()
+    chosen = [line for line in lines if wanted in line.lower()] if wanted else list(lines)
+    return [
+        line if len(line) <= LOG_LINE_CHARACTERS else line[:LOG_LINE_CHARACTERS] + "…"
+        for line in chosen[-count:]
+    ]
+
+
 def benchmark_notice(record: BenchmarkRunRecord) -> str:
     """How a finished run went, in one line for the conversation that started it."""
     level = record.reasoning_level or "the model's default"
@@ -81,7 +96,14 @@ def benchmark_notice(record: BenchmarkRunRecord) -> str:
         f"on {record.profile_alias}, reasoning {level}. "
     )
     if record.state != "completed":
-        return head + f"{record.error or 'No reason given'}."
+        notice = head + f"{record.error or 'No reason given'}."
+        tail = log_tail(record.server_log or [], NOTICE_LOG_LINES)
+        if tail:
+            notice += (
+                f"\n\nThe router's last {len(tail)} log lines:\n" + "\n".join(tail) + "\n\n"
+                f"Read more with read_server_log and run_id {record.id}."
+            )
+        return notice
     stats = record.stats or {}
     figures = [
         f"{label} {stats[key]} {unit}"
@@ -225,6 +247,8 @@ async def get_benchmark_run(context: ToolContext, arguments: Mapping[str, object
     payload = run_summary(record)
     stats = record.stats or {}
     payload["stats"] = stats
+    if record.server_log:
+        payload["server_log_tail"] = log_tail(record.server_log, NOTICE_LOG_LINES)
     if record.launch_settings is not None:
         try:
             profile = context.services.profiles.get(record.profile_id)
@@ -255,6 +279,30 @@ async def list_benchmark_runs(context: ToolContext, arguments: Mapping[str, obje
     return json_result(
         {"runs": runs, "total": len(records)}, f"{len(runs)} of {len(records)} runs"
     )
+
+
+async def read_server_log(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
+    run_id = text_argument(arguments, "run_id", required=False)
+    contains = text_argument(arguments, "contains", required=False)
+    count = arguments.get("lines")
+    count = count if isinstance(count, int) and not isinstance(count, bool) else 80
+    count = max(1, min(count, 200))
+    if run_id:
+        record = _run(context, run_id)
+        if not record.server_log:
+            raise ToolError(
+                f"run {record.id} {record.state} and kept no router log; only failed runs do"
+            )
+        lines: Sequence[str] = record.server_log
+        source = f"benchmark run {record.id}"
+    else:
+        lines, source = context.services.supervisor.logs, "the router, most recent output"
+    matching = sum(1 for line in lines if contains.lower() in line.lower()) if contains else None
+    tail = log_tail(lines, count, contains)
+    payload: dict[str, object] = {"source": source, "lines": tail, "kept": len(lines)}
+    if matching is not None:
+        payload["matching"] = matching
+    return json_result(payload, f"{len(tail)} log lines from {source.split(',')[0]}")
 
 
 def brief_target_count(brief: Brief) -> int:
@@ -556,6 +604,25 @@ BENCHMARK_TOOLS = (
         ),
         "server.read",
         list_benchmark_runs,
+    ),
+    Tool(
+        "read_server_log",
+        "llama-server's own output, which says why a model failed to load or crashed (out "
+        "of memory, an unknown argument, a bad model file). With run_id: the lines kept from "
+        "that failed benchmark run. Without: the router's most recent output. Use contains "
+        "to keep only lines with some text, such as 'error' or 'failed'.",
+        object_schema(
+            {
+                "run_id": {"type": "string", "description": "A failed benchmark run."},
+                "lines": {
+                    "type": "integer",
+                    "description": "How many, newest last; 1 to 200, default 80.",
+                },
+                "contains": {"type": "string", "description": "Only lines containing this text."},
+            }
+        ),
+        "server.read",
+        read_server_log,
     ),
     Tool(
         "evaluate_run",

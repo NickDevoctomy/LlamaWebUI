@@ -268,6 +268,7 @@ Stop for maintainer review at the end of each phase.
 - [x] Reports gain `alternatives` and `left_behind`, shown in the reader.
 - [x] Benchmark runs can be selected and deleted together (`POST /api/benchmarks/runs/delete`), and a conversation's runs deleted from its header (`POST /api/assistant/conversations/{id}/benchmark-runs/delete`, which also needs `server.lifecycle.write`).
 - [x] Tests point the shipped research and report folders at a temporary folder (autouse fixture in `conftest.py`), since the libraries now read `SHIPPED_DIRECTORY` when built.
+- [x] Router logs for failures: the supervisor counts lines (`log_mark`, `logs_since`), a failed run keeps its own last 200 lines (`benchmark_runs.server_log`, migration 0037), the failure notice ends with the last 20 and `get_benchmark_run` shows them as `server_log_tail`. New `read_server_log` tool (server.read): a failed run's lines by `run_id`, or the live router log, with `lines` and a `contains` filter. Not shown in the Benchmarks UI yet.
 - [ ] Not done: a fixed-workload speed probe (the maintainer put this aside; the big swings in the third run came from runs at different reasoning levels).
 
 ## Verification

@@ -1157,6 +1157,10 @@ def create_app(
                 cast(RouterSupervisor, app.state.router_supervisor).pid, alias
             ),
             system_memory=system_memory,
+            log_mark=lambda: cast(RouterSupervisor, app.state.router_supervisor).log_mark,
+            logs_since=lambda mark: cast(RouterSupervisor, app.state.router_supervisor).logs_since(
+                mark
+            ),
             on_finished=lambda record: notify_assistant(
                 "benchmark",
                 record.id,
