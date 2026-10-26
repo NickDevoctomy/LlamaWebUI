@@ -209,6 +209,8 @@ export interface Brief {
   reasoning_level?: string | null
   /** Every target, most important first. */
   priority?: BriefTarget[]
+  /** Work through to the end without stopping to ask questions; true when absent. */
+  autonomous?: boolean
 }
 
 export interface AssistantConversation {
@@ -285,6 +287,58 @@ export interface AssistantSettings {
   max_rounds_per_turn: number
   /** Whether each kind of action waits for the operator's approval. */
   approvals: Record<ApprovalCategory, boolean>
+  /** Write research and reports straight into the repository (source checkouts only). */
+  auto_publish: boolean
+}
+
+/** What every research document and report has in its frontmatter, and where it comes from. */
+interface LibrarySummary {
+  slug: string
+  title: string
+  summary: string
+  tags: string[]
+  updated: string
+  author: { model?: string | null; conversation?: string | null } | null
+  /** Shipped with LlamaWebUI, or written on this machine. */
+  origin: 'shipped' | 'local'
+  /** A local document that takes the place of a shipped one with the same slug. */
+  replaces_shipped: boolean
+}
+
+/** General knowledge the assistant found, with its sources. */
+export interface ResearchSummary extends LibrarySummary {
+  researched: string
+  confidence: 'high' | 'medium' | 'low'
+  sources: { title: string; url?: string | null; accessed?: string | null }[]
+  applies_to: { models: string[]; hardware: string[]; runtime?: string | null }
+}
+
+export interface ResearchDocument extends ResearchSummary {
+  body: string
+}
+
+/** The record of one piece of optimisation work. */
+export interface ReportSummary extends LibrarySummary {
+  created: string
+  subject: { profile?: string | null; model?: string | null }
+  hardware: string[]
+  runtime?: string | null
+  benchmark?: string | null
+  outcome: 'improved' | 'unchanged' | 'worse' | 'failed' | 'incomplete'
+  results: { metric: string; before?: number | null; after?: number | null; unit?: string | null }[]
+}
+
+export interface ReportDocument extends ReportSummary {
+  /** Markdown; ```chart blocks hold the charts. */
+  body: string
+}
+
+export type LibraryKind = 'research' | 'reports'
+
+export interface LibraryList<T> {
+  documents: T[]
+  /** Why this browser cannot publish documents into the repository, or null if it can. */
+  publish_problem: string | null
 }
 
 export interface SecuritySettings {
@@ -936,6 +990,10 @@ export const api = {
   stopAssistant: (id: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/stop`, { method: 'POST' }),
   retryAssistant: (id: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/retry`, { method: 'POST' }),
   continueAssistant: (id: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/continue`, { method: 'POST' }),
+  libraryDocuments: <T,>(kind: LibraryKind, query = '') => request<LibraryList<T>>(`/api/assistant/${kind}${query ? `?q=${encodeURIComponent(query)}` : ''}`),
+  libraryDocument: <T,>(kind: LibraryKind, slug: string) => request<T>(`/api/assistant/${kind}/${encodeURIComponent(slug)}`),
+  deleteLibraryDocument: (kind: LibraryKind, slug: string) => request<void>(`/api/assistant/${kind}/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
+  publishLibrary: (kind: LibraryKind, slugs: string[]) => request<{ published: string[]; folder: string }>(`/api/assistant/${kind}/publish`, { method: 'POST', body: JSON.stringify({ slugs }) }),
   assistantSettings: () => request<AssistantSettings>('/api/settings/assistant'),
   updateAssistantSettings: (settings: AssistantSettings) => request<AssistantSettings>('/api/settings/assistant', { method: 'PUT', body: JSON.stringify(settings) }),
   secrets: () => request<{ store: string; secrets: SecretStatus[] }>('/api/secrets'),

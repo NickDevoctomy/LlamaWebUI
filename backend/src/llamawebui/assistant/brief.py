@@ -36,6 +36,8 @@ class Brief(BaseModel):
     benchmark_id: str | None = Field(default=None, max_length=64)
     reasoning_level: str | None = Field(default=None, max_length=16)
     priority: list[Target] = Field(default_factory=lambda: list(DEFAULT_PRIORITY))
+    # Work through to the end without stopping to ask the operator questions.
+    autonomous: bool = True
 
     @model_validator(mode="after")
     def _one_subject(self) -> Self:
@@ -46,6 +48,18 @@ class Brief(BaseModel):
         if sorted(self.priority) != sorted(DEFAULT_PRIORITY):
             raise ValueError(f"priority must list each of {', '.join(DEFAULT_PRIORITY)} once")
         return self
+
+
+AUTONOMOUS = (
+    "Work autonomously: the operator is not watching. Do not ask questions or offer choices. "
+    "Pick the option you would recommend, say why in a sentence, and carry on. Stop only "
+    "when the targets are met or no change is left that is worth trying, then write the "
+    "report. Actions that need approval still wait for it."
+)
+ATTENDED = (
+    "The operator is following along: check with them before big decisions, and ask when "
+    "the brief is unclear."
+)
 
 
 def brief_text(brief: Brief, *, profile_alias: str | None, benchmark_title: str) -> str:
@@ -87,6 +101,8 @@ def brief_text(brief: Brief, *, profile_alias: str | None, benchmark_title: str)
             "When targets conflict, favour them in this order: "
             + ", ".join(brief.priority)
             + ".",
+            "",
+            AUTONOMOUS if brief.autonomous else ATTENDED,
         ]
     )
     return "\n".join(lines)

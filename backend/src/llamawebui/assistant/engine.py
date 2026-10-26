@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
+from llamawebui.assistant.checks import is_check, turn_checks
 from llamawebui.assistant.conversations import ConversationRegistry
 from llamawebui.assistant.openrouter_client import ChatClient, OpenRouterError
 from llamawebui.assistant.settings import AssistantSettings
@@ -64,10 +65,10 @@ def history(records: Sequence[AssistantMessageRecord]) -> list[dict[str, object]
     """The stored conversation as chat messages for the model.
 
     Events are for the reader only, except notifications about jobs the assistant
-    started, which it reads as user messages. A notification that arrived while tools
-    were running waits until their results are in, keeping each reply's calls and
-    results together. A tool call that never got a result (the turn was stopped or the
-    app restarted) is answered as not run, so the history stays valid.
+    started and end-of-turn checks, which it reads as user messages. A notification that
+    arrived while tools were running waits until their results are in, keeping each
+    reply's calls and results together. A tool call that never got a result (the turn
+    was stopped or the app restarted) is answered as not run, so the history stays valid.
     """
     messages: list[dict[str, object]] = []
     notes: list[dict[str, object]] = []
@@ -80,6 +81,8 @@ def history(records: Sequence[AssistantMessageRecord]) -> list[dict[str, object]
             messages.append({"role": "user", "content": record.content})
         elif is_notification(record):
             notes.append({"role": "user", "content": f"[Notification] {record.content}"})
+        elif is_check(record):
+            messages.append({"role": "user", "content": f"[Check] {record.content}"})
         elif record.role == "assistant":
             message: dict[str, object] = {"role": "assistant", "content": record.content}
             if record.tool_calls:
@@ -281,7 +284,15 @@ class AssistantEngine:
     def _start(self, conversation_id: str, privileges: frozenset[str]) -> None:
         self._active = conversation_id
         self._progress = {"round": 0, "content": "", "reasoning": "", "tool_call": None}
-        self._conversations.update(conversation_id, state="running", error=None)
+        fields: dict[str, object] = {"state": "running", "error": None}
+        conversation = self._conversations.get(conversation_id)
+        if conversation.router_at_start is None:
+            # The first turn: note what to leave as it was found.
+            fields["router_at_start"] = {
+                "runtime_id": self._services.control_plane.router_runtime_id
+            }
+            self._snapshot_subject(conversation)
+        self._conversations.update(conversation_id, **fields)
         self._task = asyncio.create_task(self._turn(conversation_id, privileges))
 
     async def _turn(self, conversation_id: str, privileges: frozenset[str]) -> None:
@@ -318,6 +329,8 @@ class AssistantEngine:
             privileges,
             brief=conversation.brief,
             watch=lambda kind, job_id: self.watch(conversation_id, privileges, kind, job_id),
+            conversation_id=conversation_id,
+            model_id=setup.model_id,
         )
         limit = self._settings().max_rounds_per_turn
         for round_number in range(1, limit + 1):
@@ -360,7 +373,16 @@ class AssistantEngine:
                 completion_tokens=_count(usage.get("completion_tokens")),
             )
             if not calls:
-                return "idle"
+                reminders = self._checks(conversation_id)
+                if not reminders:
+                    return "idle"
+                self._conversations.add_message(
+                    conversation_id,
+                    "event",
+                    " ".join(text for _, text in reminders),
+                    summary={"kind": "check", "reminders": [kind for kind, _ in reminders]},
+                )
+                continue
             for call in calls:
                 self._progress.update(tool_call=None, running_tool=call["name"])
                 result = await self._call(conversation_id, by_name, context, call)
@@ -371,7 +393,15 @@ class AssistantEngine:
                     tool_call_id=call["id"],
                     tool_name=call["name"],
                     summary={"summary": result.summary, "ok": result.ok},
+                    cost_usd=result.cost_usd or None,
                 )
+                if result.cost_usd:
+                    self._conversations.add_usage(
+                        conversation_id,
+                        cost_usd=result.cost_usd,
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                    )
             self._progress["running_tool"] = None
         self._conversations.add_message(
             conversation_id,
@@ -381,6 +411,30 @@ class AssistantEngine:
             summary={"kind": "round_limit"},
         )
         return "idle"
+
+    def _snapshot_subject(self, conversation: AssistantConversationRecord) -> None:
+        """Snapshot the profile the brief names, so the work can be undone."""
+        profile_id = conversation.brief.get("profile_id")
+        if isinstance(profile_id, str):
+            with contextlib.suppress(LookupError):
+                self._services.snapshots.create(
+                    profile_id,
+                    f"Before “{conversation.title}”",
+                    created_by="assistant",
+                    conversation_id=conversation.id,
+                )
+
+    def _checks(self, conversation_id: str) -> list[tuple[str, str]]:
+        """Reminders for the end of a turn, unless a job it started is still running."""
+        if any(watcher == conversation_id for watcher, _ in self._watches.values()):
+            return []
+        conversation = self._conversations.get(conversation_id)
+        return turn_checks(
+            self._conversations.messages(conversation_id),
+            router_running=not self._services.control_plane.router_stopped,
+            router_at_start=conversation.router_at_start,
+            autonomous=conversation.brief.get("autonomous", True) is not False,
+        )
 
     async def _call(
         self,

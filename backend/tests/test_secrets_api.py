@@ -11,9 +11,10 @@ from conftest import Login
 from fastapi import Request
 from fastapi.testclient import TestClient
 
-from llamawebui.app import _is_local_request, create_app
+from llamawebui.app import create_app
 from llamawebui.config import Settings
 from llamawebui.database import migration_config
+from llamawebui.local_requests import is_local_request
 from llamawebui.services.authorization import privilege_for_request
 from llamawebui.services.secret_store import SECRET_SERVICE
 
@@ -131,11 +132,11 @@ def test_remote_secrets_access_is_off_until_turned_on_locally(
 )
 def test_local_requests_are_recognised(host: str, local: bool) -> None:
     request = Request({"type": "http", "client": (host, 50000), "headers": []})
-    assert _is_local_request(request) is local
+    assert is_local_request(request) is local
 
 
 def test_a_request_without_a_client_is_not_local() -> None:
-    assert _is_local_request(Request({"type": "http", "client": None, "headers": []})) is False
+    assert is_local_request(Request({"type": "http", "client": None, "headers": []})) is False
 
 
 def test_secrets_have_their_own_privileges() -> None:

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Download, FileCheck2, Info, KeyRound, LoaderCircle, Save, Settings, ShieldCheck, Trash2 } from 'lucide-react'
+import { AlertCircle, Download, FileCheck2, Info, KeyRound, LoaderCircle, Save, Settings, ShieldCheck, Trash2, Upload } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { api, type ApprovalCategory, type LinterStatus, type SecretName } from './api'
 import { OpenRouterModelPicker } from './OpenRouterModelPicker'
@@ -184,6 +184,10 @@ function AssistantTab({ canManage }: { canManage: boolean }) {
     mutationFn: (category: ApprovalCategory) => api.updateAssistantSettings({ ...saved!, approvals: { ...saved!.approvals, [category]: !saved!.approvals[category] } }),
     onSuccess: (next) => queryClient.setQueryData(['assistant-settings'], next),
   })
+  const publishing = useMutation({
+    mutationFn: () => api.updateAssistantSettings({ ...saved!, auto_publish: !saved!.auto_publish }),
+    onSuccess: (next) => queryClient.setQueryData(['assistant-settings'], next),
+  })
   if (settings.isError) return <div className="settings-body"><div className="capability-note error" role="alert"><AlertCircle size={16} /><span>{settings.error.message}</span></div></div>
   if (!values) return <div className="settings-body"><div className="capability-note" role="status"><LoaderCircle className="spin" size={16} /><span>Loading assistant settings…</span></div></div>
   const change = (key: 'name' | 'spend' | 'rounds') => (event: React.ChangeEvent<HTMLInputElement>) => setDraft({ ...values, [key]: event.target.value })
@@ -211,6 +215,19 @@ function AssistantTab({ canManage }: { canManage: boolean }) {
       </div>
     })}</div>
     {toggle.error && <div className="settings-body"><div className="form-error" role="alert"><AlertCircle size={15} /> {toggle.error.message}</div></div>}
+    <div className="settings-section"><h3>Research and reports</h3><p>What the assistant learns and the reports it writes can ship with LlamaWebUI, so later installs start with them.</p></div>
+    <div className="record-list">
+      <div className="record-row">
+        <span className="record-icon"><Upload size={17} /></span>
+        <div className="record-copy"><strong className="record-title">Auto-publish</strong><span className="record-description">Write new research and reports straight into the repository, ready to review and commit, instead of publishing them by hand. Works only when LlamaWebUI runs from a source checkout, and can only be switched on from this machine.</span></div>
+        <span className="row-actions">
+          <button aria-checked={Boolean(saved?.auto_publish)} aria-label="Auto-publish research and reports" className="profile-switch" disabled={!canManage || publishing.isPending} onClick={() => publishing.mutate()} role="switch" title={hint} type="button">
+            <span aria-hidden="true" className="switch-track"><span /></span>{saved?.auto_publish ? 'On' : 'Off'}
+          </button>
+        </span>
+      </div>
+    </div>
+    {publishing.error && <div className="settings-body"><div className="form-error" role="alert"><AlertCircle size={15} /> {publishing.error.message}</div></div>}
   </>
 }
 

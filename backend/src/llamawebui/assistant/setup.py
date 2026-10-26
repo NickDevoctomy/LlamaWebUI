@@ -14,6 +14,7 @@ from llamawebui.assistant.settings import AssistantSettings, load_settings
 from llamawebui.assistant.tools import Tool, ToolServices
 from llamawebui.assistant.tools.arguments import ARGUMENT_TOOLS
 from llamawebui.assistant.tools.benchmarks import BENCHMARK_TOOLS
+from llamawebui.assistant.tools.knowledge import KNOWLEDGE_TOOLS
 from llamawebui.assistant.tools.models import MODEL_TOOLS
 from llamawebui.assistant.tools.profiles import PROFILE_TOOLS
 from llamawebui.assistant.tools.system import SYSTEM_TOOLS
@@ -29,6 +30,7 @@ TOOLS: tuple[Tool, ...] = (
     *MODEL_TOOLS,
     *PROFILE_TOOLS,
     *BENCHMARK_TOOLS,
+    *KNOWLEDGE_TOOLS,
 )
 GIB = 1024**3
 
@@ -47,6 +49,19 @@ def hardware_text(hardware: HardwareProfile) -> str:
             "share system memory)"
         )
     return "\n".join(lines)
+
+
+def snapshots_text(services: ToolServices, conversation_id: str) -> str:
+    """The snapshots this conversation took, for restoring a profile it changed."""
+    lines = []
+    for record in services.snapshots.list(conversation_id=conversation_id):
+        try:
+            alias = services.profiles.get(record.profile_id).alias
+        except ProfileNotFoundError:
+            continue
+        taken = f"{record.created_at:%Y-%m-%d %H:%M}"
+        lines.append(f"- `{record.id}`: {alias}, “{record.name}”, taken {taken}")
+    return "\n".join(lines) or "None yet."
 
 
 def build_engine(
@@ -87,6 +102,9 @@ def build_engine(
                     profile_alias=alias,
                     benchmark_title=benchmark.title if benchmark else str(brief.benchmark_id),
                 ),
+                "research_index": services.research.index_text(empty="No research documents yet."),
+                "report_index": services.reports.index_text(empty="No reports yet."),
+                "snapshots": snapshots_text(services, conversation.id),
             },
         )
         pricing = model.get("pricing")

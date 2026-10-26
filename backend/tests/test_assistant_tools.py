@@ -122,7 +122,8 @@ def test_argument_tools_search_and_explain(tmp_path: Path, login: Login) -> None
         unknown = _call(client, "get_argument", {"argument": "--nope"})
 
     assert found["matches"][0]["id"] == "ctx-size"
-    assert nothing == {"matches": [], "total": 0}
+    assert (nothing["matches"], nothing["total"]) == ([], 0)
+    assert "speculative" in nothing["categories"]
     assert by_id["flag"] == "--ctx-size"
     assert by_flag["id"] == "ctx-size"
     assert unknown.ok is False

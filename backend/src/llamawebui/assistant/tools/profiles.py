@@ -33,7 +33,7 @@ from llamawebui.domain.profile_arguments import (
     errors_of,
     warnings_of,
 )
-from llamawebui.models import ModelProfileRecord, RuntimeRecord
+from llamawebui.models import ModelProfileRecord, ProfileSnapshotRecord, RuntimeRecord
 from llamawebui.services.control_plane import (
     ControlPlaneError,
     next_profile_version,
@@ -44,6 +44,7 @@ from llamawebui.services.profile_registry import (
     ProfileNotFoundError,
     configuration_payload,
 )
+from llamawebui.services.profile_snapshots import SnapshotNotFoundError
 from llamawebui.services.runtime_registry import RuntimeNotFoundError, runtime_capabilities
 
 ARGUMENT_ENTRY = {
@@ -207,14 +208,22 @@ async def preview_profile(context: ToolContext, arguments: Mapping[str, object])
     )
 
 
+def _require_router_stopped(context: ToolContext, action: str) -> None:
+    if context.services.benchmark_runner.active_run_id is not None:
+        raise ToolError(
+            f"a benchmark is running, so wait for its notification before {action}"
+        )
+    try:
+        context.services.control_plane.require_router_stopped(action)
+    except ControlPlaneError as error:
+        raise ToolError(str(error)) from error
+
+
 def _checked_update(
     context: ToolContext, arguments: Mapping[str, object]
 ) -> tuple[ModelProfileRecord, PlannedProfile, list[dict[str, object]], dict[str, object]]:
     """A valid update that changes something, with the router stopped; or a ToolError."""
-    try:
-        context.services.control_plane.require_router_stopped("editing a profile")
-    except ControlPlaneError as error:
-        raise ToolError(str(error)) from error
+    _require_router_stopped(context, "editing a profile")
     record, planned, changes = _planned_update(context, arguments)
     _require_valid(planned)
     current = {
@@ -243,9 +252,22 @@ async def describe_update(
     return f"Change profile {record.alias}", {"changes": changes, **other}
 
 
+def snapshot_once(context: ToolContext, record: ModelProfileRecord, name: str) -> str | None:
+    """Snapshot a profile the first time this conversation touches it; the new id, if any."""
+    snapshots = context.services.snapshots
+    if not context.conversation_id or snapshots.list(
+        profile_id=record.id, conversation_id=context.conversation_id
+    ):
+        return None
+    return snapshots.create(
+        record.id, name, created_by="assistant", conversation_id=context.conversation_id
+    ).id
+
+
 async def update_profile(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
     services = context.services
     record, planned, changes, _ = _checked_update(context, arguments)
+    snapshot_id = snapshot_once(context, record, f"{record.alias} before the assistant changed it")
     enabled = arguments.get("enabled")
     exclusive = arguments.get("exclusive")
     description = arguments.get("description")
@@ -269,14 +291,29 @@ async def update_profile(context: ToolContext, arguments: Mapping[str, object]) 
         )
     except (ProfileValidationError, ProfileNotFoundError, RuntimeNotFoundError) as error:
         raise ToolError(str(error)) from error
+    # Whether the model launches differently; a description or enabled change does not.
+    launch_changed = (
+        bool(changes)
+        or planned.runtime.id != record.runtime_id
+        or str(planned.profile.model_path) != record.model_path
+    )
+    payload: dict[str, object] = {
+        "profile": saved.alias,
+        "version": saved.version,
+        "changes": changes,
+        "warnings": planned.warnings,
+        "launch_changed": launch_changed,
+    }
+    if launch_changed:
+        payload["note"] = "Not measured yet: benchmark this change before judging it."
+    if snapshot_id:
+        payload["snapshot_id"] = snapshot_id
+        payload["snapshot_note"] = "Snapshot of the profile before this change; restore it "
+        "with restore_snapshot if the work does not pay off."
     return json_result(
-        {
-            "profile": saved.alias,
-            "version": saved.version,
-            "changes": changes,
-            "warnings": planned.warnings,
-        },
-        f"{saved.alias} is now v{saved.version}",
+        payload,
+        f"updated {saved.alias}"
+        + (f" to v{saved.version}" if saved.version != record.version else ""),
     )
 
 
@@ -358,25 +395,93 @@ async def clone_profile(context: ToolContext, arguments: Mapping[str, object]) -
 async def describe_delete(
     context: ToolContext, arguments: Mapping[str, object]
 ) -> tuple[str, dict[str, object]]:
-    try:
-        context.services.control_plane.require_router_stopped("deleting a model profile")
-    except ControlPlaneError as error:
-        raise ToolError(str(error)) from error
+    _require_router_stopped(context, "deleting a model profile")
     record = find_profile(context, text_argument(arguments, "profile"))
     return f"Delete profile {record.alias}", {"profile": record.alias, "model": record.model_path}
 
 
 async def delete_profile(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
-    try:
-        context.services.control_plane.require_router_stopped("deleting a model profile")
-    except ControlPlaneError as error:
-        raise ToolError(str(error)) from error
+    _require_router_stopped(context, "deleting a model profile")
     record = find_profile(context, text_argument(arguments, "profile"))
     context.services.profiles.remove(record.id)
     return json_result({"deleted": record.alias}, f"deleted {record.alias}")
 
 
 PROFILE_REFERENCE = {"type": "string", "description": "The profile's id or alias."}
+
+# Snapshots ---------------------------------------------------------------------------------
+
+
+def _snapshot_summary(context: ToolContext, record: ProfileSnapshotRecord) -> dict[str, object]:
+    try:
+        alias = context.services.profiles.get(record.profile_id).alias
+    except ProfileNotFoundError:
+        alias = record.profile_id
+    configuration = record.configuration
+    return {
+        "snapshot_id": record.id,
+        "profile": alias,
+        "name": record.name,
+        "taken": record.created_at,
+        "version": record.version,
+        "arguments": configuration.get("arguments") if isinstance(configuration, dict) else None,
+    }
+
+
+async def list_snapshots(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
+    reference = text_argument(arguments, "profile", required=False)
+    profile_id = find_profile(context, reference).id if reference else None
+    records = context.services.snapshots.list(profile_id=profile_id)[:20]
+    return json_result(
+        [_snapshot_summary(context, record) for record in records], f"{len(records)} snapshots"
+    )
+
+
+async def create_snapshot(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
+    record = find_profile(context, text_argument(arguments, "profile"))
+    snapshot = context.services.snapshots.create(
+        record.id,
+        text_argument(arguments, "name"),
+        created_by="assistant",
+        conversation_id=context.conversation_id or None,
+    )
+    return json_result(
+        {"snapshot_id": snapshot.id, "profile": record.alias, "name": snapshot.name},
+        f"snapshot of {record.alias}",
+    )
+
+
+def _snapshot(context: ToolContext, arguments: Mapping[str, object]) -> ProfileSnapshotRecord:
+    try:
+        return context.services.snapshots.get(text_argument(arguments, "snapshot_id"))
+    except SnapshotNotFoundError as error:
+        raise ToolError(str(error)) from error
+
+
+async def describe_restore(
+    context: ToolContext, arguments: Mapping[str, object]
+) -> tuple[str, dict[str, object]]:
+    _require_router_stopped(context, "restoring a profile snapshot")
+    snapshot = _snapshot(context, arguments)
+    summary = _snapshot_summary(context, snapshot)
+    return (
+        f"Restore {summary['profile']} to snapshot “{snapshot.name}”",
+        {"profile": summary["profile"], "snapshot": snapshot.name, "taken": snapshot.created_at},
+    )
+
+
+async def restore_snapshot(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
+    _require_router_stopped(context, "restoring a profile snapshot")
+    snapshot = _snapshot(context, arguments)
+    try:
+        saved = context.services.snapshots.restore(snapshot.id)
+    except (ProfileValidationError, ProfileNotFoundError, RuntimeNotFoundError) as error:
+        raise ToolError(str(error)) from error
+    return json_result(
+        {"profile": saved.alias, "version": saved.version, "restored": snapshot.name},
+        f"restored {saved.alias}",
+    )
+
 
 PROFILE_TOOLS = (
     Tool(
@@ -462,5 +567,33 @@ PROFILE_TOOLS = (
         delete_profile,
         approval="profiles",
         describe=describe_delete,
+    ),
+    Tool(
+        "list_snapshots",
+        "Saved snapshots of profiles, newest first, with the arguments each holds. Profiles "
+        "are snapshotted automatically before you first change them.",
+        object_schema({"profile": PROFILE_REFERENCE}),
+        "profiles.read",
+        list_snapshots,
+    ),
+    Tool(
+        "create_snapshot",
+        "Save a profile's current settings under a name, for example a good configuration "
+        "you may want to return to.",
+        object_schema(
+            {"profile": PROFILE_REFERENCE, "name": {"type": "string"}}, ["profile", "name"]
+        ),
+        "profiles.write",
+        create_snapshot,
+    ),
+    Tool(
+        "restore_snapshot",
+        "Put a profile back to a snapshot's settings, for example the state before you began "
+        "when your changes did not help. The router must be stopped.",
+        object_schema({"snapshot_id": {"type": "string"}}, ["snapshot_id"]),
+        "profiles.write",
+        restore_snapshot,
+        approval="profiles",
+        describe=describe_restore,
     ),
 )

@@ -160,6 +160,14 @@ class ControlPlane:
     def router_stopped(self) -> bool:
         return self._supervisor.state in STOPPED_STATES
 
+    @property
+    def router_runtime_id(self) -> str | None:
+        """The runtime the router runs with, or ``None`` while it is stopped."""
+        if self.router_stopped:
+            return None
+        runs = self._server_runs.list()
+        return runs[0].runtime_id if runs else None
+
     def require_router_stopped(self, action: str) -> None:
         """Refuse ``action`` (e.g. "editing a profile") while the router runs."""
         if not self.router_stopped:

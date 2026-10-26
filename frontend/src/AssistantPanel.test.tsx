@@ -64,6 +64,17 @@ describe('assistant helpers', () => {
 })
 
 describe('AssistantPanel', () => {
+  it('switches between the chat and the research library', async () => {
+    vi.spyOn(api, 'assistantConversations').mockResolvedValue([])
+    vi.spyOn(api, 'libraryDocuments').mockResolvedValue({ documents: [], publish_problem: null } as never)
+    renderPanel()
+
+    expect(await screen.findByText('No conversations yet')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Research' }))
+    expect(await screen.findByText('No documents yet')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Research' })).toHaveAttribute('aria-selected', 'true')
+  })
+
   it('starts with a brief when there are no conversations', async () => {
     vi.spyOn(api, 'assistantConversations').mockResolvedValue([])
     const create = vi.spyOn(api, 'createAssistantConversation').mockResolvedValue({ ...conversation, messages: [] })
@@ -152,10 +163,13 @@ describe('AssistantPanel', () => {
     expect(within(dialog).getByLabelText(/Hugging Face repository/)).toHaveValue('owner/Model-GGUF')
     expect(within(dialog).getByLabelText('Min decode (tok/s, average)')).toHaveValue(30)
     expect(within(dialog).getByLabelText(/First message/)).toHaveValue('What hardware do I have?')
+    const autonomous = within(dialog).getByRole('checkbox', { name: /Work without asking questions/ })
+    expect(autonomous).toBeChecked()
+    fireEvent.click(autonomous)
     fireEvent.click(within(dialog).getByRole('button', { name: 'Start' }))
 
     await waitFor(() => expect(send).toHaveBeenCalledWith('c2', 'What hardware do I have?'))
-    expect(create.mock.calls[0]?.[0]).toMatchObject({ subject: 'model', model: { repo_id: 'owner/Model-GGUF', quantization: 'Q4_K_M' }, min_decode_tps: 30 })
+    expect(create.mock.calls[0]?.[0]).toMatchObject({ subject: 'model', model: { repo_id: 'owner/Model-GGUF', quantization: 'Q4_K_M' }, min_decode_tps: 30, autonomous: false })
   })
 
   it('shows that a failed request is being retried', async () => {
@@ -202,6 +216,7 @@ describe('AssistantPanel approvals and notifications', () => {
       { id: 'm6', seq: 6, role: 'assistant', content: 'Raising the context.', reasoning: '', tool_calls: [{ id: 't2', function: { name: 'update_profile', arguments: '{"profile":"qwen"}' } }], tool_call_id: null, tool_name: null, summary: null, cost_usd: 0.001, created_at: '' },
       { id: 'm7', seq: 7, role: 'event', content: 'Download d1 (owner/Model-GGUF, Q4) completed: 4 GiB.', reasoning: '', tool_calls: null, tool_call_id: null, tool_name: null, summary: { kind: 'notification', ok: true }, cost_usd: null, created_at: '' },
       { id: 'm8', seq: 8, role: 'event', content: 'Benchmark run r1 failed: boom.', reasoning: '', tool_calls: null, tool_call_id: null, tool_name: null, summary: { kind: 'notification', ok: false }, cost_usd: null, created_at: '' },
+      { id: 'm9', seq: 9, role: 'event', content: 'You changed qwen after its last benchmark.', reasoning: '', tool_calls: null, tool_call_id: null, tool_name: null, summary: { kind: 'check' }, cost_usd: null, created_at: '' },
     ],
     approvals: [
       { id: 'a0', tool_call_id: 't1', tool_name: 'get_hardware', category: 'profiles', title: 'Old', details: {}, state: 'approved', decided_by: 'admin', created_at: '', decided_at: '' },
@@ -224,6 +239,7 @@ describe('AssistantPanel approvals and notifications', () => {
     expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument()
     expect(screen.getByText(/Download d1/)).toHaveClass('notification')
     expect(screen.getByText(/Benchmark run r1 failed/)).toHaveClass('failed')
+    expect(screen.getByText('Reminder to Lama:').closest('li')).toHaveTextContent('Reminder to Lama: You changed qwen after its last benchmark.')
 
     fireEvent.click(within(card).getByRole('button', { name: 'Approve' }))
     await waitFor(() => expect(decide).toHaveBeenCalledWith('a1', true))

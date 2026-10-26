@@ -1,11 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, ArrowDown, ArrowUp, Bell, Bot, Check, ChevronRight, LoaderCircle, Pencil, Play, Plus, RotateCcw, Send, ShieldQuestion, Square, Trash2, Wrench, X } from 'lucide-react'
-import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { AlertCircle, ArrowDown, ArrowUp, Bell, BookOpen, Bot, Check, ChevronRight, ClipboardCheck, FileBarChart, LoaderCircle, MessagesSquare, Pencil, Play, Plus, RotateCcw, Send, ShieldQuestion, Square, Trash2, Wrench, X } from 'lucide-react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { api, type AssistantApproval, type AssistantConversation, type AssistantConversationDetail, type AssistantMessage, type AssistantStatus, type Brief, type BriefTarget } from './api'
+import { LazyMarkdown } from './LazyMarkdown'
 import { priceSummary } from './openRouterPricing'
+import { ReportsPanel, ResearchPanel } from './LibraryPanel'
 import { Dialog } from './SetupPanels'
-
-const MarkdownContent = lazy(() => import('./MarkdownContent').then(({ MarkdownContent }) => ({ default: MarkdownContent })))
 
 const TARGET_LABELS: Record<BriefTarget, string> = {
   decode: 'Decode speed',
@@ -25,10 +25,6 @@ const STATE_LABELS: Record<AssistantConversation['state'], string> = {
 
 export function formatCost(value: number) {
   return `$${value > 0 && value < 0.01 ? value.toFixed(4) : value.toFixed(2)}`
-}
-
-function Markdown({ content }: { content: string }) {
-  return <div className="assistant-markdown"><Suspense fallback={<p>{content}</p>}><MarkdownContent content={content} /></Suspense></div>
 }
 
 /** The brief's targets as short phrases, e.g. "decode ≥ 30 tok/s". */
@@ -74,6 +70,7 @@ function BriefDialog({ initial, initialMessage = '', creating, title, onClose, o
   const [benchmarkId, setBenchmarkId] = useState(initial?.benchmark_id ?? '')
   const [reasoning, setReasoning] = useState(initial?.reasoning_level ?? '')
   const [priority, setPriority] = useState<BriefTarget[]>(initial?.priority ?? DEFAULT_PRIORITY)
+  const [autonomous, setAutonomous] = useState(initial?.autonomous ?? true)
   const [conversationTitle, setConversationTitle] = useState('')
   const [firstMessage, setFirstMessage] = useState(initialMessage)
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles })
@@ -109,6 +106,7 @@ function BriefDialog({ initial, initialMessage = '', creating, title, onClose, o
     benchmark_id: benchmarkId || null,
     reasoning_level: reasoning || null,
     priority,
+    autonomous,
   }, conversationTitle.trim(), firstMessage.trim())
   return <Dialog description="What to work on, and the targets to reach. Targets are optional; leave one empty to let the assistant decide." onClose={onClose} title={title} wide>
     <form className="form-body brief-form" onSubmit={(event) => { event.preventDefault(); if (valid) submit() }}>
@@ -156,6 +154,10 @@ function BriefDialog({ initial, initialMessage = '', creating, title, onClose, o
             <button aria-label={`Move ${TARGET_LABELS[target]} down`} className="icon-button small" disabled={index === priority.length - 1} onClick={() => move(index, 1)} type="button"><ArrowDown size={14} /></button>
           </li>)}</ol>
         </div>
+      </fieldset>
+      <fieldset className="brief-section">
+        <legend>How to work</legend>
+        <label className="check-row brief-check"><input checked={autonomous} onChange={(event) => setAutonomous(event.target.checked)} type="checkbox" /><span><strong>Work without asking questions</strong><small>Decides for itself and carries on until the targets are met or nothing is left worth trying, then writes a report. Actions that need approval still wait for you.</small></span></label>
       </fieldset>
       {creating && <>
         <label className="form-field"><span>Title <small>(optional)</small></span><input onChange={(event) => setConversationTitle(event.target.value)} placeholder="Named from the subject if left empty" value={conversationTitle} /></label>
@@ -252,13 +254,14 @@ function Messages({ detail, name, canDecide, onDecide, deciding }: {
       if (message.role === 'event') {
         const kind = message.summary?.kind
         if (kind === 'notification') return <li className={`assistant-event notification${message.summary?.ok === false ? ' failed' : ''}`} key={message.id}><Bell size={13} /> {message.content}</li>
+        if (kind === 'check') return <li className="assistant-event notification check" key={message.id} title={`An automatic reminder sent to ${name}`}><ClipboardCheck size={13} /> <span><strong>Reminder to {name}:</strong> {message.content}</span></li>
         return <li className={`assistant-event${kind === 'error' ? ' error' : ''}`} key={message.id}>{message.content}</li>
       }
       return <Fragment key={message.id}>
         {(message.content || message.reasoning) && <li className="assistant-message reply">
           <span className="assistant-author"><Bot size={14} /> {name}</span>
           {message.reasoning && <details className="assistant-reasoning"><summary>Thinking</summary><p>{message.reasoning}</p></details>}
-          {message.content && <Markdown content={message.content} />}
+          {message.content && <LazyMarkdown content={message.content} />}
         </li>}
         {message.tool_calls?.length ? <li className="assistant-tools"><ol>{message.tool_calls.map((call) => {
           const approval = approvals.get(call.id)
@@ -271,7 +274,7 @@ function Messages({ detail, name, canDecide, onDecide, deciding }: {
     {detail.state === 'running' && progress && <li className="assistant-message reply live" aria-live="polite">
       <span className="assistant-author"><Bot size={14} /> {name}</span>
       {progress.reasoning && !progress.content && <p className="assistant-status-line"><LoaderCircle className="spin" size={13} /> Thinking…</p>}
-      {progress.content && <Markdown content={progress.content} />}
+      {progress.content && <LazyMarkdown content={progress.content} />}
       {progress.tool_call && <p className="assistant-status-line"><LoaderCircle className="spin" size={13} /> Preparing <code>{progress.tool_call.name || 'a tool call'}</code>…</p>}
       {progress.running_tool && <p className="assistant-status-line"><LoaderCircle className="spin" size={13} /> Running <code>{progress.running_tool}</code>…</p>}
       {progress.retrying && <p className="assistant-status-line warning"><LoaderCircle className="spin" size={13} /> {progress.retrying.error.replace(/\.$/, '')}. Trying again ({progress.retrying.attempt + 1})…</p>}
@@ -289,13 +292,27 @@ function BriefSummary({ brief, profiles, onEdit, canEdit }: { brief: Brief; prof
     <div>
       <small>{brief.subject === 'model' ? 'Get working' : 'Optimise'}</small>
       <strong>{subject}</strong>
-      <span className="brief-chips">{targets.length ? targets.map((target) => <span className="profile-tag" key={target}>{target}</span>) : <span className="brief-none">No targets set</span>}</span>
+      <span className="brief-chips">{targets.length ? targets.map((target) => <span className="profile-tag" key={target}>{target}</span>) : <span className="brief-none">No targets set</span>}<span className="brief-mode">{brief.autonomous === false ? 'Asks before big decisions' : 'Works without asking'}</span></span>
     </div>
     <button className="button secondary compact" disabled={!canEdit} onClick={onEdit} title={canEdit ? undefined : 'Stop the assistant before changing the brief'} type="button"><Pencil size={14} /> Edit brief</button>
   </div>
 }
 
 export function AssistantPanel({ status, canWrite }: { status: AssistantStatus; canWrite: boolean }) {
+  const [tab, setTab] = useState<'chat' | 'research' | 'reports'>('chat')
+  return <div className="assistant-page">
+    <div aria-label="Assistant" className="segmented assistant-tabs" role="tablist">
+      <button aria-selected={tab === 'chat'} onClick={() => setTab('chat')} role="tab" type="button"><MessagesSquare size={14} /> Chat</button>
+      <button aria-selected={tab === 'research'} onClick={() => setTab('research')} role="tab" type="button"><BookOpen size={14} /> Research</button>
+      <button aria-selected={tab === 'reports'} onClick={() => setTab('reports')} role="tab" type="button"><FileBarChart size={14} /> Reports</button>
+    </div>
+    {tab === 'chat' && <ChatPanel canWrite={canWrite} status={status} />}
+    {tab === 'research' && <ResearchPanel canWrite={canWrite} />}
+    {tab === 'reports' && <ReportsPanel canWrite={canWrite} />}
+  </div>
+}
+
+function ChatPanel({ status, canWrite }: { status: AssistantStatus; canWrite: boolean }) {
   const queryClient = useQueryClient()
   const conversations = useQuery({
     queryKey: ['assistant-conversations'],

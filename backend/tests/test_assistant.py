@@ -421,6 +421,7 @@ def test_the_name_setting_reaches_the_prompt_and_status(tmp_path: Path, login: L
         "spend_limit_usd": 2.0,
         "max_rounds_per_turn": 40,
         "approvals": {"downloads": True, "runtimes": False, "profiles": True, "benchmarks": True},
+        "auto_publish": False,
     }
     assert saved.json()["name"] == "Max"
     assert rejected.status_code == 422

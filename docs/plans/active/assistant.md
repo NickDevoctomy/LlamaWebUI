@@ -1,6 +1,6 @@
 # Active: the Assistant, an OpenRouter agent that tunes llama.cpp profiles
 
-**Status:** Phase 2 done, awaiting review; Phase 3 next  
+**Status:** Phases 1 to 4 done, plus memory and snapshots; awaiting review  
 **Raised:** 2026-10-26  
 **Scope:** New `backend/src/llamawebui/assistant/` package, `services/control_plane.py`, assistant API routes in `app.py`, `frontend/src/AssistantPanel.tsx`, Settings > Assistant, bundled research docs in `backend/src/llamawebui/research/`
 
@@ -239,14 +239,22 @@ Stop for maintainer review at the end of each phase.
 - [x] Callbacks for jobs the assistant started (benchmark and download outcomes), with an idle conversation woken once per job. Router-crash callbacks are not done (see the handoff note).
 
 ### Phase 3: Knowledge
-- [ ] `web_search` and `fetch_url`, with the SSRF guard
-- [ ] Research docs: write, search and read, with frontmatter validation
-- [ ] Research tab and publishing
-- [ ] Seed `backend/src/llamawebui/research/README.md`
+- [x] `web_search` and `fetch_url`, with the SSRF guard
+- [x] Research docs: write, search and read, with frontmatter validation
+- [x] Research tab and publishing
+- [x] Seed `backend/src/llamawebui/research/README.md`
 
 ### Phase 4: Reports
-- [ ] `create_report` and its storage
-- [ ] `ReportChart` and the Reports tab
+- [x] `write_report` and its storage (markdown files like research, not a table)
+- [x] `ReportChart` and the Reports tab
+
+### After Phase 4: memory and safety (from the maintainer's second real run)
+- [x] Fuzzy argument search
+- [x] Profile snapshots (API) with automatic snapshots and restore tools
+- [x] Reports and research readable by the assistant (indexes in the prompt, search and read tools)
+- [x] Auto-publish setting
+- [x] "Work without asking questions" brief option
+- [x] Start-of-work routine: read reports and research, then look up speeds others report
 
 ## Verification
 
@@ -274,6 +282,57 @@ Stop for maintainer review at the end of each phase.
   - Check the UI: chat, approval cards, research and reports, at phone width and in dark mode.
 
 ## Handoff notes
+
+- **2026-10-26, Phase 4 done, plus memory and snapshots.**
+  - **Quality gates:** all pass (backend 779 tests, 93.1% coverage; frontend 162 tests).
+  - **Browser check:** a scratch backend with seeded reports and research and a fake model, so no OpenRouter calls were made. Its research and reports folders pointed at a scratch repo. Checked: the Reports tab with the results table, line and bar charts, hover tooltips and data tables; the brief's new option; the auto-publish switch. All at desktop and phone widths, in light and dark.
+  - **Documents:** `assistant/library.py` is the shared library: frontmatter base model, parse and render, merging local over shipped, search, write (with `publish=` for auto-publish), delete, publish, and the prompt index. Both kinds build on it:
+    - `research.py`: `ResearchMeta` plus `ResearchLibrary`; the old names remain as aliases
+    - `reports.py`: `ReportMeta` (created, subject, hardware, runtime, benchmark, outcome, results) plus `ReportLibrary`. The shipped folder is `backend/src/llamawebui/reports/`.
+  - **Charts:** a report's charts are fenced ```` ```chart ```` JSON blocks in the body, validated on write by `reports.Chart` (`type` line or bar, `categories`, `series[{name, values}]`, `y_label`, optional `x_label` and `targets`). `MarkdownContent` draws them with `ReportChart.tsx` when given `charts`; anything else stays a code block.
+  - **Chart colours:** the series colours are new tokens, `--series-1` to `--series-6`. They were checked as a categorical set with the dataviz validator against the app's light and dark surfaces. Light mode has a contrast warning, answered by a data table under every chart.
+  - **Routes:** `assistant/routes.py` registers the same list, read, delete and publish routes for `/api/assistant/research` and `/api/assistant/reports` (`_library_routes`).
+  - **Tools:** `search_reports`, `read_report` and `write_report` sit beside the research tools in `tools/knowledge.py`; one factory serves both kinds. The prompt gains `{{report_index}}` and `{{snapshots}}`, a "Before you start" routine (read reports and research, search for speeds others report on similar hardware, measure a baseline), and an explanation of reports versus research.
+  - **Auto-publish:** `AssistantSettings.auto_publish`, off by default. When on, writes go straight into the shipped folders if `source_checkout_problem` allows; otherwise the tool result says why not. As with manual publishing, switching it on is refused from remote requests.
+  - **Snapshots:**
+    - `services/profile_snapshots.py` (`ProfileSnapshotRegistry`; migration `0035_profile_snapshots`) keeps runtime, model, configuration, enabled, exclusive, description and version. Restoring keeps the current alias and needs the router stopped.
+    - API: `GET`/`POST /api/profiles/{id}/snapshots`, `POST .../{sid}/restore`, `DELETE .../{sid}`.
+    - Automatic snapshots: the engine snapshots the brief's profile on the first turn (`_snapshot_subject`), and `update_profile` snapshots any other profile the first time a conversation changes it (`snapshot_once`).
+    - Tools: `list_snapshots`, `create_snapshot`, and `restore_snapshot` (approval category "profiles").
+  - **Reminders** (`checks.py`): each reminder now has a kind, stored as `summary.reminders` on the check event. New kinds:
+    - `report`: benchmarks ran since the last report
+    - `question`: an autonomous conversation ended its turn with a question; nudged once per operator message
+  - The unmeasured-change reminder ignores edits with `launch_changed: false`, such as a description-only change.
+  - **Brief:** `autonomous` (default true). `brief_text` adds autonomous or attended instructions, and the form has a "Work without asking questions" checkbox.
+  - **Argument search:** a query now matches any of its words instead of needing all of them. It catches partial words and typos (difflib, 0.8 cutoff), knows a few llama.cpp synonyms (mtp, kv, ctx, ngl and so on), takes an optional `category`, and lists the categories when nothing matches.
+
+- **2026-10-26, Phase 3 done.**
+  - **Quality gates:** all pass (backend 771 tests, 93.0% coverage; frontend 158 tests).
+  - **Browser check:** run on a scratch backend with a scripted fake model, so no OpenRouter calls were made. The shipped research folder pointed at a scratch "repository" with its own `.git`. Checked: a chat that searched the library, searched the web and wrote a document; the Research tab (reader, multi-select publish, delete dialog, empty states); the reminder row. All at desktop and phone widths, in light and dark.
+  - **Fixes from the maintainer's first real run** (conversation "qwen 3.8 27b"):
+    - **End-of-turn checks** (`assistant/checks.py`): when the model ends a turn with no job running, the engine looks for forgotten steps and sends at most one `[Check]` reminder per lapse. It is stored as an event with `summary.kind == "check"`, which the UI shows as "Reminder to Lama". Two checks so far:
+      - a profile created or updated since its last benchmark
+      - the router left in a different state from when the conversation began, but only when the assistant's own last router action caused it
+    - **Router state at start:** stored on the conversation as `router_at_start` (migration `0034_assistant_router_at_start`; `ControlPlane.router_runtime_id`).
+    - **Tool and prompt wording:** profile edits during a benchmark get a clear "wait for its notification" refusal. `update_profile` notes that a change is unmeasured until benchmarked. `start_router` says to leave the router as it was found. The system prompt states all three rules.
+    - **Summary fix:** the `update_profile` summary no longer claims "is now vN" when the version didn't change. Recommended profiles keep their recommendation's version.
+  - **Where things are:**
+    - `assistant/web.py`: `WebAccess.search` (OpenRouter `plugins: [{id: "web", max_results: 5}]`, collecting `url_citation` annotations and `usage.cost`) and `WebAccess.fetch`.
+    - **Fetch guard:** `GuardedTransport` replaces httpx's connection pool with one whose `GuardedBackend` resolves each host, refuses any non-public address, and connects to the checked IP. This covers redirects too and leaves no DNS-rebinding gap. TLS still verifies the host name. It runs with `trust_env=False`, so a proxy can't bypass it. Other limits: 1 MB, 5 redirects, text types only; HTML is reduced to text by `html_text`.
+    - `assistant/research.py`: `ResearchLibrary` (shipped plus local merge, search, write, delete, publish, `index_text`) and the frontmatter models. Shipped documents live in `backend/src/llamawebui/research/`, local ones in `data/research/`.
+    - `assistant/tools/knowledge.py`: `web_search` (needs `assistant.write`), `fetch_url`, `search_research`, `read_research` (all `assistant.read`) and `write_research` (`assistant.write`).
+    - **Cost tracking:** `ToolResult.cost_usd` lets a tool add its own cost; web searches use it, and the engine adds it to the conversation.
+    - **Prompt context:** `ToolContext` gains `conversation_id` and `model_id`, which are recorded as the document's author. The system prompt gains `{{research_index}}` and a Research library section.
+    - **Routes** (in `assistant/routes.py`):
+      - `GET /api/assistant/research?q=` returns the documents plus `publish_problem`
+      - `GET` and `DELETE /api/assistant/research/{slug}` (only local documents can be deleted)
+      - `POST /api/assistant/research/publish` needs `settings.write`, a local request and a source checkout. Publishing moves the files into the shipped folder.
+    - `local_requests.py`: `is_local_request`, moved out of `app.py` so the routes can use it.
+    - **Frontend:**
+      - `AssistantPanel` now has Chat and Research tabs.
+      - New `ResearchPanel.tsx` and `LazyMarkdown.tsx`.
+      - Assistant markdown tables no longer inherit the global 62 px `td` height.
+  - **Phase 4 starting points:** add `create_report` as a knowledge-style tool with an `assistant_reports` table (migration 0035), a Reports tab beside Research, and `ReportChart` generalised from `BenchmarkCharts`.
 
 - **2026-10-26, between phases:** provider failures and re-running a brief.
   - **Transient failures:** `OpenRouterError.transient` marks provider failures and busy responses (HTTP 408, 429 and 5xx, and error codes such as `internal_server_error` or `overloaded`). The engine retries those up to twice (2 s, then 5 s), but only if nothing had streamed yet, so a partly paid reply is never requested twice.

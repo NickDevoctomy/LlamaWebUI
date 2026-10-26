@@ -37,7 +37,7 @@ def test_diagnostics_export_is_atomic_bounded_and_redacted(
     rendered = destination.read_text(encoding="utf-8")
 
     assert payload["format"] == 1
-    assert payload["database"]["schema_revision"] == "0033_assistant_approvals"
+    assert payload["database"]["schema_revision"] == "0035_profile_snapshots"
     assert payload["logs"]
     assert "custom-secret" not in rendered
     assert "hf_private_value" not in rendered

@@ -166,6 +166,7 @@ async def run_benchmark(context: ToolContext, arguments: Mapping[str, object]) -
     return json_result(
         {
             "run_id": run.id,
+            "profile": record.alias,
             "note": "The benchmark runs in the background and stops the router when done. "
             "You will be notified when it finishes; do not poll for it.",
         },
@@ -320,7 +321,14 @@ async def start_router(context: ToolContext, arguments: Mapping[str, object]) ->
         await context.services.control_plane.start_router(text_argument(arguments, "runtime_id"))
     except ControlPlaneError as error:
         raise ToolError(str(error)) from error
-    return json_result({"router": "running"}, "router started")
+    return json_result(
+        {
+            "router": "running",
+            "note": "Leave the router as you found it when this conversation began: stop it "
+            "when you finish unless it was running then or the operator asks otherwise.",
+        },
+        "router started",
+    )
 
 
 BENCHMARK_TOOLS = (
@@ -383,8 +391,8 @@ BENCHMARK_TOOLS = (
     ),
     Tool(
         "start_router",
-        "Start the router with a runtime's enabled profiles, for example to leave it running "
-        "for the operator when you are done.",
+        "Start the router with a runtime's enabled profiles, for example to restore it for "
+        "the operator if it was running when you began.",
         object_schema({"runtime_id": {"type": "string"}}, ["runtime_id"]),
         "server.lifecycle.write",
         start_router,

@@ -6,6 +6,9 @@ import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
+from llamawebui.assistant.reports import ReportLibrary
+from llamawebui.assistant.research import ResearchLibrary
+from llamawebui.assistant.web import WebAccess
 from llamawebui.domain.argument_catalog import ArgumentCatalog
 from llamawebui.domain.benchmark import Benchmark, SystemPrompt
 from llamawebui.services.benchmark_runner import BenchmarkRunner, BenchmarkRunRegistry
@@ -18,6 +21,7 @@ from llamawebui.services.llama_release_installer import GitHubReleaseClient
 from llamawebui.services.model_artifact_registry import ModelArtifactRegistry
 from llamawebui.services.model_library import ModelLibrary
 from llamawebui.services.profile_registry import ProfileRegistry
+from llamawebui.services.profile_snapshots import ProfileSnapshotRegistry
 from llamawebui.services.router_client import RouterClient
 from llamawebui.services.router_supervisor import RouterSupervisor
 from llamawebui.services.runtime_registry import RuntimeRegistry
@@ -46,6 +50,12 @@ class ToolServices:
     benchmark_runs: BenchmarkRunRegistry
     benchmarks: Callable[[], Sequence[Benchmark]]
     system_prompts: Callable[[], Sequence[SystemPrompt]]
+    web: WebAccess
+    research: ResearchLibrary
+    reports: ReportLibrary
+    snapshots: ProfileSnapshotRegistry
+    # Whether research and reports are written straight into the shipped folders.
+    auto_publish: Callable[[], bool] = lambda: False
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +67,9 @@ class ToolContext:
     brief: Mapping[str, object] = field(default_factory=dict)
     # Ask to be told when a background job ends: watch("benchmark", run_id).
     watch: Callable[[str, str], None] = lambda kind, job_id: None
+    conversation_id: str = ""
+    # The OpenRouter model answering, recorded as the author of research documents.
+    model_id: str = ""
 
 
 class ToolError(Exception):
@@ -69,6 +82,8 @@ class ToolResult:
     # A short line for the conversation view, e.g. "3 profiles".
     summary: str = ""
     ok: bool = True
+    # What the call cost on top of the model's reply, e.g. a web search.
+    cost_usd: float = 0.0
 
 
 Handler = Callable[[ToolContext, Mapping[str, object]], Awaitable[ToolResult]]
@@ -154,7 +169,9 @@ async def run_call(tool: Tool, context: ToolContext, arguments: Mapping[str, obj
         result = await tool.handler(context, arguments)
     except ToolError as error:
         return error_result(str(error))
-    return ToolResult(shorten(result.text, MAX_RESULT_CHARACTERS), result.summary, result.ok)
+    return ToolResult(
+        shorten(result.text, MAX_RESULT_CHARACTERS), result.summary, result.ok, result.cost_usd
+    )
 
 
 async def call_tool(

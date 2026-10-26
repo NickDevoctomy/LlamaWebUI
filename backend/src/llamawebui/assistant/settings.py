@@ -26,6 +26,9 @@ class AssistantSettings(BaseModel):
     # Model calls one message may lead to, tool calls included, before the turn stops.
     max_rounds_per_turn: int = Field(default=40, ge=1, le=500)
     approvals: dict[str, bool] = Field(default_factory=lambda: dict(APPROVAL_DEFAULTS))
+    # Write research and reports straight into the repository's shipped folders (source
+    # checkouts only) instead of waiting for them to be published by hand.
+    auto_publish: bool = False
 
     @field_validator("name")
     @classmethod

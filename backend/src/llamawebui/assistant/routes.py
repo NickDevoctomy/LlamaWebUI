@@ -7,7 +7,8 @@ the settings ones) and left the signed-in user on ``request.state.user``.
 
 from __future__ import annotations
 
-from typing import cast
+import re
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, ValidationError
@@ -21,8 +22,17 @@ from llamawebui.assistant.conversations import (
     message_payload,
 )
 from llamawebui.assistant.engine import AssistantBusyError, AssistantEngine
+from llamawebui.assistant.library import (
+    SLUG_PATTERN,
+    DocumentLibrary,
+    DocumentNotFoundError,
+    LibraryError,
+    document_payload,
+    document_summary,
+)
 from llamawebui.assistant.settings import AssistantSettings, load_settings, save_settings
 from llamawebui.domain.benchmark import DEFAULT_BENCHMARK_ID, Benchmark
+from llamawebui.local_requests import is_local_request
 from llamawebui.services.auth_service import AuthenticatedUser
 from llamawebui.services.benchmark_runner import REASONING_LEVELS
 from llamawebui.services.profile_registry import ProfileNotFoundError, ProfileRegistry
@@ -42,6 +52,10 @@ class MessageCreateRequest(BaseModel):
 
 class ApprovalDecisionRequest(BaseModel):
     approve: bool
+
+
+class PublishRequest(BaseModel):
+    slugs: list[str] = Field(min_length=1, max_length=200)
 
 
 def _engine(request: Request) -> AssistantEngine:
@@ -108,9 +122,7 @@ def _detail(request: Request, conversation_id: str) -> dict[str, object]:
     engine = _engine(request)
     record = _conversations(request).get(conversation_id)
     return {
-        **conversation_payload(
-            record, running=engine.active_conversation_id == conversation_id
-        ),
+        **conversation_payload(record, running=engine.active_conversation_id == conversation_id),
         "messages": [
             message_payload(message)
             for message in _conversations(request).messages(conversation_id)
@@ -247,6 +259,75 @@ async def decide_approval(
     return _detail(request, approval.conversation_id)
 
 
+# Research and reports: the same routes for each library ---------------------------------
+
+LIBRARIES = {"research": "research_library", "reports": "report_library"}
+
+
+def _library(request: Request, kind: str) -> DocumentLibrary[Any]:
+    return cast(DocumentLibrary[Any], getattr(request.app.state, LIBRARIES[kind]))
+
+
+def _publish_problem(request: Request, kind: str) -> str | None:
+    """Why this request cannot publish documents, or None if it can."""
+    if "settings.write" not in _user(request).privileges:
+        return "publishing needs the settings.write privilege"
+    if not is_local_request(request):
+        return "publishing only works from the machine LlamaWebUI runs on"
+    return _library(request, kind).publish_problem()
+
+
+def _library_routes(kind: str) -> None:
+    async def list_documents(request: Request, q: str = "") -> dict[str, object]:
+        matches = _library(request, kind).search(q, limit=500)
+        return {
+            "documents": [document_summary(document) for document, _ in matches],
+            "publish_problem": _publish_problem(request, kind),
+        }
+
+    async def read_document(slug: str, request: Request) -> dict[str, object]:
+        try:
+            return document_payload(_library(request, kind).get(slug))
+        except DocumentNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    async def delete_document(slug: str, request: Request) -> None:
+        try:
+            _library(request, kind).delete(slug)
+        except DocumentNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except LibraryError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    async def publish_documents(body: PublishRequest, request: Request) -> dict[str, object]:
+        problem = _publish_problem(request, kind)
+        if problem:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=problem)
+        if any(re.fullmatch(SLUG_PATTERN, slug) is None for slug in body.slugs):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="bad slug"
+            )
+        library = _library(request, kind)
+        try:
+            published = library.publish(body.slugs)
+        except DocumentNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except LibraryError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return {"published": published, "folder": str(library.shipped_directory)}
+
+    base = f"/assistant/{kind}"
+    router.add_api_route(base, list_documents, methods=["GET"])
+    # Registered before /{slug} so "publish" is not taken for a slug.
+    router.add_api_route(f"{base}/publish", publish_documents, methods=["POST"])
+    router.add_api_route(f"{base}/{{slug}}", read_document, methods=["GET"])
+    router.add_api_route(f"{base}/{{slug}}", delete_document, methods=["DELETE"], status_code=204)
+
+
+for _kind in LIBRARIES:
+    _library_routes(_kind)
+
+
 @router.get("/settings/assistant")
 async def assistant_settings(request: Request) -> dict[str, object]:
     return load_settings(_settings_store(request)).model_dump()
@@ -263,5 +344,17 @@ async def update_assistant_settings(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="; ".join(str(issue["msg"]) for issue in error.errors()),
         ) from error
-    save_settings(_settings_store(request), validated)
+    store = _settings_store(request)
+    # Like publishing by hand, switching auto-publish on writes into the source tree, so
+    # only the machine itself may do it.
+    if (
+        validated.auto_publish
+        and not load_settings(store).auto_publish
+        and not is_local_request(request)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="auto-publish can only be switched on from the machine LlamaWebUI runs on",
+        )
+    save_settings(store, validated)
     return validated.model_dump()

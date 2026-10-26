@@ -27,6 +27,7 @@ def test_upgrade_database_creates_schema_and_is_idempotent(tmp_path: Path) -> No
             "assistant_conversations",
             "assistant_messages",
             "benchmark_runs",
+            "profile_snapshots",
             "download_jobs",
                 "logical_model_profiles",
                 "logical_models",

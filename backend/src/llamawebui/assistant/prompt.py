@@ -8,7 +8,9 @@ from pathlib import Path
 
 PROMPT_DIRECTORY = Path(__file__).resolve().parent / "prompts"
 SYSTEM_TEMPLATE = PROMPT_DIRECTORY / "system.md"
-TOKENS = frozenset({"assistant_name", "date", "hardware", "brief"})
+TOKENS = frozenset(
+    {"assistant_name", "date", "hardware", "brief", "research_index", "report_index", "snapshots"}
+)
 _TOKEN = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
 
 

@@ -6,7 +6,6 @@ import logging
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
-from ipaddress import IPv6Address, ip_address
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -19,12 +18,15 @@ from pydantic import BaseModel, Field, field_validator
 from llamawebui.assistant.conversations import ConversationRegistry
 from llamawebui.assistant.engine import AssistantEngine
 from llamawebui.assistant.openrouter_client import ChatClient, OpenRouterClient
+from llamawebui.assistant.reports import ReportLibrary
+from llamawebui.assistant.research import ResearchLibrary
 from llamawebui.assistant.routes import router as assistant_router
 from llamawebui.assistant.settings import load_settings as load_assistant_settings
 from llamawebui.assistant.setup import build_engine as build_assistant_engine
 from llamawebui.assistant.tools import ToolServices
 from llamawebui.assistant.tools.benchmarks import benchmark_notice
 from llamawebui.assistant.tools.models import download_notice
+from llamawebui.assistant.web import WebAccess
 from llamawebui.config import Settings
 from llamawebui.database import create_database_engine, upgrade_database
 from llamawebui.domain.argument_catalog import ArgumentCatalog, default_catalog
@@ -66,6 +68,7 @@ from llamawebui.domain.recommendation import (
     load_recommendations,
 )
 from llamawebui.domain.router_lifecycle import RouterState
+from llamawebui.local_requests import is_local_request
 from llamawebui.models import (
     AccessTokenRecord,
     BenchmarkRunRecord,
@@ -156,6 +159,11 @@ from llamawebui.services.profile_registry import (
     ProfileRegistry,
     configuration_payload,
     profile_from_record,
+)
+from llamawebui.services.profile_snapshots import (
+    ProfileSnapshotRegistry,
+    SnapshotNotFoundError,
+    snapshot_payload,
 )
 from llamawebui.services.recommendations import (
     ProfileUpgradeError,
@@ -370,25 +378,16 @@ class OpenRouterModelRequest(BaseModel):
     id: str = Field(min_length=1, max_length=300)
 
 
-def _is_local_request(request: Request) -> bool:
-    """Whether the request comes from this machine, after any trusted proxy headers."""
-    if request.client is None:
-        return False
-    try:
-        address = ip_address(request.client.host)
-    except ValueError:
-        return False
-    if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
-        return address.ipv4_mapped.is_loopback
-    return address.is_loopback
-
-
 class ProfileCloneRequest(BaseModel):
     alias: str = Field(min_length=1, max_length=64)
 
 
 class ProfileEnabledRequest(BaseModel):
     enabled: bool
+
+
+class ProfileSnapshotRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
 
 
 class BenchmarkRunRequest(BaseModel):
@@ -938,6 +937,7 @@ def create_app(
     benchmark_linter: BenchmarkLinter | None = None,
     openrouter_catalog: OpenRouterCatalog | None = None,
     assistant_client: ChatClient | None = None,
+    web_access: WebAccess | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
     packaged_static_dir = static_dir or Path(__file__).parent / "static"
@@ -968,6 +968,9 @@ def create_app(
             releases=app.state.release_client,
         )
         app.state.profile_registry = ProfileRegistry(engine, app.state.argument_catalog)
+        app.state.profile_snapshots = ProfileSnapshotRegistry(
+            engine, app.state.profile_registry, app.state.argument_catalog
+        )
         migration = app.state.profile_registry.migrate_legacy_configurations()
         if migration.migrated:
             LOGGER.info(
@@ -1164,11 +1167,19 @@ def create_app(
             except SecretStoreUnavailableError:
                 return None
 
+        def assistant_model() -> str | None:
+            model = cast(SettingsStore, app.state.settings_store).get_json(OPENROUTER_MODEL)
+            model_id = model.get("id") if model else None
+            return model_id if isinstance(model_id, str) else None
+
+        chat_client = assistant_client or OpenRouterClient(openrouter_key)
+        app.state.research_library = ResearchLibrary(app_settings.data_dir / "research")
+        app.state.report_library = ReportLibrary(app_settings.data_dir / "reports")
         app.state.assistant_conversations = ConversationRegistry(engine)
         app.state.assistant_conversations.interrupt_running()
         app.state.assistant_engine = build_assistant_engine(
             conversations=app.state.assistant_conversations,
-            client=assistant_client or OpenRouterClient(openrouter_key),
+            client=chat_client,
             services=ToolServices(
                 catalog=app.state.argument_catalog,
                 runtimes=app.state.runtime_registry,
@@ -1186,6 +1197,11 @@ def create_app(
                 benchmark_runs=app.state.benchmark_runs,
                 benchmarks=lambda: app.state.benchmarks,
                 system_prompts=lambda: app.state.system_prompts,
+                web=web_access or WebAccess(chat_client, assistant_model),
+                research=app.state.research_library,
+                reports=app.state.report_library,
+                snapshots=app.state.profile_snapshots,
+                auto_publish=lambda: load_assistant_settings(app.state.settings_store).auto_publish,
             ),
             settings_store=app.state.settings_store,
             profiles=app.state.profile_registry,
@@ -2086,7 +2102,7 @@ def create_app(
 
     def secret_store(request: Request) -> SecretStore:
         settings_store = cast(SettingsStore, request.app.state.settings_store)
-        if not _is_local_request(request) and not settings_store.get_bool(ALLOW_REMOTE_SECRETS):
+        if not is_local_request(request) and not settings_store.get_bool(ALLOW_REMOTE_SECRETS):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Secrets can only be managed from the server itself. "
@@ -2099,7 +2115,7 @@ def create_app(
         settings_store = cast(SettingsStore, request.app.state.settings_store)
         return {
             "allow_remote_secrets": settings_store.get_bool(ALLOW_REMOTE_SECRETS),
-            "local_request": _is_local_request(request),
+            "local_request": is_local_request(request),
         }
 
     @app.put("/api/settings/security")
@@ -2107,7 +2123,7 @@ def create_app(
         security_request: SecuritySettingsRequest, request: Request
     ) -> dict[str, object]:
         settings_store = cast(SettingsStore, request.app.state.settings_store)
-        local = _is_local_request(request)
+        local = is_local_request(request)
         # A stolen remote session must not be able to open secrets up to itself.
         if security_request.allow_remote_secrets and not local:
             raise HTTPException(
@@ -2620,6 +2636,67 @@ def create_app(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
             ) from error
         return _saved_profile_payload(request, record, profile)
+
+    def _snapshots(request: Request) -> ProfileSnapshotRegistry:
+        return cast(ProfileSnapshotRegistry, request.app.state.profile_snapshots)
+
+    def _snapshot_of(request: Request, profile_id: str, snapshot_id: str) -> None:
+        try:
+            snapshot = _snapshots(request).get(snapshot_id)
+        except SnapshotNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        if snapshot.profile_id != profile_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"profile snapshot not found: {snapshot_id}",
+            )
+
+    @app.get("/api/profiles/{profile_id}/snapshots")
+    async def list_profile_snapshots(profile_id: str, request: Request) -> list[dict[str, object]]:
+        try:
+            cast(ProfileRegistry, request.app.state.profile_registry).get(profile_id)
+        except ProfileNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        return [
+            snapshot_payload(record) for record in _snapshots(request).list(profile_id=profile_id)
+        ]
+
+    @app.post("/api/profiles/{profile_id}/snapshots", status_code=status.HTTP_201_CREATED)
+    async def create_profile_snapshot(
+        profile_id: str, snapshot_request: ProfileSnapshotRequest, request: Request
+    ) -> dict[str, object]:
+        user = cast(AuthenticatedUser, request.state.user)
+        try:
+            record = _snapshots(request).create(
+                profile_id, snapshot_request.name, created_by=user.username
+            )
+        except ProfileNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        return snapshot_payload(record)
+
+    @app.post("/api/profiles/{profile_id}/snapshots/{snapshot_id}/restore")
+    async def restore_profile_snapshot(
+        profile_id: str, snapshot_id: str, request: Request
+    ) -> dict[str, object]:
+        _snapshot_of(request, profile_id, snapshot_id)
+        _require_router_stopped(request, "restoring a profile snapshot")
+        try:
+            record = _snapshots(request).restore(snapshot_id)
+        except RuntimeNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except ProfileValidationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
+            ) from error
+        return _profile_payload(record, catalog=_argument_catalog(request))
+
+    @app.delete(
+        "/api/profiles/{profile_id}/snapshots/{snapshot_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_profile_snapshot(profile_id: str, snapshot_id: str, request: Request) -> None:
+        _snapshot_of(request, profile_id, snapshot_id)
+        _snapshots(request).delete(snapshot_id)
 
     @app.put("/api/profiles/{profile_id}/enabled")
     async def set_profile_enabled(

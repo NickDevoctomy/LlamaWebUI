@@ -85,6 +85,29 @@ class ModelProfileRecord(Base):
     )
 
 
+class ProfileSnapshotRecord(Base):
+    """A profile's settings as they were at one moment, kept to return to later."""
+
+    __tablename__ = "profile_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("model_profiles.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(120))
+    created_by: Mapped[str] = mapped_column(String(64))
+    # The assistant conversation that took it, if any.
+    conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    runtime_id: Mapped[str] = mapped_column(String(36))
+    model_path: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    configuration: Mapped[dict[str, object]] = mapped_column(JSON)
+    enabled: Mapped[bool] = mapped_column(Boolean)
+    exclusive: Mapped[bool] = mapped_column(Boolean)
+    version: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class BenchmarkRunRecord(Base):
     """One benchmark of a profile: its timings, speed samples and generated output."""
 
@@ -309,6 +332,9 @@ class AssistantConversationRecord(Base):
     spend_limit_usd: Mapped[float] = mapped_column(Float)
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    # The router as the first turn began: {"runtime_id": <id, or None if stopped>}. The
+    # assistant leaves it as it found it.
+    router_at_start: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()

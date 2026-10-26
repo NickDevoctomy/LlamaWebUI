@@ -13,6 +13,7 @@ from test_assistant import MODEL, ScriptedClient, text_reply, tool_reply
 
 from llamawebui.app import create_app
 from llamawebui.assistant.brief import Brief
+from llamawebui.assistant.checks import turn_checks
 from llamawebui.assistant.engine import REJECTED, history
 from llamawebui.assistant.setup import TOOLS
 from llamawebui.assistant.tools import ToolContext, ToolError, ToolResult, call_tool
@@ -379,9 +380,14 @@ def test_a_failed_benchmark_notifies_and_wakes_the_conversation(
     assert len(notifications) == 1
     assert notifications[0]["summary"]["ok"] is False
     assert "failed" in notifications[0]["content"]
-    assert detail["messages"][-1]["content"].startswith("The benchmark failed")
+    replies = [
+        message["content"] for message in detail["messages"] if message["role"] == "assistant"
+    ]
+    assert replies[-2].startswith("The benchmark failed")
+    # It benchmarked, so before finishing it is reminded to write a report.
+    assert detail["messages"][-2]["summary"] == {"kind": "check", "reminders": ["report"]}
     # The woken turn sent the notification to the model as a user message.
-    assert scripted.requests[-1]["messages"][-1]["content"].startswith(
+    assert scripted.requests[-2]["messages"][-1]["content"].startswith(
         "[Notification] Benchmark run"
     )
 
@@ -667,3 +673,135 @@ def test_download_and_runtime_tools(tmp_path: Path, login: Login, monkeypatch: A
     assert builds["cpu"] == ["llama-b9000-bin-win-cpu-x64.zip"]
     assert builds["cuda"] == ["llama-b9000-bin-win-cuda-12.4-x64.zip"]
     assert json.loads(installed.text)["name"] == "CPU"
+
+
+# End-of-turn checks -------------------------------------------------------------------------
+
+
+def _result(seq: int, name: str, content: object, ok: bool = True) -> AssistantMessageRecord:
+    return _message(
+        "tool",
+        seq,
+        content=json.dumps(content) if not isinstance(content, str) else content,
+        tool_name=name,
+        summary={"ok": ok},
+    )
+
+
+def _check(seq: int, *reminders: str) -> AssistantMessageRecord:
+    summary: dict[str, object] = {"kind": "check"}
+    if reminders:
+        summary["reminders"] = list(reminders)
+    return _message("event", seq, content="reminder", summary=summary)
+
+
+def _kinds(reminders: list[tuple[str, str]]) -> list[str]:
+    return [kind for kind, _ in reminders]
+
+
+def test_turn_checks_remind_once_about_each_forgotten_step() -> None:
+    stopped = {"runtime_id": None}
+    changed = [
+        _result(1, "update_profile", {"profile": "a"}),
+        _result(2, "create_profile", {"alias": "b"}),
+        _result(3, "update_profile", {"profile": "d", "launch_changed": False}),
+        _result(4, "update_profile", {"profile": "c"}, ok=False),
+        _result(5, "update_profile", "not json"),
+        _result(6, "update_profile", {"profile": "e"}),
+        _result(7, "restore_snapshot", {"profile": "e"}),
+    ]
+    [(kind, reminder)] = turn_checks(changed, router_running=False, router_at_start=stopped)
+    assert kind == "unmeasured"
+    assert reminder.startswith("You changed a, b, a profile after its last benchmark")
+    # A check from before reminders had kinds covered unmeasured changes.
+    assert turn_checks([*changed, _check(8)], router_running=False, router_at_start=stopped) == []
+
+    started = [_result(1, "start_router", {"router": "running"})]
+    [(_, left_running)] = turn_checks(started, router_running=True, router_at_start=stopped)
+    assert "Stop it with stop_router" in left_running
+    assert (
+        turn_checks([*started, _check(2, "router")], router_running=True, router_at_start=stopped)
+        == []
+    )
+    assert turn_checks(started, router_running=True, router_at_start=None) == []
+    assert turn_checks(started, router_running=True, router_at_start={"runtime_id": "x"}) == []
+
+    # Benchmarks leave results to report; the operator starting the router is not the
+    # assistant's to undo.
+    benchmarked = [_result(1, "run_benchmark", {"profile": "a"})]
+    assert _kinds(turn_checks(benchmarked, router_running=True, router_at_start=stopped)) == [
+        "report"
+    ]
+    restore = turn_checks(benchmarked, router_running=False, router_at_start={"runtime_id": "rt-1"})
+    assert _kinds(restore) == ["router", "report"]
+    assert "running with runtime rt-1" in restore[0][1]
+    reported = [*benchmarked, _result(2, "write_report", {"slug": "r"})]
+    assert turn_checks(reported, router_running=False, router_at_start=stopped) == []
+    reminded = [*benchmarked, _check(2, "report")]
+    assert turn_checks(reminded, router_running=False, router_at_start=stopped) == []
+
+    # Working autonomously, a question to the operator gets one nudge per message.
+    asking = [*reported, _message("assistant", 3, content="Shall I try q8_0 next? **")]
+    [(kind, nudge)] = turn_checks(
+        asking, router_running=False, router_at_start=stopped, autonomous=True
+    )
+    assert (kind, "nobody will answer" in nudge) == ("question", True)
+    assert turn_checks(asking, router_running=False, router_at_start=stopped) == []
+    nudged = [*asking, _check(4, "question"), _message("assistant", 5, content="Or q4_0?")]
+    assert turn_checks(nudged, router_running=False, router_at_start=stopped, autonomous=True) == []
+    answered = [
+        *nudged,
+        _message("user", 6, content="go on"),
+        _message("assistant", 7, content="Ok?"),
+    ]
+    assert _kinds(
+        turn_checks(answered, router_running=False, router_at_start=stopped, autonomous=True)
+    ) == ["question"]
+
+
+def test_an_unmeasured_change_gets_one_reminder_before_the_turn_ends(
+    tmp_path: Path, login: Login
+) -> None:
+    scripted = ScriptedClient(
+        tool_reply(
+            "update_profile",
+            {"profile": "test-model", "set_arguments": [{"id": "ctx-size", "value": 16384}]},
+        ),
+        text_reply("Changed the context size."),
+        text_reply("I will leave it unmeasured; the operator asked only for the edit."),
+    )
+    with TestClient(_app(tmp_path, scripted), client=LOCAL) as client:
+        _, conversation_id = _setup(client, login, tmp_path)
+        _approvals(client, profiles=False)
+        client.post(
+            f"/api/assistant/conversations/{conversation_id}/messages", json={"content": "edit"}
+        )
+        _wait(client)
+        detail = _detail(client, conversation_id)
+        record = client.app.state.assistant_conversations.get(conversation_id)  # type: ignore[attr-defined]
+
+    checks = [m for m in detail["messages"] if (m["summary"] or {}).get("kind") == "check"]
+    assert len(checks) == 1
+    assert "You changed test-model" in checks[0]["content"]
+    assert len(scripted.requests) == 3
+    assert scripted.requests[-1]["messages"][-1]["content"].startswith("[Check] You changed")
+    assert _tool_results(detail)[0]["summary"]["summary"] == "updated test-model to v2"
+    assert record.router_at_start == {"runtime_id": None}
+    assert detail["state"] == "idle"
+
+
+def test_profiles_cannot_change_while_a_benchmark_runs(tmp_path: Path, login: Login) -> None:
+    app = _app(tmp_path, ScriptedClient())
+    with TestClient(app, client=LOCAL) as client:
+        _setup(client, login, tmp_path)
+        app.state.benchmark_runner._active = "run-1"
+        refused = _call(
+            client,
+            "update_profile",
+            {"profile": "test-model", "set_arguments": [{"id": "ctx-size", "value": 4096}]},
+        )
+        deleted = _call(client, "delete_profile", {"profile": "test-model"})
+        app.state.benchmark_runner._active = None
+
+    assert "a benchmark is running" in refused.text
+    assert "a benchmark is running" in deleted.text
