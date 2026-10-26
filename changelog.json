@@ -7,7 +7,19 @@
         {
           "type": "change",
           "description": "Reorganised benchmark tools into categorised groups."
-        }         
+        },
+        {
+          "type": "feat",
+          "description": "App settings for huggingface and openrouter tokens, stored securely on the system."
+        },
+        {
+          "type": "feat",
+          "description": "Option to prevent secret access via API from a remote host."
+        },
+        {
+          "type": "change",
+          "description": "Huggingface env var removed from template."
+        }           
       ]
     },    
     {

@@ -7,6 +7,7 @@ import hashlib
 import json
 import shutil
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from time import monotonic
 from typing import Protocol
@@ -40,19 +41,21 @@ class FileTransfer(Protocol):
 
 
 class HuggingFaceFileTransfer:
-    def __init__(self, token: str | None = None) -> None:
+    def __init__(self, token: Callable[[], str | None] = lambda: None) -> None:
+        # Read for each transfer, so a token saved in Settings applies without a restart.
         self._token = token
 
     async def download(
         self, *, repo_id: str, filename: str, revision: str, destination: Path
     ) -> Path:
+        token = await asyncio.to_thread(self._token)
         request = json.dumps(
             {
                 "repo_id": repo_id,
                 "filename": filename,
                 "revision": revision,
                 "destination": str(destination),
-                "token": self._token,
+                "token": token,
             }
         )
         process = await asyncio.create_subprocess_exec(

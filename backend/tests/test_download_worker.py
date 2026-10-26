@@ -678,3 +678,30 @@ async def test_huggingface_transfer_reports_the_exit_code_of_a_child_without_a_r
         await HuggingFaceFileTransfer().download(
             repo_id="owner/model", filename="model.gguf", revision="a" * 40, destination=tmp_path
         )
+
+
+async def test_huggingface_transfer_sends_the_current_token_to_each_child(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    sent: list[object] = []
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self, input: bytes) -> tuple[bytes, bytes]:
+            sent.append(json.loads(input)["token"])
+            return json.dumps({"path": str(tmp_path / "model.gguf")}).encode(), b""
+
+    async def fake_subprocess(*args: object, **kwargs: object) -> Process:
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+    tokens = iter(["hf_saved", None])
+    transfer = HuggingFaceFileTransfer(lambda: next(tokens))
+
+    for _ in range(2):
+        await transfer.download(
+            repo_id="owner/model", filename="model.gguf", revision="a" * 40, destination=tmp_path
+        )
+
+    assert sent == ["hf_saved", None]

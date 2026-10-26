@@ -2,18 +2,19 @@ from pathlib import Path
 
 from conftest import Login
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
 
 from llamawebui.app import create_app
 from llamawebui.config import Settings
 from llamawebui.domain.runtime_capabilities import RuntimeCapabilities, RuntimeVersion
 from llamawebui.services.runtime_probe import RuntimeProbeResult
+from llamawebui.services.secret_store import SecretName, SecretStore
 from llamawebui.version import __version__
 
 
 def test_health_creates_data_directory_without_exposing_token(tmp_path: Path) -> None:
     data_dir = tmp_path / "nested" / "data"
-    settings = Settings(data_dir=data_dir, hf_token=SecretStr("hf_private"))
+    SecretStore().set(SecretName.HUGGINGFACE_TOKEN, "hf_private")
+    settings = Settings(data_dir=data_dir)
 
     with TestClient(create_app(settings)) as client:
         response = client.get("/api/health")

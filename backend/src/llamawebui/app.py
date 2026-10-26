@@ -6,6 +6,7 @@ import logging
 import sys
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
+from ipaddress import IPv6Address, ip_address
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -171,7 +172,14 @@ from llamawebui.services.runtime_registry import (
     RuntimeRegistry,
     runtime_capabilities,
 )
+from llamawebui.services.secret_store import (
+    SecretName,
+    SecretStatus,
+    SecretStore,
+    SecretStoreUnavailableError,
+)
 from llamawebui.services.server_run_registry import ServerRunRegistry
+from llamawebui.services.settings_store import ALLOW_REMOTE_SECRETS, SettingsStore
 from llamawebui.services.system_metrics import collect_system_metrics
 from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRegistry
 from llamawebui.version import __version__
@@ -327,6 +335,28 @@ class RouterModelRequest(BaseModel):
 class AccessTokenCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     expiry_note: str | None = Field(default=None, max_length=500)
+
+
+class SecretUpdateRequest(BaseModel):
+    # SecretStore applies the real limits; this only bounds the request.
+    value: str = Field(max_length=4096)
+
+
+class SecuritySettingsRequest(BaseModel):
+    allow_remote_secrets: bool
+
+
+def _is_local_request(request: Request) -> bool:
+    """Whether the request comes from this machine, after any trusted proxy headers."""
+    if request.client is None:
+        return False
+    try:
+        address = ip_address(request.client.host)
+    except ValueError:
+        return False
+    if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped.is_loopback
+    return address.is_loopback
 
 
 class ProfileCloneRequest(BaseModel):
@@ -928,7 +958,6 @@ def create_app(
                 "event": "startup",
                 "host": app_settings.host,
                 "port": app_settings.port,
-                "hf_token_configured": app_settings.hf_token is not None,
             },
         )
         # Load and validate the bundled catalog before touching any state, so an invalid
@@ -962,6 +991,8 @@ def create_app(
         app.state.token_registry = TokenRegistry(engine, app_settings.data_dir)
         app.state.token_registry.reconcile_legacy_materialized_tokens()
         app.state.token_registry.remove_materialized_tokens()
+        app.state.secret_store = SecretStore()
+        app.state.settings_store = SettingsStore(engine)
         app.state.auth_service = AuthService(engine)
         app.state.auth_service.ensure_default_admin()
         app.state.login_throttle = LoginThrottle(
@@ -979,9 +1010,21 @@ def create_app(
             app.state.download_registry, app_settings.data_dir / "models"
         )
         app.state.event_broker = EventBroker(app_settings.event_history_capacity)
-        token = app_settings.hf_token.get_secret_value() if app_settings.hf_token else None
-        app.state.huggingface_catalog = catalog or HuggingFaceCatalog(token)
-        transfer = file_transfer or HuggingFaceFileTransfer(token)
+        def huggingface_token() -> str | None:
+            # Saved in Settings; read on each use so a change applies without a restart.
+            try:
+                return cast(SecretStore, app.state.secret_store).get(
+                    SecretName.HUGGINGFACE_TOKEN
+                )
+            except SecretStoreUnavailableError as error:
+                LOGGER.warning(
+                    "huggingface_token_unavailable",
+                    extra={"component": "secrets", "event": "unavailable", "error": str(error)},
+                )
+                return None
+
+        app.state.huggingface_catalog = catalog or HuggingFaceCatalog(huggingface_token)
+        transfer = file_transfer or HuggingFaceFileTransfer(huggingface_token)
 
         def enable_ready(download_id: str) -> object:
             return app.state.profile_registry.enable_ready(
@@ -1042,7 +1085,10 @@ def create_app(
         )
         app.state.server_run_registry = ServerRunRegistry(engine)
         app.state.diagnostics_exporter = DiagnosticsExporter(
-            app_settings, engine, app.state.argument_catalog
+            app_settings,
+            engine,
+            app.state.argument_catalog,
+            huggingface_token_configured=lambda: huggingface_token() is not None,
         )
         app.state.active_server_run_id = None
         app.state.router_lifecycle_lock = asyncio.Lock()
@@ -2092,6 +2138,86 @@ def create_app(
             return _access_token_payload(registry.revoke(token_id))
         except AccessTokenNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    def secret_payload(name: SecretName, secret_status: SecretStatus) -> dict[str, object]:
+        # Only whether a secret is saved and its last four characters reach the browser.
+        return {
+            "name": name.value,
+            "configured": secret_status.configured,
+            "last_four": secret_status.last_four,
+        }
+
+    def secret_store_unavailable(error: SecretStoreUnavailableError) -> HTTPException:
+        return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error))
+
+    def secret_store(request: Request) -> SecretStore:
+        settings_store = cast(SettingsStore, request.app.state.settings_store)
+        if not _is_local_request(request) and not settings_store.get_bool(ALLOW_REMOTE_SECRETS):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Secrets can only be managed from the server itself. "
+                "An administrator can allow remote access in Settings, Security.",
+            )
+        return cast(SecretStore, request.app.state.secret_store)
+
+    @app.get("/api/settings/security")
+    async def security_settings(request: Request) -> dict[str, object]:
+        settings_store = cast(SettingsStore, request.app.state.settings_store)
+        return {
+            "allow_remote_secrets": settings_store.get_bool(ALLOW_REMOTE_SECRETS),
+            "local_request": _is_local_request(request),
+        }
+
+    @app.put("/api/settings/security")
+    async def update_security_settings(
+        security_request: SecuritySettingsRequest, request: Request
+    ) -> dict[str, object]:
+        settings_store = cast(SettingsStore, request.app.state.settings_store)
+        local = _is_local_request(request)
+        # A stolen remote session must not be able to open secrets up to itself.
+        if security_request.allow_remote_secrets and not local:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Remote secrets access can only be turned on from the server itself.",
+            )
+        settings_store.set_bool(ALLOW_REMOTE_SECRETS, security_request.allow_remote_secrets)
+        return {
+            "allow_remote_secrets": security_request.allow_remote_secrets,
+            "local_request": local,
+        }
+
+    @app.get("/api/secrets")
+    async def list_secrets(request: Request) -> dict[str, object]:
+        store = secret_store(request)
+        try:
+            secrets_payload = [secret_payload(name, store.status(name)) for name in SecretName]
+        except SecretStoreUnavailableError as error:
+            raise secret_store_unavailable(error) from error
+        return {"store": store.store_name(), "secrets": secrets_payload}
+
+    @app.put("/api/secrets/{name}")
+    async def save_secret(
+        name: SecretName, secret_request: SecretUpdateRequest, request: Request
+    ) -> dict[str, object]:
+        store = secret_store(request)
+        try:
+            secret_status = store.set(name, secret_request.value)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
+        except SecretStoreUnavailableError as error:
+            raise secret_store_unavailable(error) from error
+        return secret_payload(name, secret_status)
+
+    @app.delete("/api/secrets/{name}")
+    async def delete_secret(name: SecretName, request: Request) -> dict[str, object]:
+        store = secret_store(request)
+        try:
+            store.delete(name)
+        except SecretStoreUnavailableError as error:
+            raise secret_store_unavailable(error) from error
+        return secret_payload(name, SecretStatus(configured=False, last_four=None))
 
     @app.get("/api/integrations/opencode")
     async def opencode_configuration(request: Request) -> dict[str, object]:

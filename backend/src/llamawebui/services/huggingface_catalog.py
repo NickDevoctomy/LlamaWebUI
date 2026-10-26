@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -55,12 +55,14 @@ class Catalog(Protocol):
 class HuggingFaceCatalog:
     def __init__(
         self,
-        token: str | None = None,
+        token: Callable[[], str | None] = lambda: None,
         *,
         api: HfApi | None = None,
         cache_ttl_seconds: float = 300.0,
     ) -> None:
-        self._api = api or HfApi(token=token)
+        # Read on every request, so a token saved in Settings applies without a restart.
+        self._token = token
+        self._api = api or HfApi()
         self._cache_ttl_seconds = cache_ttl_seconds
         self._search_cache: dict[
             tuple[str, str | None, int], tuple[float, tuple[ModelSearchResult, ...]]
@@ -80,7 +82,9 @@ class HuggingFaceCatalog:
             request.update(sort=sort, direction=-1)
         cache_key = (query, sort, limit)
         try:
-            models = await asyncio.to_thread(lambda: list(self._api.list_models(**request)))
+            models = await asyncio.to_thread(
+                lambda: list(self._api.list_models(**request, token=self._token()))
+            )
         except (HfHubHTTPError, OSError) as error:
             cached = self._cached(self._search_cache, cache_key)
             if cached is not None:
@@ -107,10 +111,9 @@ class HuggingFaceCatalog:
         cache_key = (repo_id, revision)
         try:
             model = await asyncio.to_thread(
-                self._api.model_info,
-                repo_id,
-                revision=revision,
-                files_metadata=True,
+                lambda: self._api.model_info(
+                    repo_id, revision=revision, files_metadata=True, token=self._token()
+                )
             )
         except (HfHubHTTPError, OSError) as error:
             cached = self._cached(self._repository_cache, cache_key)
@@ -156,11 +159,9 @@ class HuggingFaceCatalog:
     async def _readme(self, repo_id: str, revision: str) -> str | None:
         try:
             content = await asyncio.to_thread(
-                self._api.hf_hub_download,
-                repo_id,
-                "README.md",
-                revision=revision,
-                repo_type="model",
+                lambda: self._api.hf_hub_download(
+                    repo_id, "README.md", revision=revision, repo_type="model", token=self._token()
+                )
             )
         except EntryNotFoundError:
             return None

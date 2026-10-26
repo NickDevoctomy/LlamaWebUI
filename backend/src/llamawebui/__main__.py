@@ -60,8 +60,8 @@ def main() -> int:
 
     if args.command == "serve":
         settings = Settings()
-        token = settings.hf_token.get_secret_value() if settings.hf_token else ""
-        configure_logging(settings.log_level, secrets=(token,))
+        # Hugging Face tokens (hf_...) are redacted by pattern; see logging_utils.
+        configure_logging(settings.log_level)
         with InstanceLock(settings.data_dir / "llamawebui.lock"):
             uvicorn.run(create_app(settings), host=settings.host, port=settings.port)
         return 0

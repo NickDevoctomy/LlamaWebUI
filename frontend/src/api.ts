@@ -158,6 +158,22 @@ export interface BenchmarkTool {
   available: boolean
 }
 
+export type SecretName = 'huggingface-token' | 'openrouter-api-key'
+
+/** A credential kept in the system credential store. The value itself never reaches the browser. */
+export interface SecretStatus {
+  name: SecretName
+  configured: boolean
+  last_four: string | null
+}
+
+export interface SecuritySettings {
+  /** Secrets calls are accepted from other machines, not only from the server itself. */
+  allow_remote_secrets: boolean
+  /** This browser is on the server itself. */
+  local_request: boolean
+}
+
 export interface LinterStatus {
   state: 'missing' | 'installing' | 'installed' | 'failed'
   /** Installed versions of Node.js and each package. */
@@ -783,6 +799,11 @@ export const api = {
   benchmarkTools: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools'),
   installEslint: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools/eslint', { method: 'POST' }),
   removeEslint: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools/eslint', { method: 'DELETE' }),
+  securitySettings: () => request<SecuritySettings>('/api/settings/security'),
+  updateSecuritySettings: (allowRemoteSecrets: boolean) => request<SecuritySettings>('/api/settings/security', { method: 'PUT', body: JSON.stringify({ allow_remote_secrets: allowRemoteSecrets }) }),
+  secrets: () => request<{ store: string; secrets: SecretStatus[] }>('/api/secrets'),
+  saveSecret: (name: SecretName, value: string) => request<SecretStatus>(`/api/secrets/${name}`, { method: 'PUT', body: JSON.stringify({ value }) }),
+  removeSecret: (name: SecretName) => request<SecretStatus>(`/api/secrets/${name}`, { method: 'DELETE' }),
   deleteBenchmarkRun: (runId: string) =>
     request<void>(`/api/benchmarks/runs/${runId}`, { method: 'DELETE' }),
   upgradeProfile: (profileId: string) =>

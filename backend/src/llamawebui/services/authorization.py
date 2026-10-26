@@ -35,6 +35,7 @@ PRIVILEGES: tuple[PrivilegeDefinition, ...] = tuple(
         ("diagnostics", "Diagnostics", "Application diagnostics", "View diagnostic information", "Export diagnostics"),
         ("integrations", "Integrations", "Client integration helpers", "View generated client configuration", "No write operations currently exist"),
         ("settings", "Settings", "Application settings", "View application settings", "Change application settings"),
+        ("secrets", "Secrets", "Provider credentials in the system credential store", "See which credentials are saved", "Save and remove credentials"),
     )
     for privilege in (
         _privilege(resource, "read", f"{name} read", read),
@@ -92,6 +93,8 @@ def privilege_for_request(path: str, method: str) -> str | None:
         resource = "integrations"
     elif path.startswith("/api/settings"):
         resource = "settings"
+    elif path.startswith("/api/secrets"):
+        resource = "secrets"
     elif path.startswith("/api/events"):
         resource = "server"
     else:

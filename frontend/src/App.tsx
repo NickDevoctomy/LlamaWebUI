@@ -59,7 +59,7 @@ const navigation = [
   ['Access', KeyRound, 'tokens.read', 'Administration'],
   ['Users', UserRound, 'auth.read', 'Administration'],
   ['Roles', Shield, 'auth.read', 'Administration'],
-  ['Settings', Settings, 'settings.read', 'Administration'],
+  ['Settings', Settings, ['settings.read', 'secrets.read'], 'Administration'],
 ] as const
 
 const sectionSummaries: Record<string, string> = {
@@ -145,7 +145,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
   const canRead = (privilege: string) => user.privileges?.includes(privilege) ?? false
   const visibleNavigation = user.default_credentials
     ? []
-    : navigation.filter(([, , privilege]) => canRead(privilege))
+    : navigation.filter(([, , privilege]) => [privilege].flat().some(canRead))
   const hasVisibleSection = section === 'Account' || visibleNavigation.some(([label]) => label === section)
   useEffect(() => {
     if (!authReady) return
@@ -404,7 +404,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
           ) : section === 'Account' ? (
             <AccountPanel user={user} />
           ) : section === 'Settings' ? (
-            <SettingsPanel canManage={canRead('settings.write')} />
+            <SettingsPanel canManage={canRead('settings.write')} canViewSettings={canRead('settings.read')} canViewSecrets={canRead('secrets.read')} canManageSecrets={canRead('secrets.write')} />
           ) : section === 'Users' ? (
             <UsersPanel users={users.data ?? []} roles={roles.data ?? []} canManage={user.privileges?.includes('auth.write') ?? true} />
           ) : section === 'Roles' ? (
@@ -713,7 +713,7 @@ function RolesPanel({ roles, canManage }: { roles: Awaited<ReturnType<typeof api
   const queryClient = useQueryClient()
   const save = useMutation({ mutationFn: () => editing ? api.updateRole(editing.id, name, description, privileges) : api.createRole(name, description, privileges), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['roles'] }); setOpen(false); setEditing(undefined) } })
   const remove = useMutation({ mutationFn: (id: string) => api.deleteRole(id), onSuccess: async () => { setDeleting(undefined); await queryClient.invalidateQueries({ queryKey: ['roles'] }) } })
-  const allPrivileges = ['auth.read', 'auth.write', 'server.read', 'server.write', 'tokens.read', 'tokens.write', 'runtimes.read', 'runtimes.write', 'profiles.read', 'profiles.write', 'huggingface.read', 'huggingface.write', 'downloads.read', 'downloads.write', 'library.read', 'library.write', 'diagnostics.read', 'diagnostics.write', 'integrations.read', 'integrations.write', 'settings.read', 'settings.write']
+  const allPrivileges = ['auth.read', 'auth.write', 'server.read', 'server.write', 'tokens.read', 'tokens.write', 'runtimes.read', 'runtimes.write', 'profiles.read', 'profiles.write', 'huggingface.read', 'huggingface.write', 'downloads.read', 'downloads.write', 'library.read', 'library.write', 'diagnostics.read', 'diagnostics.write', 'integrations.read', 'integrations.write', 'settings.read', 'settings.write', 'secrets.read', 'secrets.write']
   const begin = (role?: typeof editing) => { setEditing(role); setName(role?.name ?? ''); setDescription(role?.description ?? ''); setPrivileges(role?.privileges ?? []); setOpen(true) }
   return <section className="data-panel">
     <div className="panel-heading"><div><h2>Roles</h2><p>Assign separate read and write privileges to control-plane accounts.</p></div><button className="button primary compact" disabled={!canManage} onClick={() => begin()} type="button"><Shield size={14} /> Add role</button></div>

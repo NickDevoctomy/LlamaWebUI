@@ -13,6 +13,7 @@ from llamawebui.config import Settings
 from llamawebui.database import create_database_engine
 from llamawebui.services.diagnostics import DiagnosticsExporter, _path_summary, _safe_text
 from llamawebui.services.logging_utils import configure_logging
+from llamawebui.services.secret_store import SecretName, SecretStore
 
 
 def test_diagnostics_export_is_atomic_bounded_and_redacted(
@@ -23,6 +24,7 @@ def test_diagnostics_export_is_atomic_bounded_and_redacted(
         "Authorization: Bearer custom-secret HF_TOKEN=hf_private_value"
     )
     settings = Settings(data_dir=tmp_path / "data")
+    SecretStore().set(SecretName.HUGGINGFACE_TOKEN, "hf_saved_token_value")
 
     with TestClient(create_app(settings)) as client:
         login(client)
@@ -35,10 +37,12 @@ def test_diagnostics_export_is_atomic_bounded_and_redacted(
     rendered = destination.read_text(encoding="utf-8")
 
     assert payload["format"] == 1
-    assert payload["database"]["schema_revision"] == "0029_benchmark_resources"
+    assert payload["database"]["schema_revision"] == "0030_secrets_privileges"
     assert payload["logs"]
     assert "custom-secret" not in rendered
     assert "hf_private_value" not in rendered
+    assert payload["application"]["hugging_face_token_configured"] is True
+    assert "hf_saved_token_value" not in rendered
     assert not list(destination.parent.glob(".diagnostics-*.tmp"))
 
 

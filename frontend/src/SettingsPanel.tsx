@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Download, FileCheck2, LoaderCircle, Settings, Trash2 } from 'lucide-react'
-import { useState } from 'react'
-import { api, type LinterStatus } from './api'
+import { AlertCircle, Download, FileCheck2, Info, KeyRound, LoaderCircle, Save, Settings, ShieldCheck, Trash2 } from 'lucide-react'
+import { type ReactNode, useState } from 'react'
+import { api, type LinterStatus, type SecretName } from './api'
 import { formatBytes } from './Dashboard'
 
 const STAGES: Record<NonNullable<LinterStatus['progress']>['stage'], string> = {
@@ -57,13 +57,124 @@ function EslintRow({ canManage }: { canManage: boolean }) {
   </div>
 }
 
-export function SettingsPanel({ canManage }: { canManage: boolean }) {
-  const [tab, setTab] = useState<'benchmark'>('benchmark')
+const SECRETS: Record<SecretName, { tab: string; title: string; label: string; noun: string; placeholder: string; intro: ReactNode }> = {
+  'huggingface-token': {
+    tab: 'Hugging Face',
+    title: 'Hugging Face token',
+    label: 'Access token',
+    noun: 'access token',
+    placeholder: 'hf_…',
+    intro: <>Lets downloads reach gated and private repositories. Create a read token at <a href="https://huggingface.co/settings/tokens" rel="noreferrer" target="_blank">huggingface.co/settings/tokens</a>.</>,
+  },
+  'openrouter-api-key': {
+    tab: 'OpenRouter',
+    title: 'OpenRouter API key',
+    label: 'API key',
+    noun: 'API key',
+    placeholder: 'sk-or-…',
+    intro: <>Authenticates requests to models hosted on OpenRouter. Create a key at <a href="https://openrouter.ai/settings/keys" rel="noreferrer" target="_blank">openrouter.ai/settings/keys</a>.</>,
+  },
+}
+
+const SECRETS_WRITE_HINT = 'Changing credentials needs the secrets.write privilege'
+
+/** One credential: whether it is saved, and a field to save or replace it. The saved value is never sent back. */
+function SecretTab({ name, canManage }: { name: SecretName; canManage: boolean }) {
+  const queryClient = useQueryClient()
+  const { title, label, noun, placeholder, intro } = SECRETS[name]
+  const [value, setValue] = useState('')
+  const secrets = useQuery({ queryKey: ['secrets'], queryFn: api.secrets })
+  const settle = () => queryClient.invalidateQueries({ queryKey: ['secrets'] })
+  const save = useMutation({ mutationFn: () => api.saveSecret(name, value), onSuccess: () => setValue(''), onSettled: settle })
+  const remove = useMutation({ mutationFn: () => api.removeSecret(name), onSettled: settle })
+  const secret = secrets.data?.secrets.find((item) => item.name === name)
+  const store = secrets.data?.store
+  const error = save.error?.message ?? remove.error?.message
+  return <>
+    <div className="settings-section"><h3>{title}</h3><p>{intro}</p></div>
+    {secrets.isError
+      ? <div className="settings-body"><div className="capability-note error" role="alert"><AlertCircle size={16} /><span>{secrets.error.message}</span></div></div>
+      : !secret
+        ? <div className="settings-body"><div className="capability-note" role="status"><LoaderCircle className="spin" size={16} /><span>Checking the credential store…</span></div></div>
+        : <>
+          <div className="record-list"><div className="record-row">
+            <span className="record-icon"><KeyRound size={17} /></span>
+            <div className="record-copy">
+              <strong className="record-title">{label} <span className={secret.configured ? 'profile-tag recommended-tag' : 'profile-tag'}>{secret.configured ? 'Saved' : 'Not saved'}</span></strong>
+              <span className="record-description">{secret.configured
+                ? <>Kept in {store}, ending in <code>{secret.last_four}</code>.</>
+                : `Nothing saved yet. A saved ${noun} is kept in ${store}, never in the database.`}</span>
+            </div>
+            {secret.configured && <span className="row-actions">
+              <button className="button secondary compact" disabled={!canManage || remove.isPending} onClick={() => remove.mutate()} title={canManage ? undefined : SECRETS_WRITE_HINT} type="button">{remove.isPending ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />} Remove</button>
+            </span>}
+          </div></div>
+          <form className="secret-form" onSubmit={(event) => { event.preventDefault(); save.mutate() }}>
+            <label className="form-field">
+              <span>{secret.configured ? `Replace ${noun}` : label}</span>
+              <input autoComplete="off" disabled={!canManage} onChange={(event) => setValue(event.target.value)} placeholder={placeholder} spellCheck={false} title={canManage ? undefined : SECRETS_WRITE_HINT} type="password" value={value} />
+            </label>
+            <button className="button primary" disabled={!canManage || !value.trim() || save.isPending} title={canManage ? undefined : SECRETS_WRITE_HINT} type="submit">{save.isPending ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />} Save</button>
+            {error && <div className="form-error" role="alert"><AlertCircle size={15} /> {error}</div>}
+          </form>
+        </>}
+  </>
+}
+
+function SecurityTab({ canManage }: { canManage: boolean }) {
+  const queryClient = useQueryClient()
+  const security = useQuery({ queryKey: ['security-settings'], queryFn: api.securitySettings })
+  const update = useMutation({
+    mutationFn: api.updateSecuritySettings,
+    onSettled: () => Promise.all([queryClient.invalidateQueries({ queryKey: ['security-settings'] }), queryClient.invalidateQueries({ queryKey: ['secrets'] })]),
+  })
+  const settings = security.data
+  if (security.isError) return <div className="settings-body"><div className="capability-note error" role="alert"><AlertCircle size={16} /><span>{security.error.message}</span></div></div>
+  if (!settings) return <div className="settings-body"><div className="capability-note" role="status"><LoaderCircle className="spin" size={16} /><span>Loading security settings…</span></div></div>
+  const allowed = settings.allow_remote_secrets
+  // Turning remote access on is only accepted from the server itself; turning it off works anywhere.
+  const blockedHere = !allowed && !settings.local_request
+  const hint = !canManage ? 'Changing settings needs the settings.write privilege' : blockedHere ? 'Turn this on from a browser on the server itself' : undefined
+  return <>
+    <div className="settings-section"><h3>Secrets</h3><p>Provider credentials are kept in the system credential store and are never sent back to the browser.</p></div>
+    <div className="record-list"><div className="record-row">
+      <span className="record-icon"><ShieldCheck size={17} /></span>
+      <div className="record-copy">
+        <strong className="record-title">Allow secrets access from remote</strong>
+        <span className="record-description">When off, credentials can only be viewed, saved or removed from a browser on the server itself.</span>
+      </div>
+      <span className="row-actions">
+        <button aria-checked={allowed} aria-label="Allow secrets access from remote" className="profile-switch" disabled={!canManage || blockedHere || update.isPending} onClick={() => update.mutate(!allowed)} role="switch" title={hint} type="button">
+          <span aria-hidden="true" className="switch-track"><span /></span>{allowed ? 'Allowed' : 'Off'}
+        </button>
+      </span>
+      {blockedHere && <div className="capability-note"><Info size={16} /><span>You are connected from another machine, so this can only be turned on from the server itself.</span></div>}
+      {update.error && <div className="form-error record-details" role="alert"><AlertCircle size={15} /> {update.error.message}</div>}
+    </div></div>
+  </>
+}
+
+type SettingsTab = 'benchmark' | 'security' | SecretName
+
+export function SettingsPanel({ canManage, canViewSettings = true, canViewSecrets = false, canManageSecrets = false }: {
+  canManage: boolean
+  canViewSettings?: boolean
+  canViewSecrets?: boolean
+  canManageSecrets?: boolean
+}) {
+  const tabs: { key: SettingsTab; label: string }[] = [
+    ...(canViewSettings ? [{ key: 'benchmark' as const, label: 'Benchmark' }, { key: 'security' as const, label: 'Security' }] : []),
+    ...(canViewSecrets ? (Object.keys(SECRETS) as SecretName[]).map((key) => ({ key, label: SECRETS[key].tab })) : []),
+  ]
+  const [selected, setTab] = useState<SettingsTab>()
+  const tab = selected ?? tabs[0]?.key
   return <section className="data-panel settings-panel">
-    <div className="panel-heading"><div><h2>Settings</h2><p>Control-plane preferences and the tools features rely on.</p></div><Settings size={20} /></div>
+    <div className="panel-heading"><div><h2>Settings</h2><p>Control-plane preferences, provider credentials and the tools features rely on.</p></div><Settings size={20} /></div>
     <div aria-label="Settings" className="segmented settings-tabs" role="tablist">
-      <button aria-selected={tab === 'benchmark'} onClick={() => setTab('benchmark')} role="tab" type="button">Benchmark</button>
+      {tabs.map(({ key, label }) => <button aria-selected={tab === key} key={key} onClick={() => setTab(key)} role="tab" type="button">{label}</button>)}
     </div>
+    {tab === 'security' && <div role="tabpanel" aria-label="Security"><SecurityTab canManage={canManage} /></div>}
+    {tab !== 'benchmark' && tab !== 'security' && tab && <div role="tabpanel" aria-label={SECRETS[tab].tab}><SecretTab key={tab} canManage={canManageSecrets} name={tab} /></div>}
     {tab === 'benchmark' && <div role="tabpanel" aria-label="Benchmark">
       <div className="settings-section"><h3>Tools</h3><p>Extra tools benchmark agents can be given. Each one is offered in a run&apos;s tool list once it is installed.</p></div>
       <div className="record-list"><EslintRow canManage={canManage} /></div>

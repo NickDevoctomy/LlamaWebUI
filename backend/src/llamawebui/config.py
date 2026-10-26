@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from pydantic import AliasChoices, Field, SecretStr, field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,10 +31,6 @@ class Settings(BaseSettings):
     login_backoff_max_seconds: float = Field(default=5.0, ge=0)
     event_history_capacity: int = Field(default=256, ge=1)
     log_level: str = "INFO"
-    hf_token: SecretStr | None = Field(
-        default=None,
-        validation_alias=AliasChoices("HF_TOKEN", "LLAMAWEBUI_HF_TOKEN"),
-    )
 
     @field_validator("data_dir")
     @classmethod
