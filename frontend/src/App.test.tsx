@@ -828,6 +828,29 @@ describe('App', () => {
     expect(document.activeElement).toBe(register)
   })
 
+  it('shows the Assistant only once an OpenRouter key and model are set', async () => {
+    const me = responses['/api/auth/me'] as { privileges: string[] }
+    let status = { available: false, openrouter_key_configured: true, model: null as object | null }
+    const fetchMock = renderApp({
+      currentUser: { ...me, privileges: [...me.privileges, 'assistant.read'] },
+      onRequest: (path) => path === '/api/assistant/status' ? status : undefined,
+    })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/assistant/status', expect.anything()))
+    expect(screen.queryByRole('button', { name: 'Assistant' })).not.toBeInTheDocument()
+
+    status = { available: true, openrouter_key_configured: true, model: { id: 'anthropic/claude-sonnet-5.5' } }
+    await fetchMock.client.invalidateQueries({ queryKey: ['assistant-status'] })
+    fireEvent.click(await screen.findByRole('button', { name: 'Assistant' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Assistant' })).toBeInTheDocument()
+  })
+
+  it('never asks for the assistant status without assistant.read', async () => {
+    const fetchMock = renderApp()
+    await screen.findByRole('button', { name: 'Dashboard' })
+    expect(fetchMock.mock.calls.some(([path]) => path === '/api/assistant/status')).toBe(false)
+    expect(screen.queryByRole('button', { name: 'Assistant' })).not.toBeInTheDocument()
+  })
+
   it('uses an accessible confirmation dialog for user deletion', async () => {
     const user = { id: 'operator-1', username: 'operator', description: null, role_id: 'user', role: 'User', default_credentials: false }
     const fetchMock = renderApp({

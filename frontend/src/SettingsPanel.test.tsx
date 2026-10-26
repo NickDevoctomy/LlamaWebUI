@@ -147,10 +147,10 @@ describe('SettingsPanel', () => {
     expect(screen.getByText(/connected from another machine/)).toBeInTheDocument()
   })
 
-  it('hides credential tabs without secrets.read', () => {
+  it('shows OpenRouter for its model, but not Hugging Face, without secrets.read', () => {
     vi.spyOn(api, 'benchmarkTools').mockResolvedValue({ eslint: missing })
     renderPanel()
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Benchmark', 'Security'])
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Benchmark', 'Security', 'OpenRouter'])
   })
 
   it('needs the settings write privilege to change anything', async () => {

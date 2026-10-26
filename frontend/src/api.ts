@@ -167,6 +167,27 @@ export interface SecretStatus {
   last_four: string | null
 }
 
+export interface OpenRouterModel {
+  id: string
+  name: string
+  description: string
+  context_length: number | null
+  /** USD per unit as OpenRouter reports it, e.g. prompt and completion per token. "-1" means it varies. */
+  pricing: Record<string, string>
+}
+
+/** The assistant's model, with OpenRouter's pricing as it was when it was selected. */
+export interface SelectedOpenRouterModel extends OpenRouterModel {
+  selected_at: string
+}
+
+export interface AssistantStatus {
+  /** An OpenRouter key is saved and a model is selected. */
+  available: boolean
+  openrouter_key_configured: boolean
+  model: SelectedOpenRouterModel | null
+}
+
 export interface SecuritySettings {
   /** Secrets calls are accepted from other machines, not only from the server itself. */
   allow_remote_secrets: boolean
@@ -801,6 +822,11 @@ export const api = {
   removeEslint: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools/eslint', { method: 'DELETE' }),
   securitySettings: () => request<SecuritySettings>('/api/settings/security'),
   updateSecuritySettings: (allowRemoteSecrets: boolean) => request<SecuritySettings>('/api/settings/security', { method: 'PUT', body: JSON.stringify({ allow_remote_secrets: allowRemoteSecrets }) }),
+  openRouterModels: (query: string) => request<{ models: OpenRouterModel[]; total: number }>(`/api/settings/openrouter/models?${new URLSearchParams({ q: query })}`),
+  openRouterModel: () => request<{ model: SelectedOpenRouterModel | null }>('/api/settings/openrouter/model'),
+  selectOpenRouterModel: (id: string) => request<{ model: SelectedOpenRouterModel }>('/api/settings/openrouter/model', { method: 'PUT', body: JSON.stringify({ id }) }),
+  clearOpenRouterModel: () => request<{ model: null }>('/api/settings/openrouter/model', { method: 'DELETE' }),
+  assistantStatus: () => request<AssistantStatus>('/api/assistant/status'),
   secrets: () => request<{ store: string; secrets: SecretStatus[] }>('/api/secrets'),
   saveSecret: (name: SecretName, value: string) => request<SecretStatus>(`/api/secrets/${name}`, { method: 'PUT', body: JSON.stringify({ value }) }),
   removeSecret: (name: SecretName) => request<SecretStatus>(`/api/secrets/${name}`, { method: 'DELETE' }),

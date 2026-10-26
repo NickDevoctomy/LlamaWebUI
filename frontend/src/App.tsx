@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   BadgeCheck,
+  Bot,
   Box,
   ChevronDown,
   CircleGauge,
@@ -50,6 +51,7 @@ const navigation = [
   ['Dashboard', CircleGauge, 'server.read', 'Operate'],
   ['Server', Server, 'server.read', 'Operate'],
   ['Benchmarks', Timer, 'server.read', 'Operate'],
+  ['Assistant', Bot, 'assistant.read', 'Operate'],
   ['Models', Library, 'library.read', 'Models'],
   ['Recommended', BadgeCheck, 'profiles.read', 'Models'],
   ['Discover', Search, 'huggingface.read', 'Models'],
@@ -66,6 +68,7 @@ const sectionSummaries: Record<string, string> = {
   Dashboard: 'Router health, throughput and host resources at a glance.',
   Server: 'Process state, runtime selection and live router output.',
   Benchmarks: 'Measure how fast a profile loads, reads a prompt and generates.',
+  Assistant: 'An OpenRouter model that helps you run this control plane.',
   Models: 'GGUF files in the managed library and the records reconciled from them.',
   Recommended: 'Profiles tuned on known hardware. Add one and its model downloads for you.',
   Discover: 'Search Hugging Face and pick a quantization to download.',
@@ -143,9 +146,12 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
   const [profileSeed, setProfileSeed] = useState<LibraryModel>()
   const queryClient = useQueryClient()
   const canRead = (privilege: string) => user.privileges?.includes(privilege) ?? false
+  const assistant = useQuery({ queryKey: ['assistant-status'], queryFn: api.assistantStatus, enabled: authReady && canRead('assistant.read') })
   const visibleNavigation = user.default_credentials
     ? []
-    : navigation.filter(([, , privilege]) => [privilege].flat().some(canRead))
+    : navigation.filter(([label, , privilege]) => [privilege].flat().some(canRead)
+      // Shown once an OpenRouter key is saved and a model is selected.
+      && (label !== 'Assistant' || assistant.data?.available === true))
   const hasVisibleSection = section === 'Account' || visibleNavigation.some(([label]) => label === section)
   useEffect(() => {
     if (!authReady) return
@@ -360,6 +366,8 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
               onRefresh={() => { void refreshModels() }}
               running={running}
             />
+          ) : section === 'Assistant' ? (
+            null
           ) : section === 'Benchmarks' ? (
             <BenchmarksPanel canRun={canRead('server.lifecycle.write')} profiles={profiles.data ?? []} routerState={status.data?.state} />
           ) : section === 'Server' ? (
@@ -713,7 +721,7 @@ function RolesPanel({ roles, canManage }: { roles: Awaited<ReturnType<typeof api
   const queryClient = useQueryClient()
   const save = useMutation({ mutationFn: () => editing ? api.updateRole(editing.id, name, description, privileges) : api.createRole(name, description, privileges), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['roles'] }); setOpen(false); setEditing(undefined) } })
   const remove = useMutation({ mutationFn: (id: string) => api.deleteRole(id), onSuccess: async () => { setDeleting(undefined); await queryClient.invalidateQueries({ queryKey: ['roles'] }) } })
-  const allPrivileges = ['auth.read', 'auth.write', 'server.read', 'server.write', 'tokens.read', 'tokens.write', 'runtimes.read', 'runtimes.write', 'profiles.read', 'profiles.write', 'huggingface.read', 'huggingface.write', 'downloads.read', 'downloads.write', 'library.read', 'library.write', 'diagnostics.read', 'diagnostics.write', 'integrations.read', 'integrations.write', 'settings.read', 'settings.write', 'secrets.read', 'secrets.write']
+  const allPrivileges = ['auth.read', 'auth.write', 'server.read', 'server.write', 'tokens.read', 'tokens.write', 'runtimes.read', 'runtimes.write', 'profiles.read', 'profiles.write', 'huggingface.read', 'huggingface.write', 'downloads.read', 'downloads.write', 'library.read', 'library.write', 'diagnostics.read', 'diagnostics.write', 'integrations.read', 'integrations.write', 'settings.read', 'settings.write', 'secrets.read', 'secrets.write', 'assistant.read', 'assistant.write']
   const begin = (role?: typeof editing) => { setEditing(role); setName(role?.name ?? ''); setDescription(role?.description ?? ''); setPrivileges(role?.privileges ?? []); setOpen(true) }
   return <section className="data-panel">
     <div className="panel-heading"><div><h2>Roles</h2><p>Assign separate read and write privileges to control-plane accounts.</p></div><button className="button primary compact" disabled={!canManage} onClick={() => begin()} type="button"><Shield size={14} /> Add role</button></div>

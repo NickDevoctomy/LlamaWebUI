@@ -6,6 +6,7 @@ import logging
 import sys
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 from ipaddress import IPv6Address, ip_address
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -131,6 +132,7 @@ from llamawebui.services.model_artifact_registry import ModelArtifactError, Mode
 from llamawebui.services.model_event_stream import stream_model_events
 from llamawebui.services.model_library import ModelLibrary
 from llamawebui.services.model_locator import ModelLocation, local_models, locate_model
+from llamawebui.services.openrouter_catalog import OpenRouterCatalog, OpenRouterUnavailableError
 from llamawebui.services.process_memory import ProcessMemorySampler, system_memory
 from llamawebui.services.profile_registry import (
     ProfileAliasExistsError,
@@ -179,7 +181,11 @@ from llamawebui.services.secret_store import (
     SecretStoreUnavailableError,
 )
 from llamawebui.services.server_run_registry import ServerRunRegistry
-from llamawebui.services.settings_store import ALLOW_REMOTE_SECRETS, SettingsStore
+from llamawebui.services.settings_store import (
+    ALLOW_REMOTE_SECRETS,
+    OPENROUTER_MODEL,
+    SettingsStore,
+)
 from llamawebui.services.system_metrics import collect_system_metrics
 from llamawebui.services.token_registry import AccessTokenNotFoundError, TokenRegistry
 from llamawebui.version import __version__
@@ -344,6 +350,10 @@ class SecretUpdateRequest(BaseModel):
 
 class SecuritySettingsRequest(BaseModel):
     allow_remote_secrets: bool
+
+
+class OpenRouterModelRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=300)
 
 
 def _is_local_request(request: Request) -> bool:
@@ -945,6 +955,7 @@ def create_app(
     benchmarks: tuple[Benchmark, ...] | None = None,
     system_prompts: tuple[SystemPrompt, ...] | None = None,
     benchmark_linter: BenchmarkLinter | None = None,
+    openrouter_catalog: OpenRouterCatalog | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
     packaged_static_dir = static_dir or Path(__file__).parent / "static"
@@ -993,6 +1004,7 @@ def create_app(
         app.state.token_registry.remove_materialized_tokens()
         app.state.secret_store = SecretStore()
         app.state.settings_store = SettingsStore(engine)
+        app.state.openrouter_catalog = openrouter_catalog or OpenRouterCatalog()
         app.state.auth_service = AuthService(engine)
         app.state.auth_service.ensure_default_admin()
         app.state.login_throttle = LoginThrottle(
@@ -2184,6 +2196,68 @@ def create_app(
         return {
             "allow_remote_secrets": security_request.allow_remote_secrets,
             "local_request": local,
+        }
+
+    def openrouter_unavailable(error: OpenRouterUnavailableError) -> HTTPException:
+        return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error))
+
+    @app.get("/api/settings/openrouter/models")
+    async def search_openrouter_models(
+        request: Request,
+        q: str = Query(default="", max_length=200),
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> dict[str, object]:
+        catalog = cast(OpenRouterCatalog, request.app.state.openrouter_catalog)
+        try:
+            models, total = await catalog.search(q, limit)
+        except OpenRouterUnavailableError as error:
+            raise openrouter_unavailable(error) from error
+        return {"models": [model.payload() for model in models], "total": total}
+
+    @app.get("/api/settings/openrouter/model")
+    async def selected_openrouter_model(request: Request) -> dict[str, object]:
+        settings_store = cast(SettingsStore, request.app.state.settings_store)
+        return {"model": settings_store.get_json(OPENROUTER_MODEL)}
+
+    @app.put("/api/settings/openrouter/model")
+    async def select_openrouter_model(
+        model_request: OpenRouterModelRequest, request: Request
+    ) -> dict[str, object]:
+        catalog = cast(OpenRouterCatalog, request.app.state.openrouter_catalog)
+        settings_store = cast(SettingsStore, request.app.state.settings_store)
+        try:
+            model = await catalog.get(model_request.id)
+        except OpenRouterUnavailableError as error:
+            raise openrouter_unavailable(error) from error
+        if model is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"OpenRouter has no model {model_request.id}",
+            )
+        # Pricing comes from OpenRouter, not the browser, and is kept as it was when selected.
+        selected = {**model.payload(), "selected_at": datetime.now(UTC).isoformat()}
+        settings_store.set_json(OPENROUTER_MODEL, selected)
+        return {"model": selected}
+
+    @app.delete("/api/settings/openrouter/model")
+    async def clear_openrouter_model(request: Request) -> dict[str, object]:
+        cast(SettingsStore, request.app.state.settings_store).delete(OPENROUTER_MODEL)
+        return {"model": None}
+
+    @app.get("/api/assistant/status")
+    async def assistant_status(request: Request) -> dict[str, object]:
+        store = cast(SecretStore, request.app.state.secret_store)
+        settings_store = cast(SettingsStore, request.app.state.settings_store)
+        try:
+            key_configured = store.get(SecretName.OPENROUTER_API_KEY) is not None
+        except SecretStoreUnavailableError:
+            key_configured = False
+        model = settings_store.get_json(OPENROUTER_MODEL)
+        # Only whether a key is saved is reported, so this works where secrets are local-only.
+        return {
+            "available": key_configured and model is not None,
+            "openrouter_key_configured": key_configured,
+            "model": model,
         }
 
     @app.get("/api/secrets")
