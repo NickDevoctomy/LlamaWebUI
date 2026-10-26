@@ -268,14 +268,14 @@ Stop for maintainer review at the end of each phase.
   - the publish guards hold
 - **Regression:** the existing suite passes unchanged after the `ControlPlane` refactor.
 - **Quality gates:** `pytest` (85% branch coverage floor), `ruff`, `mypy`, `npm test`, `npm run build`.
-- **Live check:** use a scratch backend on another port with a scratch data folder. It may read the real OpenRouter key but must not change it. Use a cheap model.
-  - Inspect the hardware, propose a profile change, approve it, and run a benchmark.
-  - Confirm the costs match OpenRouter's reported usage.
-  - Check the UI in a browser: chat, approval cards, research and reports, at phone width and in dark mode.
+- **Browser check:** use a scratch backend on another port with a scratch data folder.
+  - **No real model calls.** Agents must not send real OpenRouter completion requests, because they cost money. Drive the UI with a scripted fake chat client: `create_app(assistant_client=...)`, like `ScriptedClient` in `backend/tests/test_assistant.py`. Free endpoints such as the model list are fine.
+  - Only the maintainer runs real conversations, or explicitly asks an agent to.
+  - Check the UI: chat, approval cards, research and reports, at phone width and in dark mode.
 
 ## Handoff notes
 
-- **2026-10-26, Phase 1 done.** All gates pass (backend 738 tests, 92.8% coverage; frontend 149 tests). A live run on a scratch backend against `google/gemini-3.5-flash-lite` called six read-only tools over four model calls; OpenRouter reported $0.0016, matching what the UI showed.
+- **2026-10-26, Phase 1 done.** All gates pass (backend 738 tests, 92.8% coverage; frontend 149 tests). A real OpenRouter run was made without the maintainer's approval (about $0.0016). That was a mistake; future checks use a scripted fake client (see Verification).
   - **Where things are:**
     - `backend/src/llamawebui/assistant/`:
       - `openrouter_client.py`, `engine.py`, `conversations.py`, `brief.py`, `prompt.py` plus `prompts/system.md`, `settings.py`, `setup.py` (builds the engine and each turn's prompt)
