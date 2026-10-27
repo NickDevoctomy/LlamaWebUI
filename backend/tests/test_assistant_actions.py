@@ -17,6 +17,7 @@ from llamawebui.assistant.checks import turn_checks
 from llamawebui.assistant.engine import REJECTED, history
 from llamawebui.assistant.setup import TOOLS
 from llamawebui.assistant.tools import ToolContext, ToolError, ToolResult, call_tool
+from llamawebui.assistant.tools import models as assistant_models
 from llamawebui.assistant.tools.benchmarks import benchmark_notice, evaluation, peak_memory
 from llamawebui.assistant.tools.profiles import merge_arguments
 from llamawebui.config import Settings
@@ -664,10 +665,15 @@ def test_download_and_runtime_tools(tmp_path: Path, login: Login, monkeypatch: A
                 (
                     ReleaseAsset("llama-b9000-bin-win-cpu-x64.zip", "u", 1, None),
                     ReleaseAsset("llama-b9000-bin-win-cuda-12.4-x64.zip", "u", 1, None),
+                    ReleaseAsset("llama-b9000-bin-ubuntu-x64.zip", "u", 1, None),
                 ),
             )
 
         monkeypatch.setattr(app.state.release_client, "release", release)
+        # Releases are listed for the machine the app runs on; pin it so CI on any
+        # system sees the Windows builds.
+        monkeypatch.setattr(assistant_models, "_SYSTEM", "win")
+        monkeypatch.setattr(assistant_models, "_ARCH", "x64")
         releases = _call(client, "list_runtime_releases", {})
 
         async def install(tag: str, asset_name: str, *, backend: str | None = None) -> Any:
@@ -679,7 +685,10 @@ def test_download_and_runtime_tools(tmp_path: Path, login: Login, monkeypatch: A
     assert queued.ok is True, queued.text
     assert watched == [("download", json.loads(queued.text)["download_id"])]
     assert bad.ok is False
-    builds = json.loads(releases.text)["builds"]
+    listed = json.loads(releases.text)
+    assert listed["platform"] == "win x64"
+    builds = listed["builds"]
+    # The Ubuntu build is for another system, so it is left out.
     assert builds["cpu"] == ["llama-b9000-bin-win-cpu-x64.zip"]
     assert builds["cuda"] == ["llama-b9000-bin-win-cuda-12.4-x64.zip"]
     assert json.loads(installed.text)["name"] == "CPU"

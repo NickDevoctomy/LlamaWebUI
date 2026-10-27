@@ -1,13 +1,9 @@
 {
   "versions": [
     {
-      "version": "0.6.0",
+      "version": "0.5.0",
       "release_date": null,
       "changes": [
-        {
-          "type": "change",
-          "description": "Reorganised benchmark tools into categorised groups."
-        },
         {
           "type": "feat",
           "description": "App settings for huggingface and openrouter tokens, stored securely on the system."
@@ -23,6 +19,10 @@
         {
           "type": "feat",
           "description": "Lama the assistant which can tune your profiles for you automatically, get models running, optimise them etc."
+        },
+        {
+          "type": "change",
+          "description": "Various improvements to benchmarks, including new tools."
         }         
       ]
     },    
