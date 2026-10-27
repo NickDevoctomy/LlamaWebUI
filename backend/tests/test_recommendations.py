@@ -241,6 +241,27 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     assert assess(small, **sixteen).hardware_match  # type: ignore[arg-type]
     assert not assess(dense, **sixteen).hardware_match  # type: ignore[arg-type]
     assert not assess(dense, **strix_host).hardware_match  # type: ignore[arg-type]
+    unified = by_id["qwen3.8-27b-ud-q8-k-l-strix-halo"]
+    assert unified.family == dense.id
+    assert (unified.label, unified.alias, unified.vram_gb) == (
+        "96 GB Strix Halo",
+        "qwen3.8-27b-96gb",
+        None,
+    )
+    assert unified.model.quantization == "UD-Q8_K_L"
+    # Only what was measured on the APU: the 24 GB card's batches, threads and sampling go.
+    assert {item["id"] for item in unified.arguments} == {
+        "ctx-size",
+        "flash-attn",
+        "cache-type-k",
+        "cache-type-v",
+        "spec-type",
+        "spec-draft-n-max",
+        "spec-draft-n-min",
+        "spec-draft-p-min",
+    }
+    assert assess(unified, **strix_host).hardware_match  # type: ignore[arg-type]
+    assert not assess(unified, **nvidia_host).hardware_match  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(

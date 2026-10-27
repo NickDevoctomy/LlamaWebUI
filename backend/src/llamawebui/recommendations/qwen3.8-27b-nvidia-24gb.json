@@ -80,6 +80,51 @@
           { "id": "spec-draft-p-min", "value": 0 }
         ]
       }
+    },
+    {
+      "id": "qwen3.8-27b-ud-q8-k-l-strix-halo",
+      "label": "96 GB Strix Halo",
+      "title": "Qwen3.8 27B with MTP, 262K context on a 96 GB Strix Halo APU",
+      "summary": "The dense 27B model in Unsloth's UD-Q8_K_L quantization on a 96 GB unified-memory APU, with speculative decoding from the model's built-in MTP head. Full 262,144-token context with a q8_0 KV cache and flash attention.",
+      "model": {
+        "quantization": "UD-Q8_K_L"
+      },
+      "tested_on": {
+        "label": "AMD Ryzen AI Max+ 395 (Strix Halo), 96 GB unified memory",
+        "cpu_pattern": "Ryzen AI Max\\+? (PRO )?395",
+        "gpu_pattern": null,
+        "memory_gb": 96,
+        "unified_memory": true,
+        "backend": "vulkan",
+        "notes": "GPU memory left at the firmware minimum; the driver allocates from shared memory as needed."
+      },
+      "requirements": {
+        "memory_gb": 96,
+        "vram_gb": null,
+        "backends": ["vulkan", "rocm"]
+      },
+      "profile": {
+        "alias": "qwen3.8-27b-96gb",
+        "description": "Qwen3.8 27B for a 96 GB Strix Halo APU. The 8-bit UD-Q8_K_L build with MTP speculative decoding: 4 draft tokens gated by --spec-draft-p-min 0.1. Full 262K context with a q8_0 KV cache and flash attention.",
+        "arguments": [
+          { "id": "ctx-size", "value": 262144 },
+          { "id": "cache-type-k", "value": "q8_0" },
+          { "id": "cache-type-v", "value": "q8_0" }
+        ],
+        "remove_arguments": [
+          "n-gpu-layers",
+          "fit",
+          "parallel",
+          "ctx-checkpoints",
+          "batch-size",
+          "ubatch-size",
+          "threads",
+          "threads-batch",
+          "reasoning-preserve",
+          "spec-default",
+          "temperature"
+        ]
+      }
     }
   ]
 }

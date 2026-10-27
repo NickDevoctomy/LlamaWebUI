@@ -1,13 +1,35 @@
-import type { BenchmarkResult } from './api'
+import type { BenchmarkResult, BenchmarkStats } from './api'
 
 export function formatSeconds(value?: number | null) {
   if (value == null) return '—'
   return value >= 100 ? `${Math.round(value)} s` : `${value.toFixed(1)} s`
 }
 
+/** A speed without its unit, for figures already headed tok/s. */
+export function formatRateValue(value?: number | null) {
+  if (value == null) return '—'
+  return value >= 100 ? Math.round(value).toLocaleString() : value.toFixed(1)
+}
+
 export function formatRate(value?: number | null) {
   if (value == null) return '—'
-  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} tok/s`
+  return `${formatRateValue(value)} tok/s`
+}
+
+/** A phase's slowest 1%, its average over the whole run, and its fastest, in that order. */
+export const SPEED_FIGURES = [
+  { key: 'low', label: '1% low', title: 'Average speed over the slowest 1% of the time' },
+  { key: 'average', label: 'Average', title: 'Average over the whole run' },
+  { key: 'peak', label: 'Peak', title: 'Fastest stretch of the run' },
+] as const
+
+export type SpeedFigure = (typeof SPEED_FIGURES)[number]['key']
+
+/** Prefill or decode speeds of a run or result, keyed like SPEED_FIGURES. */
+export function phaseSpeeds(stats: BenchmarkStats, phase: 'prefill' | 'decode'): Record<SpeedFigure, number | undefined> {
+  return phase === 'prefill'
+    ? { low: stats.prompt_low_tokens_per_second, average: stats.prompt_tokens_per_second, peak: stats.prompt_peak_tokens_per_second }
+    : { low: stats.decode_low_tokens_per_second, average: stats.decode_tokens_per_second, peak: stats.decode_peak_tokens_per_second }
 }
 
 const REASONING_LABELS: Record<string, string> = {
@@ -34,7 +56,11 @@ export function formatWhen(value: string | null) {
 
 /** The headline figures of a benchmark, as written onto a profile. */
 export function BenchmarkSummary({ result }: { result: BenchmarkResult }) {
+  const range = [
+    result.decode_low_tokens_per_second != null && `1% low ${formatRate(result.decode_low_tokens_per_second)}`,
+    result.decode_peak_tokens_per_second != null && `peak ${formatRate(result.decode_peak_tokens_per_second)}`,
+  ].filter(Boolean).join(', ')
   return <span title={`Benchmark run on profile v${result.profile_version}, ${formatWhen(result.completed_at)}`}>
-    {result.benchmark_title}{result.reasoning_level ? ` (reasoning ${reasoningLabel(result.reasoning_level).toLowerCase()})` : ''}: {formatRate(result.decode_tokens_per_second)} decode{result.decode_peak_tokens_per_second != null ? ` (peak ${formatRate(result.decode_peak_tokens_per_second)})` : ''} · {formatRate(result.prompt_tokens_per_second)} prefill · load {formatSeconds(result.load_seconds)}{result.outcome ? ` · ${result.outcome === 'completed' ? 'task complete' : 'unfinished'}` : ''}
+    {result.benchmark_title}{result.reasoning_level ? ` (reasoning ${reasoningLabel(result.reasoning_level).toLowerCase()})` : ''}: {formatRate(result.decode_tokens_per_second)} decode{range ? ` (${range})` : ''} · {formatRate(result.prompt_tokens_per_second)} prefill · load {formatSeconds(result.load_seconds)}{result.outcome ? ` · ${result.outcome === 'completed' ? 'task complete' : 'unfinished'}` : ''}
   </span>
 }

@@ -387,11 +387,18 @@ export interface BenchmarkStats {
   first_token_seconds?: number
   prompt_tokens?: number
   prompt_seconds?: number
+  /** Average over every prompt read in the run. */
   prompt_tokens_per_second?: number
+  /** Average over the slowest 1% of prefill time, measured batch by batch. */
+  prompt_low_tokens_per_second?: number
+  /** Fastest batch of prompt reading. */
+  prompt_peak_tokens_per_second?: number
   generated_tokens?: number
   decode_seconds?: number
   /** Average over the whole generation, as llama.cpp reports it. */
   decode_tokens_per_second?: number
+  /** Average over the slowest 1% of generation time, in 3-second windows. */
+  decode_low_tokens_per_second?: number
   /** Fastest 3-second window, comparable to the dashboard's peak. */
   decode_peak_tokens_per_second?: number
   /** Speed over the last 3 seconds of generation. */

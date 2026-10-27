@@ -52,6 +52,8 @@ LOGGER = logging.getLogger("llamawebui.benchmarks")
 DEFAULT_MAX_TOKENS: int | None = None
 # Speeds are measured over this window, matching llama.cpp's own tg_3s figure.
 RATE_WINDOW_SECONDS = 3.0
+# The 1% low is the average speed over the slowest 1% of the measured time.
+LOW_SHARE = 0.01
 # The most router log lines kept with a failed run.
 SERVER_LOG_LINES = 200
 
@@ -653,6 +655,30 @@ class _WindowRate:
         if span <= 0 or tokens < start_tokens:
             return None
         return (tokens - start_tokens) / span, span
+
+
+def _slowest_share(
+    readings: Sequence[tuple[float, float]], share: float = LOW_SHARE
+) -> float | None:
+    """The average speed over the slowest ``share`` of the time, from (rate, seconds) readings.
+
+    Each reading counts for as long as it lasted, so a slow stretch weighs by its time
+    and not by how few tokens it produced.
+    """
+    total = sum(seconds for _, seconds in readings if seconds > 0)
+    if total <= 0:
+        return None
+    wanted = total * share
+    taken = tokens = 0.0
+    for rate, seconds in sorted(readings):
+        if seconds <= 0:
+            continue
+        part = min(seconds, wanted - taken)
+        taken += part
+        tokens += rate * part
+        if taken >= wanted:
+            break
+    return round(tokens / taken, 2)
 
 
 class _Timeline:
@@ -1274,10 +1300,26 @@ class BenchmarkRunner:
         last_sample: dict[str, float] = {}
         chunks = 0
         windows = {phase: _WindowRate(RATE_WINDOW_SECONDS) for phase in ("prefill", "decode")}
+        # (rate, seconds it lasted) for the run's lows and peaks. Decode counts full 3 s
+        # windows only, as a short span early on misstates the speed. Prompts are mostly
+        # read in well under 3 s, so prefill counts each batch llama.cpp reports instead.
+        readings: dict[str, list[tuple[float, float]]] = {"prefill": [], "decode": []}
+        decode_clock = [0.0]
+        # The round's last prompt progress, as (tokens, milliseconds).
+        prompt_step = [(0.0, 0.0)]
 
         def sample(phase: str, seconds: float, tokens: float) -> None:
             """Record cumulative progress; samples hold the speed over the recent window."""
             measured = windows[phase].add(seconds, tokens)
+            if phase == "decode":
+                lasted = seconds - decode_clock[0]
+                decode_clock[0] = seconds
+                if (
+                    measured is not None
+                    and measured[1] >= RATE_WINDOW_SECONDS * 0.9
+                    and lasted > 0
+                ):
+                    readings["decode"].append((measured[0], lasted))
             if measured is None:
                 return
             rate, span = measured
@@ -1315,6 +1357,7 @@ class BenchmarkRunner:
             exhausted = False
             finish: str | None = None
             reading = timeline.switch("reading", round_number)
+            prompt_step[0] = (0.0, 0.0)
             async for chunk in _until_context_full(
                 self._client.chat_stream(
                     record.profile_alias,
@@ -1335,6 +1378,15 @@ class BenchmarkRunner:
                     processed = _number(progress.get("processed"))
                     milliseconds = _number(progress.get("time_ms"))
                     if processed is not None and milliseconds is not None:
+                        done, spent = prompt_step[0]
+                        if processed > done and milliseconds > spent:
+                            readings["prefill"].append(
+                                (
+                                    (processed - done) / (milliseconds - spent) * 1000,
+                                    (milliseconds - spent) / 1000,
+                                )
+                            )
+                            prompt_step[0] = (processed, milliseconds)
                         sample(
                             "prefill",
                             (totals["prompt_ms"] + milliseconds) / 1000,
@@ -1389,6 +1441,12 @@ class BenchmarkRunner:
             timeline.close()
             self._progress["tool_call"] = None
             reading["prompt_tokens"] = int(_number(timings.get("prompt_n")) or 0)
+            if prompt_step[0] == (0.0, 0.0):
+                # No progress was streamed, so the round's own prompt timing is its reading.
+                read = _number(timings.get("prompt_n"))
+                reading_ms = _number(timings.get("prompt_ms"))
+                if read and reading_ms:
+                    readings["prefill"].append((read / reading_ms * 1000, reading_ms / 1000))
             if reading["end"] is None:
                 reading["end"] = round(self._clock() - sent, 2)
             for key in totals:
@@ -1473,16 +1531,14 @@ class BenchmarkRunner:
         if workspace is not None:
             stats["tool_calls"] = len(calls_made)
             stats["files_written"] = len(workspace.files())
-        # Peak and end speeds use full windows only; a short span early on overstates.
-        full = [
-            cast(float, item["rate"])
-            for item in samples
-            if item["phase"] == "decode"
-            and cast(float, item["span"]) >= RATE_WINDOW_SECONDS * 0.9
-        ]
-        if full:
-            stats["decode_peak_tokens_per_second"] = max(full)
-            stats["decode_final_tokens_per_second"] = full[-1]
+        for phase, prefix in (("prefill", "prompt"), ("decode", "decode")):
+            measured = readings[phase]
+            if measured:
+                peak = max(rate for rate, _ in measured)
+                stats[f"{prefix}_peak_tokens_per_second"] = round(peak, 2)
+                stats[f"{prefix}_low_tokens_per_second"] = _slowest_share(measured)
+        if readings["decode"]:
+            stats["decode_final_tokens_per_second"] = round(readings["decode"][-1][0], 2)
 
     def _take_delta(
         self,
@@ -1520,8 +1576,11 @@ class BenchmarkRunner:
             "first_token_seconds",
             "prompt_tokens",
             "prompt_tokens_per_second",
+            "prompt_low_tokens_per_second",
+            "prompt_peak_tokens_per_second",
             "generated_tokens",
             "decode_tokens_per_second",
+            "decode_low_tokens_per_second",
             "decode_peak_tokens_per_second",
             "decode_final_tokens_per_second",
             "total_seconds",

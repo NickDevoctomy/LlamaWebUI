@@ -26,6 +26,7 @@ from llamawebui.services.benchmark_runner import (
     BenchmarkRunner,
     BenchmarkRunNotFoundError,
     BenchmarkRunRegistry,
+    _slowest_share,
 )
 from llamawebui.services.profile_registry import ProfileRegistry
 from llamawebui.services.router_client import RouterModel, RouterUnavailableError
@@ -240,7 +241,11 @@ async def test_a_benchmark_times_each_step_and_writes_its_result_to_the_profile(
     # The average spans the whole run; the peak and the end come from 3 s windows.
     assert stats["decode_tokens_per_second"] == 26.0
     assert stats["decode_peak_tokens_per_second"] == 40.0
+    assert stats["decode_low_tokens_per_second"] == 20.0
     assert stats["decode_final_tokens_per_second"] == 20.0
+    # Prefill is measured batch by batch: both of its 10-token steps took 25 ms.
+    assert stats["prompt_peak_tokens_per_second"] == 400.0
+    assert stats["prompt_low_tokens_per_second"] == 400.0
 
     prefill = [sample for sample in finished.samples if sample["phase"] == "prefill"]
     decode = [sample for sample in finished.samples if sample["phase"] == "decode"]
@@ -256,6 +261,9 @@ async def test_a_benchmark_times_each_step_and_writes_its_result_to_the_profile(
     assert result is not None
     assert result["tetris"]["decode_tokens_per_second"] == 26.0  # type: ignore[index]
     assert result["tetris"]["decode_peak_tokens_per_second"] == 40.0  # type: ignore[index]
+    assert result["tetris"]["decode_low_tokens_per_second"] == 20.0  # type: ignore[index]
+    assert result["tetris"]["prompt_low_tokens_per_second"] == 400.0  # type: ignore[index]
+    assert result["tetris"]["prompt_peak_tokens_per_second"] == 400.0  # type: ignore[index]
     assert result["tetris"]["decode_final_tokens_per_second"] == 20.0  # type: ignore[index]
     assert result["tetris"]["run_id"] == record.id  # type: ignore[index]
 
@@ -760,3 +768,29 @@ def test_a_benchmark_cannot_start_while_the_router_runs(tmp_path: Path, login: L
 
     assert refused.status_code == 409
     assert refused.json()["detail"] == "stop the router before running a benchmark"
+
+
+def test_the_one_percent_low_weighs_each_speed_by_how_long_it_lasted() -> None:
+    # 99 s at 50 tok/s and 1 s at 10 tok/s: the slowest 1% of the time is that second.
+    assert _slowest_share([(50.0, 99.0), (10.0, 1.0)]) == 10.0
+    # Many short slow readings are still only their share of the time.
+    assert _slowest_share([(10.0, 0.5), (50.0, 99.5)]) == 30.0
+    assert _slowest_share([(42.0, 3.0)]) == 42.0
+    assert _slowest_share([]) is None
+    assert _slowest_share([(42.0, 0.0)]) is None
+
+
+@pytest.mark.asyncio
+async def test_prefill_without_streamed_progress_is_measured_per_request(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    client.replies = [[chunk for chunk in _chunks() if "prompt_progress" not in chunk]]
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, 256)
+    await runner.wait()
+
+    stats = runs.get(record.id).stats
+    assert stats["prompt_tokens_per_second"] == 400.0
+    assert stats["prompt_low_tokens_per_second"] == 400.0
+    assert stats["prompt_peak_tokens_per_second"] == 400.0

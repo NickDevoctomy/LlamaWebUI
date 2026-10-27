@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Check, ChevronDown, ChevronRight, Code, Copy, Download, Eye, FileText, LoaderCircle, Maximize2, Play, RotateCcw, Square, SquareCheck, SquareX, Timer, Trash2, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api, type BenchmarkRun, type BenchmarkRunDetail, type BenchmarkStage, type BenchmarkTask, type BenchmarkTool, type Profile, type RouterState, type TimelineEntry } from './api'
-import { formatRate, formatSeconds, formatWhen, reasoningLabel } from './benchmarkFormat'
+import { formatRate, formatRateValue, formatSeconds, formatWhen, phaseSpeeds, reasoningLabel, SPEED_FIGURES } from './benchmarkFormat'
 import { ContextChart, MemoryChart } from './BenchmarkCharts'
 import { Sparkline } from './Dashboard'
 import { Dialog } from './SetupPanels'
@@ -448,6 +448,19 @@ function TaskList({ run }: { run: BenchmarkRunDetail }) {
   </section>
 }
 
+const PHASES = [['prefill', 'Prefill'], ['decode', 'Decode']] as const
+
+/** One phase's 1% low, average and peak, stacked under its name, for the run list. */
+function SpeedStack({ run, phase, label }: { run: BenchmarkRun; phase: 'prefill' | 'decode'; label: string }) {
+  const speeds = phaseSpeeds(run.stats, phase)
+  // While a run is going only the current speed is known.
+  const average = speeds.average ?? run.live?.[phase]?.rate
+  return <div className="benchmark-speed">
+    <dt>{label} <span>tok/s</span></dt>
+    <dd>{SPEED_FIGURES.map((figure) => <span key={figure.key} title={figure.title}><small>{figure.label}</small>{formatRateValue(figure.key === 'average' ? average : speeds[figure.key])}</span>)}</dd>
+  </div>
+}
+
 function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpenArtifact: (path: string) => void }) {
   const offered = useQuery({ queryKey: ['benchmarks'], queryFn: api.benchmarks }).data?.tools
   const { stats } = run
@@ -459,10 +472,7 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
     ['Model load', formatSeconds(stats.load_seconds)],
     ['First token', formatSeconds(stats.first_token_seconds)],
     ['Prompt', stats.prompt_tokens != null ? `${stats.prompt_tokens.toLocaleString()} tokens` : '—'],
-    ['Prefill', formatRate(stats.prompt_tokens_per_second)],
     ['Tokens / limit', stats.generated_tokens != null ? `${stats.generated_tokens.toLocaleString()} / ${run.max_tokens?.toLocaleString() ?? 'context'}` : '—'],
-    ['Decode average', formatRate(stats.decode_tokens_per_second)],
-    ['Decode peak (3 s)', formatRate(stats.decode_peak_tokens_per_second)],
     ['Decode at end (3 s)', formatRate(stats.decode_final_tokens_per_second)],
     [context?.live ? 'Context (now)' : 'Context (most used)', context ? `${context.used.toLocaleString()} / ${context.size.toLocaleString()} (${context.percent}%)` : '—'],
     ['Reasoning', reasoningLabel(run.reasoning_level)],
@@ -478,7 +488,18 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
     {run.error && run.state !== 'cancelled' && <div className="form-error" role="alert"><AlertCircle size={15} /> {run.error}</div>}
     <div className="benchmark-detail-head"><StatePill run={run} /><OutcomeTag run={run} />{finishLabel(run) && <span className="profile-tag" title="Why generation ended">{finishLabel(run)}</span>}</div>
     <RunSteps detail={run} run={run} />
-    <dl className="benchmark-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+    <div className="benchmark-stats">
+      <table className="benchmark-speed-table">
+        <caption>Speed, tokens per second</caption>
+        <thead><tr><td />{SPEED_FIGURES.map((figure) => <th key={figure.key} scope="col" title={figure.title}>{figure.label}</th>)}</tr></thead>
+        <tbody>{PHASES.map(([phase, name]) => {
+          const speeds = phaseSpeeds(stats, phase)
+          return <tr key={phase}><th scope="row">{name}</th>{SPEED_FIGURES.map((figure) => <td key={figure.key}>{formatRateValue(speeds[figure.key])}</td>)}</tr>
+        })}</tbody>
+      </table>
+      <dl className="benchmark-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+    </div>
+    <p className="benchmark-hint speed-hint">Decode speeds are measured over 3-second windows and prefill speeds batch by batch. The 1% low is the average over the slowest 1% of that time.</p>
     {decode.length > 1 && <div className="benchmark-chart"><span>Decode speed over the run (3 s windows)</span><Sparkline ceiling={stats.decode_peak_tokens_per_second} values={decode} /></div>}
     {prefill.length > 1 && <div className="benchmark-chart"><span>Prefill speed</span><Sparkline values={prefill} /></div>}
     <ContextChart resources={run.resources ?? []} />
@@ -669,9 +690,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
           <dl className="benchmark-run-figures">
             <div><dt>Total</dt><dd>{formatSeconds(run.stats.total_seconds)}</dd></div>
             <div><dt>Load</dt><dd>{formatSeconds(run.stats.load_seconds)}</dd></div>
-            <div><dt>Prefill</dt><dd>{formatRate(run.stats.prompt_tokens_per_second ?? run.live?.prefill?.rate)}</dd></div>
-            <div><dt>Decode avg</dt><dd>{formatRate(run.stats.decode_tokens_per_second ?? run.live?.decode?.rate)}</dd></div>
-            <div><dt>Peak</dt><dd>{formatRate(run.stats.decode_peak_tokens_per_second)}</dd></div>
+            {PHASES.map(([phase, label]) => <SpeedStack key={phase} label={label} phase={phase} run={run} />)}
             <div><dt>Tokens</dt><dd>{run.stats.generated_tokens?.toLocaleString() ?? run.live?.decode?.tokens?.toLocaleString() ?? '—'}</dd></div>
             <div><dt>Context</dt><ContextFigure run={run} /></div>
           </dl>

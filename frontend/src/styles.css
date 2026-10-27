@@ -767,7 +767,12 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .benchmark-run-copy strong { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
 .benchmark-run-copy strong .profile-tag, .benchmark-run-copy strong .state-pill { height: 18px; }
 .benchmark-run-copy > span { overflow: hidden; color: var(--muted); font: 11px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-.benchmark-run-figures { margin: 0; display: grid; grid-template-columns: repeat(6, 78px) 50px; gap: 2px 10px; }
+.benchmark-run-figures { margin: 0; display: grid; grid-template-columns: repeat(2, 64px) repeat(2, 104px) 64px 50px; align-items: start; gap: 2px 14px; }
+.benchmark-speed dt span { text-transform: none; letter-spacing: 0; }
+.benchmark-speed dd { display: grid; gap: 1px; }
+.benchmark-speed dd span { display: flex; justify-content: space-between; gap: 8px; }
+.benchmark-speed dd small { color: var(--faint); font: 500 9.5px var(--font-mono); text-transform: uppercase; letter-spacing: .04em; line-height: 18px; }
+.speed-hint { margin: -6px 0 0; }
 .benchmark-run-figures dd[data-full] { color: var(--warn); }
 .benchmark-runs .state-pill { min-width: 86px; margin-right: 2px; justify-content: center; }
 .benchmark-run-title { min-width: 0; padding: 0; border: 0; color: var(--fg); background: none; font: inherit; text-align: left; cursor: pointer; }
@@ -781,7 +786,13 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .benchmark-runs .row-actions { flex: none; flex-wrap: nowrap; margin-left: auto; }
 .benchmark-detail { display: grid; gap: 16px; }
 .benchmark-detail-head { display: flex; flex-wrap: wrap; gap: 8px; }
-.benchmark-facts { margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px 18px; background: var(--surface-2); }
+.benchmark-stats { padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); display: grid; gap: 14px; background: var(--surface-2); }
+.benchmark-speed-table { width: auto; max-width: 420px; table-layout: fixed; font: 500 12.5px var(--font-mono); font-variant-numeric: tabular-nums; }
+.benchmark-speed-table caption { padding-bottom: 6px; color: var(--faint); font: 500 9.5px var(--font-mono); text-align: left; text-transform: uppercase; letter-spacing: .08em; }
+.benchmark-speed-table th, .benchmark-speed-table td { height: auto; padding: 5px 0 5px 18px; border: 0; border-top: 1px solid var(--line-soft); background: none; text-align: right; }
+.benchmark-speed-table thead th, .benchmark-speed-table thead td { border-top: 0; color: var(--faint); font: 500 9.5px var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }
+.benchmark-speed-table tbody th { padding-left: 0; color: var(--fg-2); font: 500 12px var(--font-sans); text-align: left; text-transform: none; letter-spacing: 0; }
+.benchmark-facts { margin: 0; padding-top: 12px; border-top: 1px solid var(--line-soft); display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px 18px; }
 .benchmark-chart { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 .benchmark-chart .sparkline { height: 56px; }
 .time-chart { margin: 0; display: grid; gap: 8px; color: var(--muted); font-size: 12px; }
@@ -907,7 +918,7 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 @container (max-width: 560px) {
   .benchmark-form > .compare-pick { flex-basis: 100%; }
   .benchmark-form > .compare-pick.benchmark-tokens { flex: 1 1 120px; }
-  .benchmark-run-figures { grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+  .benchmark-run-figures { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 10px 16px; }
 }
 
 /* ---------- Profile comparison ---------- */

@@ -23,7 +23,7 @@ const finished: BenchmarkRun = {
   state: 'completed',
   stage: 'done',
   error: null,
-  stats: { server_start_seconds: 2.1, load_seconds: 41.3, prompt_tokens: 30, prompt_tokens_per_second: 412.5, generated_tokens: 3001, decode_tokens_per_second: 21.37, decode_peak_tokens_per_second: 33.8, decode_final_tokens_per_second: 18.2, total_seconds: 190.2, finish_reason: 'stop' },
+  stats: { server_start_seconds: 2.1, load_seconds: 41.3, prompt_tokens: 30, prompt_tokens_per_second: 412.5, prompt_low_tokens_per_second: 380.2, prompt_peak_tokens_per_second: 451, generated_tokens: 3001, decode_tokens_per_second: 21.37, decode_low_tokens_per_second: 12.4, decode_peak_tokens_per_second: 33.8, decode_final_tokens_per_second: 18.2, total_seconds: 190.2, finish_reason: 'stop' },
   started_at: '2026-10-23T11:00:00',
   finished_at: '2026-10-23T11:03:10',
 }
@@ -537,9 +537,10 @@ describe('BenchmarksPanel', () => {
     const row = (await screen.findByText(/Tetris · qwen-24gb/)).closest('li')!
     expect(within(row).getByText('190 s')).toBeInTheDocument()
     expect(within(row).getByText('41.3 s')).toBeInTheDocument()
-    expect(within(row).getByText('413 tok/s')).toBeInTheDocument()
-    expect(within(row).getByText('21.4 tok/s')).toBeInTheDocument()
-    expect(within(row).getByText('33.8 tok/s')).toBeInTheDocument()
+    // Each phase stacks its 1% low, average and peak under one tok/s heading.
+    const figures = (label: string) => [...within(row).getByText(label).closest('div')!.querySelectorAll('dd > span')].map((item) => item.textContent)
+    expect(figures('Prefill')).toEqual(['1% low380', 'Average413', 'Peak451'])
+    expect(figures('Decode')).toEqual(['1% low12.4', 'Average21.4', 'Peak33.8'])
     expect(within(row).getByText('3,001')).toBeInTheDocument()
 
     fireEvent.click(within(row).getByRole('button', { name: 'View run Tetris on qwen-24gb' }))
@@ -547,7 +548,10 @@ describe('BenchmarksPanel', () => {
     expect(await within(dialog).findByText('<html>tetris</html>')).toBeInTheDocument()
     expect(within(dialog).getByText('Reasoning (13 characters)')).toBeInTheDocument()
     expect(within(dialog).getByText('Finished: stop')).toBeInTheDocument()
-    expect(within(dialog).getByText('Decode peak (3 s)').nextSibling).toHaveTextContent('33.8 tok/s')
+    const speeds = within(dialog).getByRole('table', { name: 'Speed, tokens per second' })
+    expect(within(speeds).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual(['1% low', 'Average', 'Peak'])
+    expect(within(speeds).getByRole('row', { name: /Prefill/ })).toHaveTextContent('Prefill380413451')
+    expect(within(speeds).getByRole('row', { name: /Decode/ })).toHaveTextContent('Decode12.421.433.8')
     expect(within(dialog).getByText('Decode at end (3 s)').nextSibling).toHaveTextContent('18.2 tok/s')
     fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' }).at(-1)!)
 
