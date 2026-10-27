@@ -192,11 +192,19 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     by_id = {item.id: item for item in recommendations}
     strix = by_id["qwen3.8-flash-next-ud-iq4-xs-strix-halo"]
     nvidia = by_id["qwen3.8-flash-next-ud-iq4-xs-nvidia-24gb"]
-    mtp = by_id["qwen3.8-flash-next-ud-iq4-xs-mtp-nvidia-24gb"]
+    assert strix.family == nvidia.id
+    assert (strix.label, strix.alias, strix.vram_gb) == (
+        "96 GB Strix Halo",
+        "qwen3.8-flash-next",
+        None,
+    )
     assert strix.model.quantization == nvidia.model.quantization == "UD-IQ4_XS"
-    assert mtp.model.draft_group == "MTP/mtp-Qwen3.8-Flash-Next-BF16"
+    assert nvidia.model.draft_group is None
     assert strix.model.draft_group == "MTP/mtp-Qwen3.8-Flash-Next-Q8_0"
-    assert mtp.alias == "qwen3.8-flash-next-mtp-24gb"
+    # The 24 GB card's expert offload and core pinning are not carried over to the APU.
+    pinning = {"n-cpu-moe", "threads-batch", "cpu-range", "cpu-range-batch", "cpu-strict"}
+    assert pinning <= {item["id"] for item in nvidia.arguments}
+    assert not pinning & {item["id"] for item in strix.arguments}
     dense = by_id["qwen3.8-27b-ud-q4-k-m-nvidia-24gb"]
     assert dense.model.quantization == "UD-Q4_K_M"
     assert dense.model.draft_group is None
@@ -234,7 +242,6 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     assert assess(nvidia, **nvidia_host).hardware_match  # type: ignore[arg-type]
     assert assess(nvidia, **nvidia_host).fit == "fits"  # type: ignore[arg-type]
     assert not assess(nvidia, **strix_host).hardware_match  # type: ignore[arg-type]
-    assert assess(mtp, **nvidia_host).hardware_match  # type: ignore[arg-type]
     assert assess(dense, **nvidia_host).fit == "fits"  # type: ignore[arg-type]
     assert assess(small, **nvidia_host).hardware_match  # type: ignore[arg-type]
     sixteen = {**nvidia_host, "discrete_vram_bytes": 16303 * 1024**2, "memory_bytes": 16 * GIB}
