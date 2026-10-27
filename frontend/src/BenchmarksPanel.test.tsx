@@ -549,6 +549,7 @@ describe('BenchmarksPanel', () => {
     fireEvent.click(within(row).getByRole('button', { name: 'View run Tetris on qwen-24gb' }))
     const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
     expect((await within(dialog).findByText('Prompt', { selector: 'dt' })).nextSibling).toHaveTextContent('30 tokens + 9,000 cached')
+    expect(within(dialog).getByText('Cache hit rate').nextSibling).toHaveTextContent('99% of 9,030 tokens')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Generate' }))
     expect(within(dialog).getByRole('list', { name: 'Generation steps' })).toHaveTextContent('30 tokens · 9,000 cached')
   })
@@ -601,6 +602,15 @@ describe('BenchmarksPanel', () => {
 
     const toggle = await screen.findByRole('button', { name: /^Generate/ })
     await waitFor(() => expect(toggle).toHaveTextContent('Generate(Compacting context (summary, 412 tokens)… 30.0 s)'))
+  })
+
+  it('counts the total time of a running benchmark up until it finishes', async () => {
+    mockApi([{ ...running, live: { ...running.live, total: 75.4 } }])
+    vi.spyOn(api, 'benchmarkRun').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
+    renderPanel()
+
+    const row = (await screen.findByRole('button', { name: /^View run Tetris/ })).closest('li')!
+    expect(within(row).getByText('Total').nextSibling).toHaveTextContent('75.4 s')
   })
 
   it('says what a running benchmark is doing next to Generate on the page', async () => {
@@ -659,6 +669,8 @@ describe('BenchmarksPanel', () => {
     expect(within(speeds).getByRole('row', { name: /Prefill/ })).toHaveTextContent('Prefill380413451')
     expect(within(speeds).getByRole('row', { name: /Decode/ })).toHaveTextContent('Decode12.421.433.8')
     expect(within(dialog).getByText('Decode at end (3 s)').nextSibling).toHaveTextContent('18.2 tok/s')
+    // A run that never reported the cache has no hit rate to show.
+    expect(within(dialog).queryByText('Cache hit rate')).not.toBeInTheDocument()
     fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' }).at(-1)!)
 
     fireEvent.click(within(row).getByRole('button', { name: 'Delete run Tetris on qwen-24gb' }))

@@ -1859,6 +1859,8 @@ def create_app(
                 "compaction": progress.get("compaction"),
                 # Lets open timeline steps show how long they have been going.
                 "elapsed": runner.generation_elapsed(record.id),
+                # Seconds since the run started, for its total while it runs.
+                "total": runner.total_elapsed(record.id),
             }
         if detail:
             payload["prompt"] = record.prompt

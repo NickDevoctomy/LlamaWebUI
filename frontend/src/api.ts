@@ -490,6 +490,8 @@ export interface BenchmarkRun {
     compaction?: { tokens: number } | null
     /** Seconds since the prompt was sent, on the same clock as the run's timeline. */
     elapsed?: number | null
+    /** Seconds since the run started, for its total so far. */
+    total?: number | null
   }
 }
 

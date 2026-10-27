@@ -795,14 +795,16 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .benchmark-speed-table thead th, .benchmark-speed-table thead td { border-top: 0; color: var(--faint); font: 500 9.5px var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }
 .benchmark-speed-table tbody th { padding-left: 0; color: var(--fg-2); font: 500 12px var(--font-sans); text-align: left; text-transform: none; letter-spacing: 0; }
 .benchmark-facts { margin: 0; padding-top: 12px; border-top: 1px solid var(--line-soft); display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px 18px; }
-.benchmark-chart { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
-.benchmark-chart .sparkline { height: 56px; }
 .time-chart { margin: 0; display: grid; gap: 8px; color: var(--muted); font-size: 12px; }
 .time-chart [data-series='context'] { --series: var(--data); }
 .time-chart [data-series='vram'] { --series: var(--chart-vram); }
 .time-chart [data-series='ram'] { --series: var(--chart-ram); }
 .time-chart [data-series='vram-total'] { --series: var(--chart-vram-total); }
 .time-chart [data-series='ram-total'] { --series: var(--chart-ram-total); }
+.time-chart [data-series='decode'] { --series: var(--chart-vram); }
+.time-chart [data-series='prefill'] { --series: var(--chart-ram); }
+.time-chart-reference { stroke: var(--series); stroke-width: 1.5; stroke-dasharray: 5 4; opacity: .8; }
+.time-chart-legend li[data-reference] i { height: 0; border-top: 2px dashed var(--series); border-radius: 0; background: none; }
 .time-chart-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
 .time-chart-legend { margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; list-style: none; }
 .time-chart-legend li { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
@@ -815,6 +817,8 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .time-chart-plot svg { width: 100%; height: 100%; display: block; overflow: visible; }
 .time-chart-grid { stroke: var(--line); stroke-width: 1; }
 .time-chart-line { fill: none; stroke: var(--series); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+/* A reading with none beside it, such as one short prompt's prefill, shows as a dot. */
+.time-chart-line[data-point] { stroke-width: 6; }
 .time-chart-area { fill: color-mix(in srgb, var(--series) 16%, transparent); stroke: none; }
 .time-chart-time { grid-column: 2; margin-top: 4px; display: flex; justify-content: space-between; color: var(--faint); font: 10.5px var(--font-mono); }
 .time-chart-cursor { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line-strong); pointer-events: none; }

@@ -1128,6 +1128,11 @@ class BenchmarkRunner:
         origin = self._progress.get("generation_origin") if run_id == self._active else None
         return round(self._clock() - origin, 2) if isinstance(origin, float) else None
 
+    def total_elapsed(self, run_id: str) -> float | None:
+        """Seconds since the running benchmark started, for its total while it runs."""
+        origin = self._progress.get("run_origin") if run_id == self._active else None
+        return round(self._clock() - origin, 2) if isinstance(origin, float) else None
+
     def progress(self, run_id: str) -> dict[str, object] | None:
         return dict(self._progress) if run_id == self._active else None
 
@@ -1241,6 +1246,7 @@ class BenchmarkRunner:
         self, record: BenchmarkRunRecord, prompt: str, max_rounds: int = MAX_TOOL_ROUNDS
     ) -> None:
         started = self._clock()
+        self._progress["run_origin"] = started
         stats = self._stats()
         state, error = "completed", None
         log_mark = self._log_mark()

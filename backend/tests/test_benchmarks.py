@@ -506,6 +506,10 @@ async def test_a_cancelled_benchmark_keeps_its_partial_output(tmp_path: Path) ->
     elapsed = runner.generation_elapsed(record.id)
     assert elapsed is not None and elapsed >= 0
     assert runner.generation_elapsed("another-run") is None
+    # The total so far counts from the start, before the prompt was sent.
+    total = runner.total_elapsed(record.id)
+    assert total is not None and total >= elapsed
+    assert runner.total_elapsed("another-run") is None
     with pytest.raises(BenchmarkBusyError, match="already running"):
         runner.start(profile, BENCHMARK, 256)
     with pytest.raises(BenchmarkBusyError, match="cancel the benchmark"):

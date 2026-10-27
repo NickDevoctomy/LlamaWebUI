@@ -3,8 +3,7 @@ import { AlertCircle, Check, ChevronDown, ChevronRight, Code, Copy, Download, Ey
 import { useEffect, useRef, useState } from 'react'
 import { api, type BenchmarkRun, type BenchmarkRunDetail, type BenchmarkStage, type BenchmarkTask, type BenchmarkTool, type Profile, type RouterState, type TimelineEntry } from './api'
 import { formatRate, formatRateValue, formatSeconds, formatWhen, phaseSpeeds, reasoningLabel, SPEED_FIGURES } from './benchmarkFormat'
-import { ContextChart, MemoryChart } from './BenchmarkCharts'
-import { Sparkline } from './Dashboard'
+import { ContextChart, MemoryChart, SpeedChart } from './BenchmarkCharts'
 import { Dialog } from './SetupPanels'
 
 const STEPS: { stage: BenchmarkStage; label: string }[] = [
@@ -87,6 +86,20 @@ function compactionsLabel(run: BenchmarkRun) {
   if (!compactions) return 'None'
   const kinds = [pruned ? `${pruned} pruned` : '', summarised ? `${summarised} summarised` : ''].filter(Boolean).join(', ')
   return kinds ? `${compactions} (${kinds})` : String(compactions)
+}
+
+/**
+ * The share of prompt tokens llama.cpp reused from its cache instead of reading again,
+ * such as "93% of 355,783 tokens"; undefined for runs that never reported the cache.
+ */
+function cacheHitRate(stats: BenchmarkRun['stats']) {
+  const cached = stats.prompt_cached_tokens
+  if (cached == null || stats.prompt_tokens == null) return undefined
+  const total = cached + stats.prompt_tokens
+  if (!total) return undefined
+  // Rounded down, so 100% means every token came from the cache.
+  const share = cached / total * 100
+  return `${share > 0 && share < 1 ? '<1' : Math.floor(share)}% of ${total.toLocaleString()} tokens`
 }
 
 /** How the agent's last test run went, such as "12 passed, 1 failed (last of 3 runs)". */
@@ -503,21 +516,20 @@ function SpeedStack({ run, phase, label }: { run: BenchmarkRun; phase: 'prefill'
 function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpenArtifact: (path: string) => void }) {
   const offered = useQuery({ queryKey: ['benchmarks'], queryFn: api.benchmarks }).data?.tools
   const { stats } = run
-  const decode = run.samples.filter((sample) => sample.phase === 'decode').map((sample) => sample.rate)
-  const prefill = run.samples.filter((sample) => sample.phase === 'prefill').map((sample) => sample.rate)
   const context = contextUse(run)
   const facts: [string, string][] = [
     ['Server start', formatSeconds(stats.server_start_seconds)],
     ['Model load', formatSeconds(stats.load_seconds)],
     ['First token', formatSeconds(stats.first_token_seconds)],
     ['Prompt', stats.prompt_tokens != null ? `${stats.prompt_tokens.toLocaleString()} tokens${stats.prompt_cached_tokens ? ` + ${stats.prompt_cached_tokens.toLocaleString()} cached` : ''}` : '—'],
+    ...(cacheHitRate(stats) ? [['Cache hit rate', cacheHitRate(stats)!] as [string, string]] : []),
     ['Tokens / limit', stats.generated_tokens != null ? `${stats.generated_tokens.toLocaleString()} / ${run.max_tokens?.toLocaleString() ?? 'context'}` : '—'],
     ['Decode at end (3 s)', formatRate(stats.decode_final_tokens_per_second)],
     [context?.live ? 'Context (now)' : 'Context (most used)', context ? `${context.used.toLocaleString()} / ${context.size.toLocaleString()} (${context.percent}%)` : '—'],
     ['Reasoning', reasoningLabel(run.reasoning_level)],
     ...(run.verbose_log ? [['Log', 'Verbose'] as [string, string]] : []),
     ...(run.typescript_strict != null ? [['TypeScript', run.typescript_strict ? 'Strict checks' : 'Non-strict checks'] as [string, string]] : []),
-    ['Total', formatSeconds(stats.total_seconds)],
+    ['Total', formatSeconds(stats.total_seconds ?? run.live?.total)],
     ...(run.tools && run.tool_names ? [['Tools', offered && run.tool_names.length === offered.length ? 'All' : run.tool_names.join(', ')] as [string, string]] : []),
     ...(run.tool_names?.includes(TEST_TOOL) ? [['Tests', testsLabel(run)] as [string, string]] : []),
     ...(compactionsLabel(run) != null ? [['Compactions', compactionsLabel(run)] as [string, string]] : []),
@@ -541,8 +553,7 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
       <dl className="benchmark-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
     </div>
     <p className="benchmark-hint speed-hint">Decode speeds are measured over 3-second windows and prefill speeds batch by batch. The 1% low and 1% high are the averages over the slowest and fastest 1% of that time. Prompt tokens reused from llama.cpp's cache are counted apart, as reading them takes no time.</p>
-    {decode.length > 1 && <div className="benchmark-chart"><span>Decode speed over the run (3 s windows)</span><Sparkline ceiling={phaseSpeeds(stats, 'decode').high} values={decode} /></div>}
-    {prefill.length > 1 && <div className="benchmark-chart"><span>Prefill speed</span><Sparkline values={prefill} /></div>}
+    <SpeedChart run={run} />
     <ContextChart resources={run.resources ?? []} />
     <MemoryChart resources={run.resources ?? []} />
     <TaskList run={run} />
@@ -731,7 +742,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
             <span>{formatWhen(run.started_at)}{run.system_prompt_id ? ` · ${run.system_prompt_id}` : ''}{run.reasoning_level ? ` · reasoning ${reasoningLabel(run.reasoning_level).toLowerCase()}` : ''}{run.stats.files_written ? ` · ${run.stats.files_written} ${run.stats.files_written === 1 ? 'file' : 'files'}` : ''}{run.stats.compactions ? ` · ${run.stats.compactions} ${run.stats.compactions === 1 ? 'compaction' : 'compactions'}` : ''}{run.error && run.state === 'failed' ? ` · ${run.error}` : ''}</span>
           </span>
           <dl className="benchmark-run-figures">
-            <div><dt>Total</dt><dd>{formatSeconds(run.stats.total_seconds)}</dd></div>
+            <div><dt>Total</dt><dd>{formatSeconds(run.stats.total_seconds ?? run.live?.total)}</dd></div>
             <div><dt>Load</dt><dd>{formatSeconds(run.stats.load_seconds)}</dd></div>
             {PHASES.map(([phase, label]) => <SpeedStack key={phase} label={label} phase={phase} run={run} />)}
             <div><dt>Tokens</dt><dd>{run.stats.generated_tokens?.toLocaleString() ?? run.live?.decode?.tokens?.toLocaleString() ?? '—'}</dd></div>
