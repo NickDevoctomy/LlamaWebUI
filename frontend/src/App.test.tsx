@@ -763,7 +763,7 @@ describe('App', () => {
     const base = { runtime_id: 'runtime-1', model_path: 'C:\\models\\qwen.gguf', configuration: {}, enabled: true, validation_state: 'available' }
     const profiles = [
       { ...base, id: 'fresh', alias: 'qwen-24gb', version: 1, recommendation: { id: 'rec', title: 'Qwen on 24 GB', latest_version: 2, modified: false, upgradable: true } },
-      { ...base, id: 'tuned', alias: 'qwen-tuned', version: 1, recommendation: { id: 'rec2', title: 'Qwen tuned', latest_version: 2, modified: true, upgradable: false } },
+      { ...base, id: 'tuned', alias: 'qwen-tuned', version: 1, recommendation: { id: 'rec2', title: 'Qwen tuned', latest_version: 2, modified: true, upgradable: false, baseline: { version: 1, arguments: [] }, latest: null } },
       { ...base, id: 'custom', alias: 'qwen-custom', version: 3, recommendation: null },
     ]
     const fetchMock = renderApp({ runtimeList: [runtime], profileList: profiles, onRequest: (path, init) => {
@@ -773,8 +773,11 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
 
     expect(await screen.findByText('Recommended v1', { selector: '[title="Added from the recommendation Qwen on 24 GB"]' })).toBeInTheDocument()
-    expect(screen.getByText('Modified · v2 available')).toBeInTheDocument()
     expect(screen.getByText('v3')).toBeInTheDocument()
+    // The modified tag sets up the comparison with the settings the profile was added with.
+    fireEvent.click(screen.getByRole('button', { name: 'Modified · v2 available' }))
+    expect(screen.getByRole('combobox', { name: 'Left profile' })).toHaveValue('tuned')
+    expect(screen.getByRole('combobox', { name: 'Right profile' })).toHaveValue('recommended:tuned:1')
     expect(screen.getAllByRole('button', { name: /Upgrade to v2/ })).toHaveLength(1)
 
     fireEvent.click(screen.getByRole('button', { name: /Upgrade to v2/ }))

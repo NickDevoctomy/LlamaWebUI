@@ -518,6 +518,10 @@ export interface ProfileRecommendation {
   /** Its settings changed since it was added, so it cannot be upgraded. */
   modified: boolean
   upgradable: boolean
+  /** The arguments it was added or last upgraded with, carrying this profile's file locations. */
+  baseline?: { version: number; arguments: StoredArgument[] } | null
+  /** The bundled version's settings, with this profile's file locations; null once it is no longer bundled. */
+  latest?: { version: number; arguments: StoredArgument[]; exclusive: boolean; description: string | null } | null
 }
 
 export interface Recommendation {

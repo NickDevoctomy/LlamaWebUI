@@ -1,13 +1,14 @@
 {
   "format": "llamawebui.recommendation.v1",
-  "version": 1,
+  "version": 2,
   "id": "qwen3.8-flash-next-ud-iq4-xs-strix-halo",
-  "title": "Qwen3.8 Flash Next, 262K context",
-  "summary": "Full 262,144-token context on a 96 GB unified-memory APU. The KV cache is quantized to q4_0 with flash attention so the long context fits beside the weights, and per-layer token embeddings stay in system memory.",
+  "title": "Qwen3.8 Flash Next with MTP, 262K context",
+  "summary": "Full 262,144-token context on a 96 GB unified-memory APU, with speculative decoding from the model's MTP head. The KV cache is quantized to q4_0 with flash attention so the long context fits beside the weights, and per-layer token embeddings stay in system memory. Downloads the MTP draft model alongside the main model.",
   "model": {
     "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
     "quantization": "UD-IQ4_XS",
-    "revision": null
+    "revision": null,
+    "draft_group": "MTP/mtp-Qwen3.8-Flash-Next-Q8_0"
   },
   "tested_on": {
     "label": "AMD Ryzen AI Max+ 395 (Strix Halo), 96 GB unified memory",
@@ -23,7 +24,7 @@
   },
   "profile": {
     "alias": "qwen3.8-flash-next",
-    "description": "Qwen3.8 Flash Next for a 96 GB Strix Halo APU. Full 262K context with a q4_0 KV cache and flash attention, with per-layer token embeddings kept in system memory. Uses almost all unified memory, so it runs on its own.",
+    "description": "Qwen3.8 Flash Next for a 96 GB Strix Halo APU, with MTP speculative decoding. Full 262K context with a q4_0 KV cache and flash attention, with per-layer token embeddings kept in system memory. Uses almost all unified memory, so it runs on its own.",
     "exclusive": true,
     "arguments": [
       { "id": "reasoning-preserve", "value": false },
@@ -39,7 +40,11 @@
       { "id": "cache-type-v", "value": "q4_0" },
       { "id": "threads", "value": 24 },
       { "id": "batch-size", "value": 1024 },
-      { "id": "ubatch-size", "value": 1024 }
+      { "id": "ubatch-size", "value": 1024 },
+      { "id": "spec-type", "value": ["draft-mtp"] },
+      { "id": "spec-draft-n-max", "value": 3 },
+      { "id": "spec-draft-p-min", "value": 0.2 },
+      { "id": "parallel", "value": 1 }
     ]
   }
 }

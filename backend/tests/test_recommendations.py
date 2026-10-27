@@ -195,6 +195,7 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     mtp = by_id["qwen3.8-flash-next-ud-iq4-xs-mtp-nvidia-24gb"]
     assert strix.model.quantization == nvidia.model.quantization == "UD-IQ4_XS"
     assert mtp.model.draft_group == "MTP/mtp-Qwen3.8-Flash-Next-BF16"
+    assert strix.model.draft_group == "MTP/mtp-Qwen3.8-Flash-Next-Q8_0"
     assert mtp.alias == "qwen3.8-flash-next-mtp-24gb"
     dense = by_id["qwen3.8-27b-ud-q4-k-m-nvidia-24gb"]
     assert dense.model.quantization == "UD-Q4_K_M"
@@ -205,9 +206,16 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     assert small.version == dense.version
     assert (small.label, small.alias, small.vram_gb) == ("16 GB VRAM", "qwen3.8-27b-16gb", 16)
     assert small.model.group == "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp"
-    # Only the context differs from the base settings.
+    # The context is smaller, and the 24 GB tuning of batches, threads and drafting is not
+    # carried over to a card it was not measured on.
     assert [item for item in small.arguments if item not in dense.arguments] == [
-        {"id": "ctx-size", "value": 98304}
+        {"id": "ctx-size", "value": 98304},
+        {"id": "batch-size", "value": 512},
+        {"id": "ubatch-size", "value": 256},
+        {"id": "threads", "value": 8},
+        {"id": "threads-batch", "value": 8},
+        {"id": "spec-draft-n-max", "value": 8},
+        {"id": "spec-draft-p-min", "value": 0},
     ]
     nvidia_host = {
         "cpu": "Intel(R) Core(TM) i7-14700F",
@@ -670,6 +678,13 @@ def test_an_unchanged_recommended_profile_upgrades_and_keeps_its_place(
         "latest_version": 1,
         "modified": False,
         "upgradable": False,
+        "baseline": {"version": 1, "arguments": [{"id": "ctx-size", "value": 262144}]},
+        "latest": {
+            "version": 1,
+            "arguments": [{"id": "ctx-size", "value": 262144}],
+            "exclusive": True,
+            "description": "Long context for a unified-memory APU.",
+        },
     }
     assert too_early.status_code == 409
     assert too_early.json()["detail"] == "qwen-recommended is already at version 1"
@@ -719,6 +734,14 @@ def test_a_changed_recommended_profile_keeps_its_version_and_cannot_upgrade(
         refused = client.post(f"/api/profiles/{added['id']}/upgrade")
 
     assert listed["recommendation"]["upgradable"] is False
+    # Both what it was added with and the newer version are there to compare against.
+    assert listed["recommendation"]["baseline"] == {
+        "version": 1,
+        "arguments": [{"id": "ctx-size", "value": 262144}],
+    }
+    assert listed["recommendation"]["latest"]["version"] == 2
+    assert listed["recommendation"]["latest"]["arguments"] == [{"id": "ctx-size", "value": 131072}]
+    assert listed["recommendation"]["latest"]["description"] == "Shorter context, faster prompts."
     assert refused.status_code == 409
     assert "was changed after it was added" in refused.json()["detail"]
 
@@ -929,6 +952,13 @@ def test_a_draft_model_is_downloaded_and_the_profile_waits_for_both_files(
     assert listed["draft_download"]["state"] == "completed"
     assert listed["matches"] == {runtime_id: [profiles[0]["id"]]}
     assert profiles[0]["recommendation"]["modified"] is False
+    # The recommended settings carry this machine's draft path, so it never shows as a change.
+    draft = next(
+        item for item in profiles[0]["configuration"]["arguments"]
+        if item.get("id") == "spec-draft-model"
+    )
+    assert draft in profiles[0]["recommendation"]["baseline"]["arguments"]
+    assert draft in profiles[0]["recommendation"]["latest"]["arguments"]
 
 
 def test_a_missing_draft_model_group_is_reported(tmp_path: Path, login: Login) -> None:

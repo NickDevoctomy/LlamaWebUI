@@ -406,6 +406,9 @@ td.mono { font-size: 12px; }
 .record-copy .record-title .recommended-tag { border-color: var(--accent-line); color: var(--accent-ink); background: var(--accent-wash); }
 .record-copy .record-title .hash-tag { text-transform: none; }
 .record-copy .record-title .warning-tag { border-color: var(--warn-line); color: var(--warn); background: var(--warn-bg); }
+.tag-button { cursor: pointer; }
+.tag-button:hover { border-color: currentColor; text-decoration: underline; text-underline-offset: 2px; }
+.tag-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .record-copy .record-description { display: -webkit-box; color: var(--fg-2); font: 12.5px/1.45 var(--font-sans); white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .record-meta { min-width: 0; display: grid; gap: 3px; }
 .record-meta small { color: var(--faint); font: 500 9.5px var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }

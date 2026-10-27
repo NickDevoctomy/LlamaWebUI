@@ -33,7 +33,7 @@ import {
 } from './argumentCatalog'
 import { LaunchPreview, ProfileArgumentEditor } from './ProfileArgumentEditor'
 import { BenchmarkSummary } from './benchmarkFormat'
-import { ProfileCompare } from './ProfileCompare'
+import { ProfileCompare, recommendedReferences, type CompareFocus } from './ProfileCompare'
 
 function optionalNumber(value: string) {
   return value === '' ? undefined : Number(value)
@@ -58,14 +58,21 @@ function formatAssetSize(size: number) {
 }
 
 /** The profile's version, and how it stands against the recommendation it came from. */
-function ProfileVersionTags({ profile }: { profile: Profile }) {
+function ProfileVersionTags({ profile, onCompare }: { profile: Profile; onCompare: (focus: Omit<CompareFocus, 'nonce'>) => void }) {
   const version = profile.version ?? 1
   const recommendation = profile.recommendation
   if (!recommendation) return <span className="profile-tag" title="Profile version">v{version}</span>
   const newer = recommendation.latest_version != null && recommendation.latest_version > version
+  const label = newer ? `Modified · v${recommendation.latest_version} available` : 'Modified'
+  const title = newer ? `Version ${recommendation.latest_version} is available, but these settings were changed after the profile was added, so it cannot be upgraded automatically.` : 'These settings were changed after the profile was added, so future versions of the recommendation cannot be applied automatically.'
+  // The settings it was added with are what "modified" is measured against.
+  const references = recommendedReferences(profile)
+  const reference = references.find((item) => item.version === version) ?? references.at(-1)
   return <>
     <span className="profile-tag recommended-tag" title={`Added from the recommendation ${recommendation.title ?? recommendation.id}`}>Recommended v{version}</span>
-    {recommendation.modified && <span className="profile-tag warning-tag" title={newer ? `Version ${recommendation.latest_version} is available, but these settings were changed after the profile was added, so it cannot be upgraded automatically.` : 'These settings were changed after the profile was added, so future versions of the recommendation cannot be applied automatically.'}>{newer ? `Modified · v${recommendation.latest_version} available` : 'Modified'}</span>}
+    {recommendation.modified && (reference
+      ? <button className="profile-tag warning-tag tag-button" onClick={() => onCompare({ leftId: profile.id, rightId: reference.id })} title={`${title} Select to compare with the recommended settings.`} type="button">{label}</button>
+      : <span className="profile-tag warning-tag" title={title}>{label}</span>)}
   </>
 }
 
@@ -379,6 +386,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
   const [command, setCommand] = useState<{ alias: string; value: string }>()
   const [actionError, setActionError] = useState('')
   const [actionPending, setActionPending] = useState<string>()
+  const [compareFocus, setCompareFocus] = useState<CompareFocus>()
   const queryClient = useQueryClient()
   const runtime = runtimes.find((item) => item.id === runtimeId)
   const supports = (option: string) => runtime?.options.includes(option) ?? false
@@ -687,7 +695,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
         {profiles.length ? <div className="record-list">{profiles.map((profile) => (
           <article className="record-row" key={profile.id}>
             <span className="record-icon"><FileCog size={18} /></span>
-            <div className="record-copy"><span className="record-title"><button className="record-link" onClick={() => editProfile(profile)} type="button"><strong>{profile.alias}</strong></button><ProfileVersionTags profile={profile} />{profile.exclusive && <span className="profile-tag" title="Nothing else can be loaded beside this profile">Exclusive</span>}<ProfileHashTags profile={profile} profiles={profiles} /></span>{profile.description && <span className="record-description">{profile.description}</span>}{Object.entries(profile.benchmark_results ?? {}).map(([id, result]) => <span className="record-benchmark" key={id}><BenchmarkSummary result={result} /></span>)}<span>{profile.model_path}</span></div>
+            <div className="record-copy"><span className="record-title"><button className="record-link" onClick={() => editProfile(profile)} type="button"><strong>{profile.alias}</strong></button><ProfileVersionTags onCompare={(focus) => setCompareFocus((current) => ({ ...focus, nonce: (current?.nonce ?? 0) + 1 }))} profile={profile} />{profile.exclusive && <span className="profile-tag" title="Nothing else can be loaded beside this profile">Exclusive</span>}<ProfileHashTags profile={profile} profiles={profiles} /></span>{profile.description && <span className="record-description">{profile.description}</span>}{Object.entries(profile.benchmark_results ?? {}).map(([id, result]) => <span className="record-benchmark" key={id}><BenchmarkSummary result={result} /></span>)}<span>{profile.model_path}</span></div>
             <div className="record-meta wide"><small>Runtime</small><span>{runtimes.find((item) => item.id === profile.runtime_id)?.name ?? 'Missing runtime'}</span></div>
             {profile.validation_state === 'pending' ? <span className="state-pill downloading" title={profile.auto_enable ? 'Model is downloading. The profile switches on by itself when it finishes.' : 'Model is downloading.'}>{profile.download?.total_bytes ? `Downloading ${Math.min(100, Math.round(profile.download.completed_bytes / profile.download.total_bytes * 100))}%` : 'Downloading'}</span> : profile.validation_state === 'broken' ? <button className="state-pill error" disabled={running || !profile.source_download} onClick={() => setRepairing(profile)} title={profile.source_download ? 'Repair missing model' : 'Model file is missing'} type="button">Broken</button> : <div className="profile-state">
               {profile.recommendation?.upgradable && <button className="button primary compact" disabled={running || upgrade.isPending} onClick={() => upgrade.mutate(profile)} title={running ? 'Stop the router to upgrade a profile' : `Replace these settings with version ${profile.recommendation.latest_version} of the recommendation. The alias, model location and enabled state are kept.`} type="button">{upgrade.isPending && upgrade.variables?.id === profile.id ? <LoaderCircle className="spin" size={14} /> : <CircleArrowUp size={14} />} Upgrade to v{profile.recommendation.latest_version}</button>}
@@ -700,7 +708,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
           </article>
         ))}</div> : <div className="empty"><FileCog size={28} /><strong>No profiles configured</strong><span>{runtimes.length ? 'Create a profile for a local GGUF model.' : 'Register a runtime before creating a model profile.'}</span>{runtimes.length > 0 && <button className="button primary" onClick={() => openCreate()} type="button"><Plus size={15} /> Create profile</button>}</div>}
       </section>
-      <ProfileCompare profiles={profiles} running={running} runtimes={runtimes} />
+      <ProfileCompare focus={compareFocus} profiles={profiles} running={running} runtimes={runtimes} />
       {open && <Dialog title={editing ? 'Edit model profile' : 'Create model profile'} description="Identity, catalog-driven llama.cpp arguments, and a launch preview." onClose={closeEditor} wide>
         <form onSubmit={submit}>
           <div className="segmented" role="tablist" aria-label="Profile settings">
