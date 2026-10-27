@@ -196,10 +196,11 @@ def test_runs_show_their_settings_and_compare_with_a_baseline(tmp_path: Path, lo
     baseline = json.loads(scored.text)["baseline"]
     assert baseline["baseline_run_id"] == base
     assert baseline["settings_changes"] == [{"argument": "ctx-size", "before": 8192, "after": 4096}]
-    assert baseline["warnings"] == []
+    # Token counts vary from run to run, so they are not compared.
+    assert set(baseline) == {"baseline_run_id", "baseline_profile", "settings_changes", "metrics"}
     decode = next(item for item in baseline["metrics"] if item["metric"] == "decode")
     assert (decode["change_percent"], decode["better"]) == (5.0, True)
-    assert noisy["baseline"]["warnings"][0].startswith("generated tokens differ (11,000 vs 80,000)")
+    assert "warnings" not in noisy["baseline"]
     # The conversation's first run compares with the latest comparable run before it.
     assert first["baseline"]["baseline_run_id"] == before
     assert lonely["baseline"] is None

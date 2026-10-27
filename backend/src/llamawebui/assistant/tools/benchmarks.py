@@ -390,15 +390,6 @@ def evaluation(brief: Brief, record: BenchmarkRunRecord) -> dict[str, object]:
 
 # Lower is better for these; higher for the rest.
 _LOWER_IS_BETTER = frozenset({"load", "peak RAM", "peak VRAM"})
-# How much a run's workload may differ from its baseline's before speeds stop comparing.
-_WORKLOAD_TOLERANCE = 0.25
-_WORKLOAD = (
-    ("prompt_tokens", "prompt tokens"),
-    ("generated_tokens", "generated tokens"),
-    ("context_peak", "peak context"),
-)
-
-
 def _baseline(context: ToolContext, record: BenchmarkRunRecord) -> BenchmarkRunRecord | None:
     """The run to compare with: this conversation's first comparable run, else the latest
     comparable one before it. Comparable means completed, earlier, and the same benchmark
@@ -442,7 +433,11 @@ def _figures(record: BenchmarkRunRecord) -> dict[str, float | None]:
 
 
 def comparison(baseline: BenchmarkRunRecord, record: BenchmarkRunRecord) -> dict[str, object]:
-    """How a run differs from its baseline: settings, figures and the work each did."""
+    """How a run differs from its baseline: the settings and each figure.
+
+    How many tokens a run reads and writes varies a lot between runs of the same benchmark,
+    so it is not compared: speed and time to finish are what count.
+    """
     before, after = _figures(baseline), _figures(record)
     metrics: list[dict[str, object]] = []
     for label, old in before.items():
@@ -460,24 +455,6 @@ def comparison(baseline: BenchmarkRunRecord, record: BenchmarkRunRecord) -> dict
                 "better": better,
             }
         )
-    old_stats, new_stats = baseline.stats or {}, record.stats or {}
-    workload = {
-        label: {"baseline": old_stats.get(key), "run": new_stats.get(key)}
-        for key, label in _WORKLOAD
-    }
-    warnings = []
-    for label, pair in workload.items():
-        old_value, new_value = pair["baseline"], pair["run"]
-        if (
-            isinstance(old_value, int | float)
-            and isinstance(new_value, int | float)
-            and old_value
-            and abs(new_value - old_value) / old_value > _WORKLOAD_TOLERANCE
-        ):
-            warnings.append(
-                f"{label} differ ({old_value:,} vs {new_value:,}), so speed differences may "
-                "come from the work the model chose to do rather than the settings"
-            )
     return {
         "baseline_run_id": baseline.id,
         "baseline_profile": baseline.profile_alias,
@@ -487,8 +464,6 @@ def comparison(baseline: BenchmarkRunRecord, record: BenchmarkRunRecord) -> dict
             else None
         ),
         "metrics": metrics,
-        "workload": workload,
-        "warnings": warnings,
     }
 
 
@@ -627,9 +602,9 @@ BENCHMARK_TOOLS = (
     Tool(
         "evaluate_run",
         "Score a completed run against the brief's targets, in priority order, with the gap "
-        "to each target, and compare it with a baseline run: the settings that differ, the "
-        "change in each figure, and a warning when the two runs did very different amounts "
-        "of work. The baseline defaults to this conversation's first comparable run.",
+        "to each target, and compare it with a baseline run: the settings that differ and the "
+        "change in each figure. The baseline defaults to this conversation's first comparable "
+        "run.",
         object_schema(
             {"run_id": {"type": "string"}, "baseline_run_id": {"type": "string"}}, ["run_id"]
         ),
