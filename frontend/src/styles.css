@@ -742,6 +742,8 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .generation-timeline li[data-kind='tool_call'] { --kind: var(--accent-line); }
 .generation-timeline li[data-kind='tool'] { --kind: var(--data); }
 .generation-timeline li[data-kind='tool'][data-ok='false'] { --kind: var(--bad-solid); }
+.generation-timeline li[data-kind='compacting'] { --kind: var(--warn-solid); }
+.generation-timeline li[data-kind='compacting'][data-ok='false'] { --kind: var(--bad-solid); }
 .generation-timeline summary, .timeline-row { min-height: 30px; padding: 5px 10px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 12px; color: var(--fg); font-size: 12.5px; }
 .generation-timeline summary { cursor: pointer; list-style: none; }
 .generation-timeline summary::-webkit-details-marker { display: none; }

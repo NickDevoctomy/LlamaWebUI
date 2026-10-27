@@ -60,7 +60,7 @@ function formatDuration(entry: TimelineEntry, elapsed?: number | null) {
 function currentActivity(run: BenchmarkRunDetail) {
   const entry = run.state === 'running' ? run.timeline?.at(-1) : undefined
   if (!entry || entry.end != null) return undefined
-  const writing = entry.kind === 'tool_call' ? liveToolCall(run) : ''
+  const writing = entry.kind === 'tool_call' ? liveToolCall(run) : entry.kind === 'compacting' ? liveSummary(run) : ''
   const doing = `${activityName(entry)}${writing ? ` (${writing})` : ''}`
   const soFar = formatDuration(entry, run.live?.elapsed)
   return soFar ? `${doing}… ${soFar}` : `${doing}…`
@@ -73,13 +73,37 @@ function liveToolCall(run: BenchmarkRunDetail) {
   return [call.name, formatSize(call.bytes)].filter(Boolean).join(', ')
 }
 
+/** The summary being written while the context is compacted, such as "summary, 812 tokens". */
+function liveSummary(run: BenchmarkRunDetail) {
+  const tokens = run.live?.compaction?.tokens
+  return tokens ? `summary, ${tokens.toLocaleString()} ${tokens === 1 ? 'token' : 'tokens'}` : ''
+}
+
+/** How many times a run compacted its context, or Off; null for a run without tools. */
+function compactionsLabel(run: BenchmarkRun) {
+  if (!run.tools) return null
+  if (!run.compact_context) return 'Off'
+  const { compactions = 0, compactions_pruned: pruned = 0, compactions_summarised: summarised = 0 } = run.stats
+  if (!compactions) return 'None'
+  const kinds = [pruned ? `${pruned} pruned` : '', summarised ? `${summarised} summarised` : ''].filter(Boolean).join(', ')
+  return kinds ? `${compactions} (${kinds})` : String(compactions)
+}
+
+/** How the agent's last test run went, such as "12 passed, 1 failed (last of 3 runs)". */
+function testsLabel(run: BenchmarkRun) {
+  const { test_runs: runs, tests_passed: passed = 0, tests_failed: failed = 0 } = run.stats
+  if (!runs) return 'Never run'
+  const result = failed ? `${passed} passed, ${failed} failed` : `${passed} passed`
+  return runs === 1 ? result : `${result} (last of ${runs} runs)`
+}
+
 /** Why generation ended, in words; the token limit and the context are told apart. */
 function finishLabel(run: BenchmarkRun) {
   switch (run.stats.finish_reason) {
     case undefined: return undefined
     case 'length': return run.max_tokens != null ? 'Hit the token limit' : 'Ran out of context'
     case 'context': return 'Ran out of context'
-    case 'tool_round_limit': return 'Hit the tool round limit'
+    case 'tool_round_limit': return `Hit the tool round limit${run.stats.round_limit ? ` (${run.stats.round_limit})` : ''}`
     case 'finish_job': return 'Agent called finish_job'
     case 'task_complete': return 'Agent called task_complete'
     default: return `Finished: ${run.stats.finish_reason}`
@@ -100,6 +124,7 @@ function activityName(entry: TimelineEntry) {
     case 'answer': return 'Writing answer'
     case 'tool_call': return 'Writing tool call'
     case 'tool': return `Running ${entry.name}`
+    case 'compacting': return 'Compacting context'
   }
 }
 
@@ -121,7 +146,7 @@ function GenerationTimeline({ run }: { run: BenchmarkRunDetail }) {
 }
 
 function timelineRow(run: BenchmarkRunDetail, entry: TimelineEntry, index: number) {
-  const expandable = entry.kind !== 'reading' && entry.kind !== 'tool_call'
+  const expandable = entry.kind === 'compacting' ? Boolean(entry.summary) : entry.kind !== 'reading' && entry.kind !== 'tool_call'
   const head = (label: React.ReactNode, detail = '') => <>
     <span className="timeline-label">{expandable ? <ChevronRight aria-hidden="true" className="timeline-chevron" size={13} /> : <span className="timeline-chevron" />}<span className="timeline-body"><span className="timeline-name">{label}{entry.end == null ? '…' : ''}</span><small>{detail}</small></span></span>
     <span className="timeline-time">{formatDuration(entry, run.live?.elapsed)}</span>
@@ -145,6 +170,15 @@ function timelineRow(run: BenchmarkRunDetail, entry: TimelineEntry, index: numbe
       </details>
     </li>
   }
+  if (entry.kind === 'compacting') {
+    const label = entry.end == null ? 'Compacting context' : entry.failed ? 'Could not compact context' : entry.mode === 'summarised' ? 'Compacted context: summarised' : 'Compacted context: pruned old tool output'
+    const sizes = entry.tokens_after != null ? `${entry.tokens_before.toLocaleString()} → ${entry.tokens_after.toLocaleString()} tokens` : `${entry.tokens_before.toLocaleString()} tokens`
+    const summary = entry.end == null ? liveSummary(run) : entry.tokens ? `summary, ${entry.tokens.toLocaleString()} ${entry.tokens === 1 ? 'token' : 'tokens'}` : ''
+    const row = head(label, [sizes, summary].filter(Boolean).join(' · '))
+    return <li data-kind="compacting" data-ok={entry.failed ? false : undefined} key={index}>
+      {entry.summary ? <details><summary>{row}</summary><pre>{entry.summary}</pre></details> : <div className="timeline-row">{row}</div>}
+    </li>
+  }
   if (entry.kind === 'tool_call') {
     // While it streams the call has no names yet; the live figures stand in for them.
     const live = entry.end == null ? run.live?.tool_call : undefined
@@ -154,7 +188,9 @@ function timelineRow(run: BenchmarkRunDetail, entry: TimelineEntry, index: numbe
     return <li data-kind="tool_call" key={index}><div className="timeline-row">{head(`Writing tool ${entry.names && entry.names.length > 1 ? 'calls' : 'call'}${names ? `: ${names}` : ''}`, detail)}</div></li>
   }
   const read = entry.kind === 'reading' ? entry.prompt_tokens : undefined
-  return <li data-kind="reading" key={index}><div className="timeline-row">{head(activityName(entry), read ? `${read.toLocaleString()} tokens` : '')}</div></li>
+  const cached = entry.kind === 'reading' ? entry.cached_tokens : undefined
+  const reading = [read ? `${read.toLocaleString()} tokens` : '', cached ? `${cached.toLocaleString()} cached` : ''].filter(Boolean).join(' · ')
+  return <li data-kind="reading" key={index}><div className="timeline-row">{head(activityName(entry), reading)}</div></li>
 }
 
 /** The run's steps; with the run's detail, Generate opens into what it spent its time on. */
@@ -333,7 +369,7 @@ function ContextFigure({ run }: { run: BenchmarkRun }) {
 /** The same benchmark and settings as an earlier run; the profile is whatever it is now. */
 function retryRequest(run: BenchmarkRun) {
   // Runs from before tools could be chosen had them all, which null asks for.
-  return { profile_id: run.profile_id, benchmark_id: run.benchmark_id, max_tokens: run.max_tokens, tools: run.tools, tool_names: run.tools ? run.tool_names ?? null : [], system_prompt_id: run.system_prompt_id, reasoning_level: run.reasoning_level, verbose_log: Boolean(run.verbose_log) }
+  return { profile_id: run.profile_id, benchmark_id: run.benchmark_id, max_tokens: run.max_tokens, tools: run.tools, tool_names: run.tools ? run.tool_names ?? null : [], system_prompt_id: run.system_prompt_id, reasoning_level: run.reasoning_level, verbose_log: Boolean(run.verbose_log), compact_context: Boolean(run.compact_context) }
 }
 
 function RetryButton({ run, profile, blocker, pending, onRetry }: { run: BenchmarkRun; profile?: Profile; blocker?: string; pending: boolean; onRetry: () => void }) {
@@ -343,13 +379,16 @@ function RetryButton({ run, profile, blocker, pending, onRetry }: { run: Benchma
 }
 
 // Offered only on a TypeScript benchmark, once an install that carries them is in place.
-const TYPESCRIPT_TOOLS = ['check_typescript', 'bundle_typescript']
+const TYPESCRIPT_TOOLS = ['check_typescript', 'bundle_typescript', 'run_tests']
+// Runs the agent's unit tests; only for a TypeScript benchmark that turns tests on.
+const TEST_TOOL = 'run_tests'
 
 /** Why a tool can't be chosen: the benchmark isn't TypeScript, or what it needs isn't installed. */
 type PickerTool = BenchmarkTool & { reason?: string }
 
-function toolsFor(tools: BenchmarkTool[], typescript: boolean): PickerTool[] {
+function toolsFor(tools: BenchmarkTool[], typescript: boolean, tests = false): PickerTool[] {
   return tools.map((tool) => {
+    if (tool.name === TEST_TOOL && !(typescript && tests)) return { ...tool, available: false, reason: 'Only for TypeScript benchmarks with tests turned on.' }
     if (!TYPESCRIPT_TOOLS.includes(tool.name)) return tool.available ? tool : { ...tool, reason: 'Needs ESLint: download it in Settings, under Benchmark.' }
     if (!typescript) return { ...tool, available: false, reason: 'Only for TypeScript benchmarks.' }
     return tool.available ? tool : { ...tool, reason: 'Needs the TypeScript tools: download or update ESLint in Settings, under Benchmark.' }
@@ -360,7 +399,7 @@ function toolsFor(tools: BenchmarkTool[], typescript: boolean): PickerTool[] {
 const TOOL_GROUPS: { title: string; names: string[] }[] = [
   { title: 'Files', names: ['write_file', 'edit_file', 'read_file', 'delete_file', 'list_files'] },
   { title: 'Tasks', names: ['list_tasks', 'create_task', 'complete_task', 'delete_task'] },
-  { title: 'Source', names: ['check_file', 'check_typescript', 'bundle_typescript'] },
+  { title: 'Source', names: ['check_file', 'check_typescript', 'bundle_typescript', 'run_tests'] },
   { title: 'Job', names: ['finish_job'] },
 ]
 
@@ -450,7 +489,7 @@ function TaskList({ run }: { run: BenchmarkRunDetail }) {
 
 const PHASES = [['prefill', 'Prefill'], ['decode', 'Decode']] as const
 
-/** One phase's 1% low, average and peak, stacked under its name, for the run list. */
+/** One phase's 1% low, average and 1% high, stacked under its name, for the run list. */
 function SpeedStack({ run, phase, label }: { run: BenchmarkRun; phase: 'prefill' | 'decode'; label: string }) {
   const speeds = phaseSpeeds(run.stats, phase)
   // While a run is going only the current speed is known.
@@ -471,7 +510,7 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
     ['Server start', formatSeconds(stats.server_start_seconds)],
     ['Model load', formatSeconds(stats.load_seconds)],
     ['First token', formatSeconds(stats.first_token_seconds)],
-    ['Prompt', stats.prompt_tokens != null ? `${stats.prompt_tokens.toLocaleString()} tokens` : '—'],
+    ['Prompt', stats.prompt_tokens != null ? `${stats.prompt_tokens.toLocaleString()} tokens${stats.prompt_cached_tokens ? ` + ${stats.prompt_cached_tokens.toLocaleString()} cached` : ''}` : '—'],
     ['Tokens / limit', stats.generated_tokens != null ? `${stats.generated_tokens.toLocaleString()} / ${run.max_tokens?.toLocaleString() ?? 'context'}` : '—'],
     ['Decode at end (3 s)', formatRate(stats.decode_final_tokens_per_second)],
     [context?.live ? 'Context (now)' : 'Context (most used)', context ? `${context.used.toLocaleString()} / ${context.size.toLocaleString()} (${context.percent}%)` : '—'],
@@ -480,6 +519,8 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
     ...(run.typescript_strict != null ? [['TypeScript', run.typescript_strict ? 'Strict checks' : 'Non-strict checks'] as [string, string]] : []),
     ['Total', formatSeconds(stats.total_seconds)],
     ...(run.tools && run.tool_names ? [['Tools', offered && run.tool_names.length === offered.length ? 'All' : run.tool_names.join(', ')] as [string, string]] : []),
+    ...(run.tool_names?.includes(TEST_TOOL) ? [['Tests', testsLabel(run)] as [string, string]] : []),
+    ...(compactionsLabel(run) != null ? [['Compactions', compactionsLabel(run)] as [string, string]] : []),
     ...(run.tools ? [['Tool calls', `${stats.tool_calls ?? run.tool_calls.length} in ${stats.rounds ?? 1} ${stats.rounds === 1 ? 'request' : 'requests'}`] as [string, string]] : []),
   ]
   const refused = run.tool_calls.filter((call) => !call.ok).length
@@ -499,8 +540,8 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
       </table>
       <dl className="benchmark-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
     </div>
-    <p className="benchmark-hint speed-hint">Decode speeds are measured over 3-second windows and prefill speeds batch by batch. The 1% low is the average over the slowest 1% of that time.</p>
-    {decode.length > 1 && <div className="benchmark-chart"><span>Decode speed over the run (3 s windows)</span><Sparkline ceiling={stats.decode_peak_tokens_per_second} values={decode} /></div>}
+    <p className="benchmark-hint speed-hint">Decode speeds are measured over 3-second windows and prefill speeds batch by batch. The 1% low and 1% high are the averages over the slowest and fastest 1% of that time. Prompt tokens reused from llama.cpp's cache are counted apart, as reading them takes no time.</p>
+    {decode.length > 1 && <div className="benchmark-chart"><span>Decode speed over the run (3 s windows)</span><Sparkline ceiling={phaseSpeeds(stats, 'decode').high} values={decode} /></div>}
     {prefill.length > 1 && <div className="benchmark-chart"><span>Prefill speed</span><Sparkline values={prefill} /></div>}
     <ContextChart resources={run.resources ?? []} />
     <MemoryChart resources={run.resources ?? []} />
@@ -550,6 +591,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   // '' sends no level, so the model's chat template picks its own default.
   const [reasoningLevel, setReasoningLevel] = useState('')
   const [verboseLog, setVerboseLog] = useState(false)
+  const [compactContext, setCompactContext] = useState(true)
   const [viewing, setViewing] = useState<string>()
   const [deleting, setDeleting] = useState<BenchmarkRun>()
   // Runs ticked for deleting together, and whether that is being confirmed.
@@ -561,9 +603,9 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   const benchmarks = catalog.data?.benchmarks ?? []
   const benchmark = benchmarks.find((item) => item.id === (benchmarkId || catalog.data?.default_benchmark_id)) ?? benchmarks[0]
   const systemPrompts = catalog.data?.system_prompts ?? []
-  const allTools = toolsFor(catalog.data?.tools ?? [], Boolean(benchmark?.typescript))
+  const allTools = toolsFor(catalog.data?.tools ?? [], Boolean(benchmark?.typescript), Boolean(benchmark?.typescript?.tests))
   // A TypeScript benchmark without its tools would run as a plain one, so say so.
-  const typescriptMissing = Boolean(benchmark?.typescript) && allTools.some((tool) => TYPESCRIPT_TOOLS.includes(tool.name) && !tool.available)
+  const typescriptMissing = Boolean(benchmark?.typescript) && allTools.some((tool) => TYPESCRIPT_TOOLS.includes(tool.name) && (tool.name !== TEST_TOOL || Boolean(benchmark?.typescript?.tests)) && !tool.available)
   const usableTools = allTools.filter((tool) => tool.available).map((tool) => tool.name)
   // A tool chosen earlier drops out if what it needs is removed in the meantime.
   const chosenTools = (toolNames ?? usableTools).filter((name) => usableTools.includes(name))
@@ -635,7 +677,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   return <>
     <section className="data-panel benchmark-run-panel" ref={runPanel}>
       <div className="panel-heading"><div><h2>Run a benchmark</h2><p>Starts the server, loads one profile, sends the prompt and measures it, then stops the server again.</p></div><Timer size={18} /></div>
-      <form className="benchmark-form" onSubmit={(event) => { event.preventDefault(); start.mutate({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools: chosenTools.length > 0, tool_names: chosenTools, system_prompt_id: systemPrompt?.id ?? null, reasoning_level: reasoningLevel || null, verbose_log: chosenTools.length > 0 && verboseLog }) }}>
+      <form className="benchmark-form" onSubmit={(event) => { event.preventDefault(); start.mutate({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools: chosenTools.length > 0, tool_names: chosenTools, system_prompt_id: systemPrompt?.id ?? null, reasoning_level: reasoningLevel || null, verbose_log: chosenTools.length > 0 && verboseLog, compact_context: chosenTools.length > 0 && compactContext }) }}>
         <label className="compare-pick"><span>Profile</span><select aria-label="Profile" onChange={(event) => setProfileId(event.target.value)} value={profile?.id ?? ''}>
           {profiles.map((item) => <option disabled={!item.enabled} key={item.id} value={item.id}>{item.alias}{item.enabled ? '' : ' (disabled)'}</option>)}
         </select></label>
@@ -647,6 +689,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
       </form>
       {allTools.length > 0 && <ToolPicker chosen={chosenTools} onChange={setToolNames} tools={allTools} />}
       {chosenTools.length > 0 && <label className="benchmark-option"><input aria-label="Verbose log" checked={verboseLog} onChange={(event) => setVerboseLog(event.target.checked)} type="checkbox" /><span><strong>Verbose log</strong><small>Keeps the arguments of every tool call and its whole result, so you can see why a call failed. Runs take more space.</small></span></label>}
+      {chosenTools.length > 0 && <label className="benchmark-option"><input aria-label="Compact context" checked={compactContext} onChange={(event) => setCompactContext(event.target.checked)} type="checkbox" /><span><strong>Compact context</strong><small>When the conversation nears the context size, old tool output is pruned, then the session is summarised if that is not enough, so the agent can keep going. Turn it off to measure raw context use: the run ends when the context fills.</small></span></label>}
       {typescriptMissing && <p className="benchmark-note" role="status"><AlertCircle size={15} /> {benchmark?.title} is a TypeScript benchmark, but the TypeScript tools are not installed, so it would run without them. Download or update ESLint in Settings, under Benchmark, to add them.</p>}
       <div className="benchmark-choices">
         {systemPrompts.length > 0 && <label className="compare-pick"><span>System prompt</span><select aria-label="System prompt" onChange={(event) => setSystemPromptId(event.target.value)} value={chosenSystemPrompt}>
@@ -685,7 +728,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
           {canRun && <input aria-label={`Select run ${run.benchmark_title} on ${run.profile_alias}, ${formatWhen(run.started_at)}`} checked={picked.includes(run.id)} className="benchmark-run-check" disabled={run.state === 'running'} onChange={(event) => toggle(run.id, event.target.checked)} type="checkbox" />}
           <span className="benchmark-run-copy">
             <strong><button aria-label={`View run ${run.benchmark_title} on ${run.profile_alias}`} className="benchmark-run-title" onClick={() => setViewing(run.id)} type="button">{run.benchmark_title} · {run.profile_alias}</button> <span className="profile-tag">v{run.profile_version}</span> <OutcomeTag run={run} /></strong>
-            <span>{formatWhen(run.started_at)}{run.system_prompt_id ? ` · ${run.system_prompt_id}` : ''}{run.reasoning_level ? ` · reasoning ${reasoningLabel(run.reasoning_level).toLowerCase()}` : ''}{run.stats.files_written ? ` · ${run.stats.files_written} ${run.stats.files_written === 1 ? 'file' : 'files'}` : ''}{run.error && run.state === 'failed' ? ` · ${run.error}` : ''}</span>
+            <span>{formatWhen(run.started_at)}{run.system_prompt_id ? ` · ${run.system_prompt_id}` : ''}{run.reasoning_level ? ` · reasoning ${reasoningLabel(run.reasoning_level).toLowerCase()}` : ''}{run.stats.files_written ? ` · ${run.stats.files_written} ${run.stats.files_written === 1 ? 'file' : 'files'}` : ''}{run.stats.compactions ? ` · ${run.stats.compactions} ${run.stats.compactions === 1 ? 'compaction' : 'compactions'}` : ''}{run.error && run.state === 'failed' ? ` · ${run.error}` : ''}</span>
           </span>
           <dl className="benchmark-run-figures">
             <div><dt>Total</dt><dd>{formatSeconds(run.stats.total_seconds)}</dd></div>

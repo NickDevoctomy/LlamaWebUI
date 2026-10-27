@@ -240,11 +240,11 @@ async def test_a_benchmark_times_each_step_and_writes_its_result_to_the_profile(
     )
     # The average spans the whole run; the peak and the end come from 3 s windows.
     assert stats["decode_tokens_per_second"] == 26.0
-    assert stats["decode_peak_tokens_per_second"] == 40.0
+    assert stats["decode_high_tokens_per_second"] == pytest.approx(40.0, abs=0.5)
     assert stats["decode_low_tokens_per_second"] == 20.0
     assert stats["decode_final_tokens_per_second"] == 20.0
     # Prefill is measured batch by batch: both of its 10-token steps took 25 ms.
-    assert stats["prompt_peak_tokens_per_second"] == 400.0
+    assert stats["prompt_high_tokens_per_second"] == 400.0
     assert stats["prompt_low_tokens_per_second"] == 400.0
 
     prefill = [sample for sample in finished.samples if sample["phase"] == "prefill"]
@@ -260,10 +260,10 @@ async def test_a_benchmark_times_each_step_and_writes_its_result_to_the_profile(
     result = ProfileRegistry(engine, default_catalog()).get(profile.id).benchmark_results
     assert result is not None
     assert result["tetris"]["decode_tokens_per_second"] == 26.0  # type: ignore[index]
-    assert result["tetris"]["decode_peak_tokens_per_second"] == 40.0  # type: ignore[index]
+    assert result["tetris"]["decode_high_tokens_per_second"] == pytest.approx(40.0, abs=0.5)  # type: ignore[index]
     assert result["tetris"]["decode_low_tokens_per_second"] == 20.0  # type: ignore[index]
     assert result["tetris"]["prompt_low_tokens_per_second"] == 400.0  # type: ignore[index]
-    assert result["tetris"]["prompt_peak_tokens_per_second"] == 400.0  # type: ignore[index]
+    assert result["tetris"]["prompt_high_tokens_per_second"] == 400.0  # type: ignore[index]
     assert result["tetris"]["decode_final_tokens_per_second"] == 20.0  # type: ignore[index]
     assert result["tetris"]["run_id"] == record.id  # type: ignore[index]
 
@@ -682,6 +682,7 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
         "check_file",
         "check_typescript",
         "bundle_typescript",
+        "run_tests",
         "list_tasks",
         "create_task",
         "complete_task",
@@ -793,4 +794,51 @@ async def test_prefill_without_streamed_progress_is_measured_per_request(tmp_pat
     stats = runs.get(record.id).stats
     assert stats["prompt_tokens_per_second"] == 400.0
     assert stats["prompt_low_tokens_per_second"] == 400.0
-    assert stats["prompt_peak_tokens_per_second"] == 400.0
+    assert stats["prompt_high_tokens_per_second"] == 400.0
+
+
+@pytest.mark.asyncio
+async def test_cached_tokens_and_tiny_batches_do_not_set_prefill_speeds(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    reply = [chunk for chunk in _chunks() if "prompt_progress" not in chunk]
+    prompt = {"prompt_n": 2000, "prompt_ms": 1001.0, "cache_n": 9000}
+    for chunk in reply:
+        if isinstance(chunk.get("timings"), dict):
+            chunk["timings"] = {**cast(dict[str, object], chunk["timings"]), **prompt}
+
+    def progress(processed: int, milliseconds: float) -> dict[str, object]:
+        return {
+            "prompt_progress": {
+                "total": 11000,
+                "cache": 9000,
+                "processed": processed,
+                "time_ms": milliseconds,
+            }
+        }
+
+    client.replies = [
+        [
+            # The cached 9,000 tokens arrive as processed within a millisecond.
+            progress(9000, 1.0),
+            # Then 2,000 read at 2,000 tok/s in 0.5 s steps, and a 1 ms tail of 2 tokens.
+            progress(9998, 500.0),
+            progress(10998, 1000.0),
+            progress(11000, 1001.0),
+            *reply,
+        ]
+    ]
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, 256)
+    await runner.wait()
+
+    finished = runs.get(record.id)
+    stats = finished.stats
+    assert stats["prompt_cached_tokens"] == 9000
+    assert stats["prompt_tokens"] == 2000
+    # No figure reads millions of tokens a second from the cache or the 1 ms tail.
+    assert 1990 < cast(float, stats["prompt_high_tokens_per_second"]) < 2010
+    assert 1990 < cast(float, stats["prompt_low_tokens_per_second"]) < 2010
+    reading = next(entry for entry in finished.timeline if entry["kind"] == "reading")
+    assert (reading["prompt_tokens"], reading["cached_tokens"]) == (2000, 9000)

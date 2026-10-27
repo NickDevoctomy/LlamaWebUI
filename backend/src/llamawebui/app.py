@@ -411,6 +411,8 @@ class BenchmarkRunRequest(BaseModel):
     )
     # Keep each tool call's arguments and whole result in its log, not a short excerpt.
     verbose_log: bool = False
+    # Compact the history when the context fills, rather than ending the run there.
+    compact_context: bool = True
 
 
 class LoginRequest(BaseModel):
@@ -1836,6 +1838,7 @@ def create_app(
             "reasoning_level": record.reasoning_level,
             "typescript_strict": record.typescript_strict,
             "verbose_log": record.verbose_log,
+            "compact_context": record.compact_context,
             "conversation_id": record.conversation_id,
             "state": record.state,
             "stage": progress["stage"] if progress else record.stage,
@@ -1852,6 +1855,8 @@ def create_app(
                 "tool_call": progress.get("tool_call"),
                 # Tokens in the model's context now, and its size.
                 "context": progress.get("context"),
+                # The summary being written while the context is compacted.
+                "compaction": progress.get("compaction"),
                 # Lets open timeline steps show how long they have been going.
                 "elapsed": runner.generation_elapsed(record.id),
             }
@@ -2008,6 +2013,7 @@ def create_app(
                 system_prompt=system_prompt,
                 reasoning_level=run_request.reasoning_level,
                 verbose_log=run_request.verbose_log,
+                compact_context=run_request.compact_context,
             )
         except BenchmarkBusyError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error

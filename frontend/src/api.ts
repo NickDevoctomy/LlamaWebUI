@@ -116,8 +116,10 @@ export interface Benchmark {
   prompt: string
   /** Tasks a run with complete_task starts with, from the prompt file's frontmatter. */
   tasks: string[]
-  /** Set for a TypeScript benchmark, which gets the TypeScript tools; null otherwise. */
-  typescript: { strict: boolean } | null
+  /** Set for a TypeScript benchmark, which gets the TypeScript tools; null otherwise. With tests, it also gets run_tests. */
+  typescript: { strict: boolean; tests?: boolean } | null
+  /** Requests a tool-using run may make; null keeps the default. */
+  max_rounds?: number | null
 }
 
 /** A task on the agent's task list; deleting one only marks it deleted. */
@@ -391,15 +393,21 @@ export interface BenchmarkStats {
   prompt_tokens_per_second?: number
   /** Average over the slowest 1% of prefill time, measured batch by batch. */
   prompt_low_tokens_per_second?: number
-  /** Fastest batch of prompt reading. */
+  /** Average over the fastest 1% of prefill time. */
+  prompt_high_tokens_per_second?: number
+  /** Older runs only: the fastest single batch, which a near-instant batch could inflate. */
   prompt_peak_tokens_per_second?: number
+  /** Prompt tokens reused from llama.cpp's cache instead of read again. */
+  prompt_cached_tokens?: number
   generated_tokens?: number
   decode_seconds?: number
   /** Average over the whole generation, as llama.cpp reports it. */
   decode_tokens_per_second?: number
   /** Average over the slowest 1% of generation time, in 3-second windows. */
   decode_low_tokens_per_second?: number
-  /** Fastest 3-second window, comparable to the dashboard's peak. */
+  /** Average over the fastest 1% of generation time, in 3-second windows. */
+  decode_high_tokens_per_second?: number
+  /** Older runs only: the fastest 3-second window. */
   decode_peak_tokens_per_second?: number
   /** Speed over the last 3 seconds of generation. */
   decode_final_tokens_per_second?: number
@@ -411,11 +419,21 @@ export interface BenchmarkStats {
   outcome?: 'completed' | 'unfinished'
   /** Requests sent: one, plus one more after each round of tool calls. */
   rounds?: number
+  /** With finish_reason tool_round_limit: the most rounds the run was allowed. */
+  round_limit?: number
   tool_calls?: number
   files_written?: number
   /** The most tokens the model's context held during the run, and the context's size. */
   context_peak?: number
   context_size?: number
+  /** Times the history was compacted to fit the context; absent when compaction was off or on older runs. */
+  compactions?: number
+  compactions_pruned?: number
+  compactions_summarised?: number
+  /** With run_tests: how often the agent ran its tests, and how the last run went. */
+  test_runs?: number
+  tests_passed?: number
+  tests_failed?: number
 }
 
 /** The latest completed result of a benchmark, written onto the profile. */
@@ -450,6 +468,8 @@ export interface BenchmarkRun {
   typescript_strict?: boolean | null
   /** Whether each tool call kept its arguments and whole result. */
   verbose_log?: boolean
+  /** Whether the run compacted its history when the context filled, rather than ending there. */
+  compact_context?: boolean
   /** The assistant conversation that started the run, if one did. */
   conversation_id?: string | null
   state: BenchmarkState
@@ -466,6 +486,8 @@ export interface BenchmarkRun {
     tool_call?: { name: string; bytes: number } | null
     /** Tokens in the model's context right now, and its size. */
     context?: { used: number; size: number } | null
+    /** The summary being written while the context is compacted: tokens so far. */
+    compaction?: { tokens: number } | null
     /** Seconds since the prompt was sent, on the same clock as the run's timeline. */
     elapsed?: number | null
   }
@@ -476,10 +498,12 @@ export interface BenchmarkRun {
  * Thinking and answer entries point into the run's reasoning and output text by position.
  */
 export type TimelineEntry = { round: number; start: number; end: number | null } & (
-  | { kind: 'reading'; prompt_tokens?: number }
+  | { kind: 'reading'; prompt_tokens?: number; cached_tokens?: number }
   | { kind: 'thinking' | 'answer'; tokens?: number; from: number; to?: number }
   | { kind: 'tool_call'; tokens?: number; names?: string[]; bytes?: number }
   | { kind: 'tool'; name: string; call: number; path?: string | null; ok?: boolean }
+  /** Old tool payloads pruned, or the session summarised; tokens is the summary's length. */
+  | { kind: 'compacting'; tokens_before: number; tokens_after?: number; mode?: 'pruned' | 'summarised'; tokens?: number; summary?: string; failed?: boolean }
 )
 
 /** Context and model memory in use at one moment of a run; a reading not available is left out. */
@@ -995,7 +1019,7 @@ export const api = {
   benchmarkRun: (runId: string) => request<BenchmarkRunDetail>(`/api/benchmarks/runs/${runId}`),
   benchmarkArtifact: (runId: string, path: string) =>
     request<{ path: string; content: string }>(`/api/benchmarks/runs/${runId}/artifacts/${path.split('/').map(encodeURIComponent).join('/')}`),
-  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number | null; tools: boolean; tool_names: string[] | null; system_prompt_id: string | null; reasoning_level: string | null; verbose_log: boolean }) =>
+  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number | null; tools: boolean; tool_names: string[] | null; system_prompt_id: string | null; reasoning_level: string | null; verbose_log: boolean; compact_context: boolean }) =>
     request<BenchmarkRunDetail>('/api/benchmarks/runs', { method: 'POST', body: JSON.stringify(body) }),
   cancelBenchmark: (runId: string) =>
     request<BenchmarkRun>(`/api/benchmarks/runs/${runId}/cancel`, { method: 'POST' }),

@@ -23,6 +23,7 @@ from sqlalchemy.orm import sessionmaker
 
 from llamawebui.domain.benchmark import Benchmark, SystemPrompt
 from llamawebui.models import BenchmarkRunRecord, ModelProfileRecord
+from llamawebui.services import benchmark_compaction as compaction
 from llamawebui.services import benchmark_tasks, benchmark_typescript
 from llamawebui.services.benchmark_linter import BenchmarkLinter, LinterError
 from llamawebui.services.benchmark_typescript import (
@@ -52,8 +53,12 @@ LOGGER = logging.getLogger("llamawebui.benchmarks")
 DEFAULT_MAX_TOKENS: int | None = None
 # Speeds are measured over this window, matching llama.cpp's own tg_3s figure.
 RATE_WINDOW_SECONDS = 3.0
-# The 1% low is the average speed over the slowest 1% of the measured time.
+# The 1% low and 1% high are the average speeds over the slowest and fastest 1% of the
+# measured time.
 LOW_SHARE = 0.01
+# Prompt progress closer together than this is measured as one batch: over a millisecond
+# or two, a handful of tokens reads as a speed no card can reach.
+MIN_PREFILL_READING_MS = 50.0
 # The most router log lines kept with a failed run.
 SERVER_LOG_LINES = 200
 
@@ -72,7 +77,8 @@ def reasoning_options(level: str | None) -> dict[str, object]:
     return {"reasoning_effort": level}
 
 
-# Rounds of tool calls a single run may make before it is stopped.
+# Rounds of tool calls a single run may make before it is stopped, unless its benchmark
+# sets its own max_rounds.
 MAX_TOOL_ROUNDS = 24
 # The tool an agent calls to say it is done. Only a run that calls it counts as completed.
 COMPLETE_TOOL = "finish_job"
@@ -93,6 +99,9 @@ CHECK_TOOL = "check_file"
 TYPECHECK_TOOL = "check_typescript"
 BUNDLE_TOOL = "bundle_typescript"
 TYPESCRIPT_TOOLS = (TYPECHECK_TOOL, BUNDLE_TOOL)
+# Unit tests: offered only on a TypeScript benchmark that turns them on, as they run
+# code the model wrote; see benchmark_typescript.run_tests.
+TEST_TOOL = "run_tests"
 _PATH = {"type": "string", "description": "Relative path inside the workspace."}
 _TASK_ID = {"type": "integer", "description": "The task's number, from list_tasks."}
 FILE_TOOLS: tuple[dict[str, object], ...] = (
@@ -230,6 +239,20 @@ FILE_TOOLS: tuple[dict[str, object], ...] = (
     {
         "type": "function",
         "function": {
+            "name": TEST_TOOL,
+            "description": (
+                "TypeScript only. Run every unit test in the workspace: files named like "
+                "src/board.test.ts, written with node:test and node:assert/strict and importing "
+                "the modules they test. They run in Node.js, without a DOM or canvas, and "
+                "cannot use files or the network. Lists how many passed and each failure with "
+                "its file and line."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_tasks",
             "description": (
                 "List your task list: each task's number, title and whether it is done. "
@@ -314,6 +337,7 @@ TOOL_PURPOSES: dict[str, str] = {
     CHECK_TOOL: "check_file to lint a JavaScript or HTML file for mistakes",
     TYPECHECK_TOOL: "check_typescript to type-check your TypeScript",
     BUNDLE_TOOL: f"bundle_typescript to build {OUTPUT} from your TypeScript",
+    TEST_TOOL: "run_tests to run your unit tests",
     "list_tasks": "list_tasks to see your task list",
     "create_task": "create_task to add a task to it",
     "complete_task": "complete_task to mark a task done",
@@ -333,6 +357,10 @@ TOOL_SUMMARIES: dict[str, str] = {
     BUNDLE_TOOL: (
         f"Bundle the TypeScript with esbuild into the page template, as {OUTPUT}. With it, "
         "finish_job waits for an up-to-date build."
+    ),
+    TEST_TOOL: (
+        "Run the agent's unit tests (src/*.test.ts) with Node.js's test runner, locked down. "
+        "Only on benchmarks that turn tests on."
     ),
     "list_tasks": "List the agent's task list and what is done.",
     "create_task": "Add a task to the agent's task list.",
@@ -374,6 +402,12 @@ def tool_system_prompt(names: Sequence[str] = TOOL_NAMES, prepared: int = 0) -> 
         )
         if TYPECHECK_TOOL in names:
             parts.append(f"Run {TYPECHECK_TOOL} after changing the TypeScript.")
+    if TEST_TOOL in names:
+        parts.append(
+            "Write unit tests for the game logic as src/<name>.test.ts with node:test and "
+            f"node:assert/strict, and run them with {TEST_TOOL}. Tests run without a DOM, so "
+            "keep the logic you test apart from the code that draws or reads input."
+        )
     if prepared and "list_tasks" in names:
         count = "1 task" if prepared == 1 else f"{prepared} tasks"
         parts.append(
@@ -399,19 +433,26 @@ def choose_tools(
     available: Sequence[str] = TOOL_NAMES,
     *,
     typescript: bool = False,
+    tests: bool = False,
 ) -> list[str]:
     """The tools a run is given, in offer order; None gives every available tool.
 
     The TypeScript tools are only for a TypeScript benchmark, and that benchmark gets
     them by default; without them installed, it cannot run with its default tools.
+    run_tests is only for a TypeScript benchmark with tests turned on, which gets it by
+    default.
     """
+    tests = typescript and tests
     if names is None:
-        if typescript and not all(name in available for name in TYPESCRIPT_TOOLS):
+        wanted = [*TYPESCRIPT_TOOLS, *([TEST_TOOL] if tests else [])]
+        if typescript and not all(name in available for name in wanted):
             raise ValueError(_TYPESCRIPT_MISSING)
         return [
             name
             for name in TOOL_NAMES
-            if name in available and (typescript or name not in TYPESCRIPT_TOOLS)
+            if name in available
+            and (typescript or name not in TYPESCRIPT_TOOLS)
+            and (tests or name != TEST_TOOL)
         ]
     names = [RENAMED_TOOLS.get(name, name) for name in names]
     unknown = sorted(set(names) - set(TOOL_NAMES))
@@ -422,6 +463,10 @@ def choose_tools(
     asked = [name for name in TYPESCRIPT_TOOLS if name in names]
     if asked and not typescript:
         raise ValueError(f"{', '.join(asked)} only work on a TypeScript benchmark")
+    if TEST_TOOL in names:
+        if not tests:
+            raise ValueError(f"{TEST_TOOL} only works on a benchmark with tests turned on")
+        asked.append(TEST_TOOL)
     if any(name not in available for name in asked):
         raise ValueError(_TYPESCRIPT_MISSING)
     return [name for name in TOOL_NAMES if name in names]
@@ -561,6 +606,11 @@ def _call_tool(
             result = benchmark_typescript.bundle(linter, workspace, parsed.get("entry"), template)
             build["template"] = template if isinstance(template, str) else DEFAULT_TEMPLATE
             build["fingerprint"] = _build_fingerprint(workspace, build)
+        elif name == TEST_TOOL:
+            if linter is None:
+                raise WorkspaceError("TypeScript is not installed")
+            result, counts = benchmark_typescript.run_tests(linter, workspace)
+            entry["tests"] = counts
         elif name == "list_tasks":
             result = benchmark_tasks.list_tasks(tasks)
         elif name == "create_task":
@@ -594,6 +644,54 @@ def _call_tool(
     # so is a refusal, which lists the tasks still open.
     keep_whole = verbose or name == COMPLETE_TOOL
     entry["result"] = result if keep_whole else shorten(result, 300)
+    return result, entry
+
+
+# Tools that change the workspace, the task list or the build. A repeat of a call is only
+# refused while none of these has run since the call it repeats.
+CHANGING_TOOLS = frozenset(
+    {
+        "write_file",
+        "edit_file",
+        "delete_file",
+        BUNDLE_TOOL,
+        "create_task",
+        "complete_task",
+        "delete_task",
+        COMPLETE_TOOL,
+    }
+)
+
+
+def _call_key(arguments: str) -> str:
+    """A call's arguments in one canonical form, so key order and spacing do not matter."""
+    try:
+        return json.dumps(json.loads(arguments or "{}"), sort_keys=True)
+    except json.JSONDecodeError:
+        return arguments
+
+
+def _duplicate_call(
+    name: str, arguments: str, first: int, *, verbose: bool = False
+) -> tuple[str, dict[str, object]]:
+    """The refusal for a call that repeats an earlier one in the same reply, and its log entry."""
+    result = (
+        f"Error: duplicate of call #{first} in this reply, which was run once; use its result "
+        "instead of calling it again."
+    )
+    try:
+        parsed = json.loads(arguments or "{}")
+    except json.JSONDecodeError:
+        parsed = None
+    path = parsed.get("path") if isinstance(parsed, dict) else None
+    entry: dict[str, object] = {
+        "name": name,
+        "path": path if isinstance(path, str) else None,
+        "ok": False,
+        "result": result,
+    }
+    if verbose:
+        entry["arguments"] = arguments
     return result, entry
 
 
@@ -658,19 +756,20 @@ class _WindowRate:
 
 
 def _slowest_share(
-    readings: Sequence[tuple[float, float]], share: float = LOW_SHARE
+    readings: Sequence[tuple[float, float]], share: float = LOW_SHARE, *, fastest: bool = False
 ) -> float | None:
-    """The average speed over the slowest ``share`` of the time, from (rate, seconds) readings.
+    """The average speed over the slowest ``share`` of the time, from (rate, seconds) readings;
+    with ``fastest``, over the fastest share instead.
 
     Each reading counts for as long as it lasted, so a slow stretch weighs by its time
-    and not by how few tokens it produced.
+    and not by how few tokens it produced, and a blip too short to matter cannot set it.
     """
     total = sum(seconds for _, seconds in readings if seconds > 0)
     if total <= 0:
         return None
     wanted = total * share
     taken = tokens = 0.0
-    for rate, seconds in sorted(readings):
+    for rate, seconds in sorted(readings, reverse=fastest):
         if seconds <= 0:
             continue
         part = min(seconds, wanted - taken)
@@ -751,8 +850,9 @@ def _number(value: object) -> float | None:
     return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
 
 
-# Stands in for the chunks of a request llama.cpp refused because it no longer fits.
-_CONTEXT_FULL: dict[str, object] = {}
+# Marks the chunk standing in for a request llama.cpp refused because it no longer fits;
+# its value is llama.cpp's reason, which names the context size.
+_CONTEXT_FULL = "context_full"
 
 
 def _exceeds_context(error: RouterAPIError) -> bool:
@@ -770,7 +870,26 @@ async def _until_context_full(
     except RouterAPIError as error:
         if not _exceeds_context(error):
             raise
-        yield _CONTEXT_FULL
+        yield {_CONTEXT_FULL: str(error)}
+
+
+def _profile_context(record: BenchmarkRunRecord) -> int | None:
+    """The per-slot context the run's profile asks for, when it sets one."""
+    settings = record.launch_settings or {}
+    raw = settings.get("arguments") if isinstance(settings, dict) else None
+    values = {
+        item.get("id"): item.get("value")
+        for item in (raw if isinstance(raw, list) else [])
+        if isinstance(item, dict)
+    }
+    size = _number(values.get("ctx-size"))
+    parallel = _number(values.get("parallel")) or 1
+    if not size or size <= 0:
+        return None
+    # A unified KV cache shares the whole context between slots; otherwise each slot
+    # gets an even share of it.
+    unified = values.get("kv-unified") in (True, "on", "true", "1", 1)
+    return int(size if unified or parallel <= 1 else size // parallel)
 
 
 class BenchmarkRunRegistry:
@@ -795,6 +914,7 @@ class BenchmarkRunRegistry:
         typescript_strict: bool | None = None,
         verbose_log: bool = False,
         conversation_id: str | None = None,
+        compact_context: bool = False,
     ) -> BenchmarkRunRecord:
         settings = launch_settings(profile)
         with self._sessions() as session:
@@ -814,6 +934,7 @@ class BenchmarkRunRegistry:
                 tasks=[dict(task) for task in tasks],
                 typescript_strict=typescript_strict,
                 verbose_log=verbose_log,
+                compact_context=compact_context,
                 system_prompt_id=system_prompt.id if system_prompt else None,
                 system_prompt=system_prompt.text if system_prompt else None,
                 reasoning_level=reasoning_level,
@@ -998,7 +1119,8 @@ class BenchmarkRunner:
         return [
             name
             for name in TOOL_NAMES
-            if (name != CHECK_TOOL or linted) and (name not in TYPESCRIPT_TOOLS or typed)
+            if (name != CHECK_TOOL or linted)
+            and (name not in (*TYPESCRIPT_TOOLS, TEST_TOOL) or typed)
         ]
 
     def generation_elapsed(self, run_id: str) -> float | None:
@@ -1021,11 +1143,15 @@ class BenchmarkRunner:
         reasoning_level: str | None = None,
         verbose_log: bool = False,
         conversation_id: str | None = None,
+        compact_context: bool = True,
     ) -> BenchmarkRunRecord:
         if reasoning_level is not None and reasoning_level not in REASONING_LEVELS:
             raise ValueError(f"unknown reasoning level: {reasoning_level}")
         chosen = choose_tools(
-            tool_names if tools else [], self.available_tools(), typescript=benchmark.typescript
+            tool_names if tools else [],
+            self.available_tools(),
+            typescript=benchmark.typescript,
+            tests=benchmark.typescript_tests,
         )
         # A run given no tools at all runs without a workspace, as if tools were off.
         tools = tools and bool(chosen)
@@ -1059,6 +1185,8 @@ class BenchmarkRunner:
             # Only tool calls are logged, so a run without tools has nothing to keep.
             verbose_log=tools and verbose_log,
             conversation_id=conversation_id,
+            # Only a run with tools has a history of rounds to compact.
+            compact_context=tools and compact_context,
         )
         self._active = record.id
         self._progress = {
@@ -1078,8 +1206,12 @@ class BenchmarkRunner:
             "tool_call": None,
             # Tokens in the model's context right now, and its size.
             "context": None,
+            # The summary being written while the context is compacted: tokens so far.
+            "compaction": None,
         }
-        self._task = asyncio.create_task(self._run(record, benchmark.prompt))
+        self._task = asyncio.create_task(
+            self._run(record, benchmark.prompt, benchmark.max_rounds or MAX_TOOL_ROUNDS)
+        )
         return record
 
     async def cancel(self, run_id: str) -> bool:
@@ -1105,7 +1237,9 @@ class BenchmarkRunner:
     def _samples(self) -> list[dict[str, object]]:
         return cast(list[dict[str, object]], self._progress["samples"])
 
-    async def _run(self, record: BenchmarkRunRecord, prompt: str) -> None:
+    async def _run(
+        self, record: BenchmarkRunRecord, prompt: str, max_rounds: int = MAX_TOOL_ROUNDS
+    ) -> None:
         started = self._clock()
         stats = self._stats()
         state, error = "completed", None
@@ -1133,7 +1267,7 @@ class BenchmarkRunner:
             self._stage(record.id, "prefill")
             watcher = asyncio.create_task(self._watch_resources(record.profile_alias))
             try:
-                await self._generate(record, prompt)
+                await self._generate(record, prompt, max_rounds)
             finally:
                 watcher.cancel()
                 with suppress(asyncio.CancelledError):
@@ -1263,7 +1397,9 @@ class BenchmarkRunner:
                 raise TimeoutError(f"{alias} did not load within {self._load_timeout:g}s{reason}")
             await asyncio.sleep(self._sample_seconds)
 
-    async def _generate(self, record: BenchmarkRunRecord, prompt: str) -> None:
+    async def _generate(
+        self, record: BenchmarkRunRecord, prompt: str, max_rounds: int = MAX_TOOL_ROUNDS
+    ) -> None:
         """Send the prompt, and keep going while the model calls its file tools.
 
         Speeds add up llama.cpp's own counters across rounds, so the prompt reading
@@ -1293,7 +1429,9 @@ class BenchmarkRunner:
         ]
         if instructions:
             messages.insert(0, {"role": "system", "content": "\n\n".join(instructions)})
-        totals = dict.fromkeys(("prompt_n", "prompt_ms", "predicted_n", "predicted_ms"), 0.0)
+        totals = dict.fromkeys(
+            ("prompt_n", "prompt_ms", "predicted_n", "predicted_ms", "cache_n"), 0.0
+        )
         budget = record.max_tokens
         sent = self._clock()
         self._progress["generation_origin"] = sent
@@ -1345,8 +1483,93 @@ class BenchmarkRunner:
             text_length=lambda key: len(cast(str, self._progress[key])),
         )
 
+        # Compaction keeps a tool-using run's history inside the context; see
+        # benchmark_compaction. The history's size is the last request's prompt as
+        # llama.cpp counted it, plus an estimate for what changed since.
+        compacting = record.compact_context and workspace is not None
+        use: dict[str, float] = {
+            "ratio": compaction.DEFAULT_TOKENS_PER_CHARACTER,
+            "prompt": 0.0,  # The last request's prompt tokens, cached or not.
+            "characters": 0.0,  # The characters of history that request sent.
+            "largest_reply": 0.0,
+            "learned_size": 0.0,  # The context size, when only a refusal or cut-off told.
+        }
+        # The last compaction, given its real size once the next request reports it.
+        compacted_entry: list[dict[str, object] | None] = [None]
+        stuck = False
+        if compacting:
+            stats["compactions"] = 0
+
+        def context_size() -> int | None:
+            size = stats.get("context_size") or use["learned_size"] or _profile_context(record)
+            return int(cast(float, size)) if size else None
+
+        def estimate(history: Sequence[Mapping[str, object]]) -> int:
+            change = compaction.history_characters(history) - use["characters"]
+            if not use["prompt"]:
+                return int(compaction.history_characters(history) * use["ratio"])
+            return max(int(use["prompt"] + change * use["ratio"]), 0)
+
+        async def compact(round_number: int) -> bool:
+            """Compact the history in place; true once it leaves room for the next reply."""
+            size = context_size()
+            count = int(cast(int, stats.get("compactions", 0)))
+            if size is None or count >= compaction.MAX_COMPACTIONS:
+                return False
+            if not compaction.compactable(messages):
+                return False
+            assert workspace is not None
+            reserve = compaction.reserve_tokens(size, int(use["largest_reply"]))
+            before = estimate(messages)
+            entry = timeline.switch("compacting", round_number, tokens_before=before)
+            pruned = compaction.prune(messages)
+            after = estimate(pruned)
+            mode: str | None = None
+            replacement: list[dict[str, object]] = pruned
+            if before - after >= before * compaction.PRUNE_MIN_SHARE and after + reserve <= size:
+                mode = "pruned"
+            else:
+                room = size - compaction.SUMMARY_MAX_TOKENS - 1024
+                request = compaction.summary_request(pruned, int(room / use["ratio"]))
+                if request is not None:
+                    summary, generated = await self._summarise(record, request)
+                    entry["tokens"] = generated
+                    if summary:
+                        mode = "summarised"
+                        entry["summary"] = summary
+                        replacement = compaction.compacted(
+                            pruned, summary, workspace.listing(), "list_tasks" in given
+                        )
+                        after = estimate(replacement)
+            if mode is None:
+                timeline.close(failed=True)
+                return False
+            messages[:] = replacement
+            stats["compactions"] = count + 1
+            stats[f"compactions_{mode}"] = int(cast(int, stats.get(f"compactions_{mode}", 0))) + 1
+            timeline.close(mode=mode, tokens_after=after)
+            compacted_entry[0] = entry
+            return after + reserve <= size
+
+        def label_calls(
+            round_number: int, ordered: Sequence[Mapping[str, str]], sizes: Mapping[int, int]
+        ) -> None:
+            """Name the calls on the round's tool-call timeline entry."""
+            for entry in reversed(cast(list[dict[str, object]], self._progress["timeline"])):
+                if entry["kind"] == "tool_call" and entry["round"] == round_number:
+                    entry["names"] = [call["name"] for call in ordered]
+                    entry["bytes"] = sum(sizes.values())
+                    break
+
         completed = False
-        for round_number in range(1, MAX_TOOL_ROUNDS + 1):
+        for round_number in range(1, max_rounds + 1):
+            if compacting and round_number > 1 and not stuck:
+                size = context_size()
+                reserve = compaction.reserve_tokens(size, int(use["largest_reply"])) if size else 0
+                if size is not None and estimate(messages) + reserve > size:
+                    # Compact before the reply could run out of room. If that cannot make
+                    # room, the round is still tried: the reserve is only a guess.
+                    stuck = not await compact(round_number)
             stats["rounds"] = round_number
             timings: Mapping[str, object] = {}
             content = ""
@@ -1358,6 +1581,9 @@ class BenchmarkRunner:
             finish: str | None = None
             reading = timeline.switch("reading", round_number)
             prompt_step[0] = (0.0, 0.0)
+            round_readings = len(readings["prefill"])
+            refusal: str | None = None
+            sent_characters = compaction.history_characters(messages)
             async for chunk in _until_context_full(
                 self._client.chat_stream(
                     record.profile_alias,
@@ -1369,8 +1595,8 @@ class BenchmarkRunner:
                     options=reasoning_options(record.reasoning_level),
                 )
             ):
-                if chunk is _CONTEXT_FULL:
-                    exhausted = True
+                if _CONTEXT_FULL in chunk:
+                    exhausted, refusal = True, str(chunk[_CONTEXT_FULL])
                     continue
                 self._observe_context(record.profile_alias, stats)
                 progress = chunk.get("prompt_progress")
@@ -1378,8 +1604,11 @@ class BenchmarkRunner:
                     processed = _number(progress.get("processed"))
                     milliseconds = _number(progress.get("time_ms"))
                     if processed is not None and milliseconds is not None:
+                        # Tokens reused from the cache count as processed at once; only the
+                        # ones read now say how fast reading is.
+                        processed = max(processed - (_number(progress.get("cache")) or 0.0), 0)
                         done, spent = prompt_step[0]
-                        if processed > done and milliseconds > spent:
+                        if processed > done and milliseconds - spent >= MIN_PREFILL_READING_MS:
                             readings["prefill"].append(
                                 (
                                     (processed - done) / (milliseconds - spent) * 1000,
@@ -1441,18 +1670,71 @@ class BenchmarkRunner:
             timeline.close()
             self._progress["tool_call"] = None
             reading["prompt_tokens"] = int(_number(timings.get("prompt_n")) or 0)
-            if prompt_step[0] == (0.0, 0.0):
-                # No progress was streamed, so the round's own prompt timing is its reading.
-                read = _number(timings.get("prompt_n"))
-                reading_ms = _number(timings.get("prompt_ms"))
-                if read and reading_ms:
-                    readings["prefill"].append((read / reading_ms * 1000, reading_ms / 1000))
+            cached = _number(timings.get("cache_n"))
+            if cached:
+                reading["cached_tokens"] = int(cached)
+            # What the round read after its last measured batch, or all of it when no
+            # progress was streamed, from the round's own prompt timing.
+            done, spent = prompt_step[0]
+            rest = (_number(timings.get("prompt_n")) or 0.0) - done
+            rest_ms = (_number(timings.get("prompt_ms")) or 0.0) - spent
+            if rest > 0 and rest_ms > 0:
+                if len(readings["prefill"]) > round_readings:
+                    # Too short to stand alone, so it joins the round's last batch.
+                    rate, seconds = readings["prefill"][-1]
+                    joined = seconds + rest_ms / 1000
+                    readings["prefill"][-1] = ((rate * seconds + rest) / joined, joined)
+                else:
+                    readings["prefill"].append((rest / rest_ms * 1000, rest_ms / 1000))
             if reading["end"] is None:
                 reading["end"] = round(self._clock() - sent, 2)
             for key in totals:
                 totals[key] += _number(timings.get(key)) or 0.0
+            replied = int(_number(timings.get("predicted_n")) or round_chunks)
             if budget is not None:
-                budget -= int(_number(timings.get("predicted_n")) or round_chunks)
+                budget -= replied
+            prompt_total = self._prompt_total(timings, replied)
+            if prompt_total:
+                if use["prompt"] and sent_characters - use["characters"] > 2000:
+                    # Learn the model's tokens per character from how the history grew.
+                    grown = (prompt_total - use["prompt"]) / (sent_characters - use["characters"])
+                    use["ratio"] = min(max(grown, 0.15), 0.6)
+                use["prompt"], use["characters"] = prompt_total, sent_characters
+                if compacted_entry[0] is not None:
+                    compacted_entry[0]["tokens_after"] = int(prompt_total)
+                    compacted_entry[0] = None
+            use["largest_reply"] = max(use["largest_reply"], replied)
+            cut_off = finish == "length" and budget is None
+            if compacting and (exhausted or cut_off):
+                # The reply ran out of room: drop it, compact, and try the round again.
+                learned = (
+                    compaction.context_size_from_error(refusal or "")
+                    if exhausted
+                    else int(prompt_total + replied) if prompt_total else None
+                )
+                if learned and not stats.get("context_size"):
+                    use["learned_size"] = learned
+                if await compact(round_number):
+                    stuck = False
+                    if pending:
+                        ordered = ordered_calls(pending, round_number)
+                        label_calls(round_number, ordered, sizes)
+                        calls_made.extend(
+                            {
+                                "round": round_number,
+                                "name": call["name"],
+                                "path": None,
+                                "ok": False,
+                                "result": (
+                                    "Not run: the context filled before the call was finished. "
+                                    "The context was compacted and the round tried again."
+                                ),
+                            }
+                            for call in ordered
+                        )
+                        stats["tool_calls"] = len(calls_made)
+                    stats.pop("finish_reason", None)
+                    continue
             if exhausted:
                 # The conversation no longer fits the profile's context, so the run ends here.
                 stats["finish_reason"] = "context"
@@ -1460,11 +1742,7 @@ class BenchmarkRunner:
             if workspace is None or not pending:
                 break
             ordered = ordered_calls(pending, round_number)
-            for entry in reversed(cast(list[dict[str, object]], self._progress["timeline"])):
-                if entry["kind"] == "tool_call" and entry["round"] == round_number:
-                    entry["names"] = [call["name"] for call in ordered]
-                    entry["bytes"] = sum(sizes.values())
-                    break
+            label_calls(round_number, ordered, sizes)
             if finish == "length":
                 # Generation was cut off mid-call, so the arguments are half written. Running
                 # the call would only hand back an error the model has no room left to act on.
@@ -1483,23 +1761,43 @@ class BenchmarkRunner:
                 stats["finish_reason"] = "length" if budget is not None else "context"
                 break
             messages.append(assistant_message(content, ordered))
-            for call in ordered:
+            # Calls already made in this reply, by tool and arguments, with their number.
+            seen: dict[tuple[str, str], int] = {}
+            for position, call in enumerate(ordered, start=1):
                 timeline.switch("tool", round_number, name=call["name"], call=len(calls_made))
-                # Off the event loop: linting starts Node.js, which takes a moment.
-                result, entry = await asyncio.to_thread(
-                    _call_tool,
-                    workspace,
-                    call["name"],
-                    call["arguments"],
-                    given,
-                    self._linter,
-                    cast(list[dict[str, object]], self._progress["tasks"]),
-                    cast(dict[str, object], self._progress["build"]),
-                    strict=bool(record.typescript_strict),
-                    verbose=record.verbose_log,
-                )
+                signature = (call["name"], _call_key(call["arguments"]))
+                if signature in seen:
+                    # A model stuck repeating itself can ask for the same large file a dozen
+                    # times in one reply; each copy is refused instead of filling the context.
+                    result, entry = _duplicate_call(
+                        call["name"], call["arguments"], seen[signature], verbose=record.verbose_log
+                    )
+                else:
+                    # Off the event loop: linting starts Node.js, which takes a moment.
+                    result, entry = await asyncio.to_thread(
+                        _call_tool,
+                        workspace,
+                        call["name"],
+                        call["arguments"],
+                        given,
+                        self._linter,
+                        cast(list[dict[str, object]], self._progress["tasks"]),
+                        cast(dict[str, object], self._progress["build"]),
+                        strict=bool(record.typescript_strict),
+                        verbose=record.verbose_log,
+                    )
+                    if call["name"] in CHANGING_TOOLS:
+                        # After a change, the same call could give a different result.
+                        seen.clear()
+                    seen[signature] = position
                 timeline.close(path=entry["path"], ok=entry["ok"])
                 calls_made.append({"round": round_number, **entry})
+                if isinstance(entry.get("tests"), dict):
+                    # How often the agent ran its tests, and how the last run went.
+                    counts = cast(dict[str, int], entry["tests"])
+                    stats["test_runs"] = int(cast(int, stats.get("test_runs", 0))) + 1
+                    stats["tests_passed"] = counts["passed"]
+                    stats["tests_failed"] = counts["failed"]
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
                 completed = completed or (call["name"] == COMPLETE_TOOL and entry["ok"] is True)
             stats["tool_calls"] = len(calls_made)
@@ -1511,6 +1809,7 @@ class BenchmarkRunner:
                 break
         else:
             stats["finish_reason"] = "tool_round_limit"
+            stats["round_limit"] = max_rounds
         if workspace is not None and COMPLETE_TOOL in given:
             # Only an agent that said it was done finished the task; any other end did not.
             stats["outcome"] = "completed" if completed else "unfinished"
@@ -1522,6 +1821,9 @@ class BenchmarkRunner:
             stats["prompt_tokens_per_second"] = round(
                 totals["prompt_n"] / totals["prompt_ms"] * 1000, 2
             )
+        if totals["cache_n"]:
+            # Prompt tokens reused from llama.cpp's cache rather than read again.
+            stats["prompt_cached_tokens"] = int(totals["cache_n"])
         stats["generated_tokens"] = int(totals["predicted_n"]) or chunks
         if totals["predicted_ms"]:
             stats["decode_seconds"] = round(totals["predicted_ms"] / 1000, 2)
@@ -1534,11 +1836,67 @@ class BenchmarkRunner:
         for phase, prefix in (("prefill", "prompt"), ("decode", "decode")):
             measured = readings[phase]
             if measured:
-                peak = max(rate for rate, _ in measured)
-                stats[f"{prefix}_peak_tokens_per_second"] = round(peak, 2)
                 stats[f"{prefix}_low_tokens_per_second"] = _slowest_share(measured)
+                stats[f"{prefix}_high_tokens_per_second"] = _slowest_share(
+                    measured, fastest=True
+                )
         if readings["decode"]:
             stats["decode_final_tokens_per_second"] = round(readings["decode"][-1][0], 2)
+
+    def _prompt_total(self, timings: Mapping[str, object], replied: int) -> float | None:
+        """The whole prompt a request sent, in tokens, counting what came from the cache.
+
+        prompt_n alone is only what was processed anew. Builds without cache_n leave the
+        slot's size in use, less the reply, as the next best figure.
+        """
+        processed = _number(timings.get("prompt_n"))
+        cached = _number(timings.get("cache_n"))
+        if processed is not None and cached is not None:
+            return processed + cached
+        context = self._progress.get("context")
+        if isinstance(context, dict) and isinstance(context.get("used"), int):
+            return max(float(context["used"] - replied), processed or 0.0)
+        return processed
+
+    async def _summarise(
+        self, record: BenchmarkRunRecord, messages: Sequence[Mapping[str, object]]
+    ) -> tuple[str, int]:
+        """Ask the model to summarise the session; the summary and the tokens it took.
+
+        Thinking is off so the token cap goes to the summary, and no tools are offered.
+        Its tokens are kept out of the run's speeds, as tool time is. A model that thinks
+        anyway and never answers has its thinking used instead.
+        """
+        progress: dict[str, object] = {"tokens": 0}
+        self._progress["compaction"] = progress
+        summary = reasoning = ""
+        generated = 0
+        try:
+            async for chunk in _until_context_full(
+                self._client.chat_stream(
+                    record.profile_alias,
+                    messages,
+                    max_tokens=compaction.SUMMARY_MAX_TOKENS,
+                    options=reasoning_options("off"),
+                )
+            ):
+                if _CONTEXT_FULL in chunk:
+                    return "", generated
+                timings = chunk.get("timings")
+                if isinstance(timings, dict):
+                    generated = int(_number(timings.get("predicted_n")) or generated)
+                choices = chunk.get("choices")
+                choice = choices[0] if isinstance(choices, list) and choices else {}
+                delta = choice.get("delta") if isinstance(choice, dict) else None
+                if isinstance(delta, dict):
+                    if isinstance(delta.get("content"), str):
+                        summary += delta["content"]
+                    if isinstance(delta.get("reasoning_content"), str):
+                        reasoning += delta["reasoning_content"]
+                progress["tokens"] = generated
+        finally:
+            self._progress["compaction"] = None
+        return (summary.strip() or reasoning.strip()), generated
 
     def _take_delta(
         self,
@@ -1576,17 +1934,22 @@ class BenchmarkRunner:
             "first_token_seconds",
             "prompt_tokens",
             "prompt_tokens_per_second",
+            "prompt_cached_tokens",
             "prompt_low_tokens_per_second",
-            "prompt_peak_tokens_per_second",
+            "prompt_high_tokens_per_second",
             "generated_tokens",
             "decode_tokens_per_second",
             "decode_low_tokens_per_second",
-            "decode_peak_tokens_per_second",
+            "decode_high_tokens_per_second",
             "decode_final_tokens_per_second",
             "total_seconds",
             "outcome",
             "context_peak",
             "context_size",
+            "compactions",
+            "test_runs",
+            "tests_passed",
+            "tests_failed",
         )
         return {
             "run_id": record.id,

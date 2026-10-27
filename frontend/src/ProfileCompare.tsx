@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, GitCompareArrows, LoaderCircle } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, type ArgumentCatalog, type BenchmarkResult, type Profile, type ProfileCreate, type Runtime, type StoredArgument } from './api'
-import { formatRate, formatSeconds, reasoningLabel } from './benchmarkFormat'
+import { formatRate, formatSeconds, phaseSpeeds, reasoningLabel } from './benchmarkFormat'
 
 type Side = string | null
 
@@ -132,10 +132,10 @@ function benchmarkRows(left: Profile, right: Profile): CompareRow[] {
   const figures: [string, string, (result: BenchmarkResult) => string][] = [
     ['decode-low', 'Decode 1% low', (result) => formatRate(result.decode_low_tokens_per_second)],
     ['decode', 'Decode average', (result) => formatRate(result.decode_tokens_per_second)],
-    ['peak', 'Decode peak', (result) => formatRate(result.decode_peak_tokens_per_second)],
+    ['decode-high', 'Decode 1% high', (result) => formatRate(phaseSpeeds(result, 'decode').high)],
     ['prefill-low', 'Prefill 1% low', (result) => formatRate(result.prompt_low_tokens_per_second)],
     ['prefill', 'Prefill average', (result) => formatRate(result.prompt_tokens_per_second)],
-    ['prefill-peak', 'Prefill peak', (result) => formatRate(result.prompt_peak_tokens_per_second)],
+    ['prefill-high', 'Prefill 1% high', (result) => formatRate(phaseSpeeds(result, 'prefill').high)],
     ['load', 'Model load', (result) => formatSeconds(result.load_seconds)],
     ['first', 'First token', (result) => formatSeconds(result.first_token_seconds)],
     ['reasoning', 'Reasoning', (result) => reasoningLabel(result.reasoning_level)],

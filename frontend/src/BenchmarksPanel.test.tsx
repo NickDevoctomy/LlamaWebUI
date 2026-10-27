@@ -23,7 +23,7 @@ const finished: BenchmarkRun = {
   state: 'completed',
   stage: 'done',
   error: null,
-  stats: { server_start_seconds: 2.1, load_seconds: 41.3, prompt_tokens: 30, prompt_tokens_per_second: 412.5, prompt_low_tokens_per_second: 380.2, prompt_peak_tokens_per_second: 451, generated_tokens: 3001, decode_tokens_per_second: 21.37, decode_low_tokens_per_second: 12.4, decode_peak_tokens_per_second: 33.8, decode_final_tokens_per_second: 18.2, total_seconds: 190.2, finish_reason: 'stop' },
+  stats: { server_start_seconds: 2.1, load_seconds: 41.3, prompt_tokens: 30, prompt_tokens_per_second: 412.5, prompt_low_tokens_per_second: 380.2, prompt_high_tokens_per_second: 451, generated_tokens: 3001, decode_tokens_per_second: 21.37, decode_low_tokens_per_second: 12.4, decode_high_tokens_per_second: 33.8, decode_final_tokens_per_second: 18.2, total_seconds: 190.2, finish_reason: 'stop' },
   started_at: '2026-10-23T11:00:00',
   finished_at: '2026-10-23T11:03:10',
 }
@@ -71,7 +71,7 @@ describe('BenchmarksPanel', () => {
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Max tokens' }), { target: { value: '2048' } })
     fireEvent.click(run)
 
-    await waitFor(() => expect(start).toHaveBeenCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: 2048, tools: true, tool_names: ALL_TOOLS, system_prompt_id: 'coding-agent', reasoning_level: null, verbose_log: false }))
+    await waitFor(() => expect(start).toHaveBeenCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: 2048, tools: true, tool_names: ALL_TOOLS, system_prompt_id: 'coding-agent', reasoning_level: null, verbose_log: false, compact_context: true }))
   })
 
   it('picks the catalog\'s default benchmark until another is chosen', async () => {
@@ -147,7 +147,7 @@ describe('BenchmarksPanel', () => {
     await waitFor(() => expect(retry).toBeEnabled())
     expect(retry).toHaveAttribute('title', 'Run again with the same settings on the profile as it is now (v2, this run used v1)')
     fireEvent.click(retry)
-    await waitFor(() => expect(start).toHaveBeenLastCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: null, tools: true, tool_names: ['write_file', 'finish_job'], system_prompt_id: 'coding-agent', reasoning_level: 'high', verbose_log: false }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: null, tools: true, tool_names: ['write_file', 'finish_job'], system_prompt_id: 'coding-agent', reasoning_level: 'high', verbose_log: false, compact_context: false }))
 
     // A run from before tools could be chosen had them all.
     fireEvent.click(screen.getByRole('button', { name: 'Retry run Snake on qwen-24gb' }))
@@ -230,6 +230,37 @@ describe('BenchmarksPanel', () => {
     await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ benchmark_id: 'neon', tool_names: [...ALL_TOOLS.slice(0, 5), 'check_typescript', 'bundle_typescript', 'finish_job'] })))
   })
 
+  it('offers run_tests only on a TypeScript benchmark with tests, and shows how they went', async () => {
+    const typed = ['check_typescript', 'bundle_typescript', 'run_tests'].map((name) => ({ name, summary: `What ${name} does.`, available: true }))
+    const tools = [...TOOLS.slice(0, 6), ...typed, TOOLS[6]]
+    const neon: Benchmark = { ...TETRIS, id: 'neon', title: 'Neon', typescript: { strict: false, tests: false } }
+    const tested: Benchmark = { ...TETRIS, id: 'tested', title: 'Tested', typescript: { strict: false, tests: true } }
+    const run: BenchmarkRun = { ...finished, tools: true, tool_names: ['write_file', 'run_tests', 'finish_job'], stats: { ...finished.stats, test_runs: 3, tests_passed: 12, tests_failed: 1 } }
+    const never: BenchmarkRun = { ...run, id: 'run-7', benchmark_title: 'Snake', stats: finished.stats }
+    mockApi([run, never], { benchmarks: [neon, tested], tools })
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
+    vi.spyOn(api, 'benchmarkRun').mockImplementation(async (id) => ({ ...(id === run.id ? run : never), prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] }))
+    renderPanel()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Choose tools' }))
+    const tests = screen.getByRole('checkbox', { name: /run_tests/ })
+    expect(tests).toBeDisabled()
+    expect(screen.getByText(/Only for TypeScript benchmarks with tests turned on./)).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Benchmark' }), { target: { value: 'tested' } })
+    expect(tests).toBeEnabled()
+    expect(tests).toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ benchmark_id: 'tested', tool_names: expect.arrayContaining(['run_tests']) })))
+
+    fireEvent.click(screen.getByRole('button', { name: /^View run Tetris/ }))
+    let dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
+    expect((await within(dialog).findByText('Tests')).nextSibling).toHaveTextContent('12 passed, 1 failed (last of 3 runs)')
+    fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' })[0])
+    fireEvent.click(screen.getByRole('button', { name: /^View run Snake/ }))
+    dialog = await screen.findByRole('dialog', { name: 'Snake benchmark' })
+    expect((await within(dialog).findByText('Tests')).nextSibling).toHaveTextContent('Never run')
+  })
+
   it('warns when a TypeScript benchmark would run without its tools', async () => {
     const typed = ['check_typescript', 'bundle_typescript'].map((name) => ({ name, summary: `What ${name} does.`, available: false }))
     mockApi([], { benchmarks: [{ ...TETRIS, typescript: { strict: true } }], tools: [...TOOLS, ...typed] })
@@ -289,12 +320,12 @@ describe('BenchmarksPanel', () => {
 
   it('says whether a tool-using agent finished its task, and why generation ended', async () => {
     const unfinished: BenchmarkRun = { ...finished, id: 'run-3', tools: true, max_tokens: null, stats: { ...finished.stats, finish_reason: 'length', outcome: 'unfinished' } }
-    const done: BenchmarkRun = { ...finished, id: 'run-4', benchmark_title: 'Snake', tools: true, stats: { ...finished.stats, finish_reason: 'finish_job', outcome: 'completed' } }
+    const done: BenchmarkRun = { ...finished, id: 'run-4', benchmark_title: 'Snake', tools: true, stats: { ...finished.stats, finish_reason: 'tool_round_limit', round_limit: 80, outcome: 'completed' } }
     // A tool run from before outcomes were recorded.
     const older: BenchmarkRun = { ...finished, id: 'run-5', tools: true }
     mockApi([unfinished, done, finished, older])
     const detail: BenchmarkRunDetail = { ...unfinished, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [{ kind: 'tool_call', round: 1, start: 1, end: 9, tokens: 900, names: ['write_file'], bytes: 1300 }] }
-    vi.spyOn(api, 'benchmarkRun').mockResolvedValue(detail)
+    vi.spyOn(api, 'benchmarkRun').mockImplementation(async (id) => id === done.id ? { ...detail, ...done } : detail)
     renderPanel()
 
     const rows = await screen.findAllByRole('button', { name: /^View run/ })
@@ -306,9 +337,16 @@ describe('BenchmarksPanel', () => {
     expect(within(rows[3].closest('li')!).queryByText(/Unfinished|Job finished/)).not.toBeInTheDocument()
 
     fireEvent.click(rows[0])
-    const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
+    let dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
     // With no token limit, running out means the context was full.
     expect(await within(dialog).findByText('Ran out of context')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' })[0])
+    fireEvent.click(rows[1])
+    const limited = await screen.findByRole('dialog', { name: 'Snake benchmark' })
+    expect(await within(limited).findByText('Hit the tool round limit (80)')).toBeInTheDocument()
+    fireEvent.click(within(limited).getAllByRole('button', { name: 'Close' })[0])
+    fireEvent.click(rows[0])
+    dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
     expect(within(dialog).getByText('Unfinished')).toBeInTheDocument()
     expect(within(dialog).getByText('Tokens / limit').nextSibling).toHaveTextContent('3,001 / context')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Generate' }))
@@ -497,6 +535,74 @@ describe('BenchmarksPanel', () => {
     expect(within(items[6]).getByText('Saved tetris/index.html.')).toBeInTheDocument()
   })
 
+  it('shows the decode peak of an older run as its 1% high, but not its prefill peak, and counts cached prompt tokens', async () => {
+    const { prompt_high_tokens_per_second: _prefill, decode_high_tokens_per_second: _decode, ...speeds } = finished.stats
+    const older: BenchmarkRun = { ...finished, stats: { ...speeds, prompt_peak_tokens_per_second: 1641538, decode_peak_tokens_per_second: 33.8, prompt_cached_tokens: 9000 } }
+    mockApi([older])
+    vi.spyOn(api, 'benchmarkRun').mockResolvedValue({ ...older, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [{ kind: 'reading', round: 1, start: 0, end: 1, prompt_tokens: 30, cached_tokens: 9000 }] })
+    renderPanel()
+
+    const row = (await screen.findByText(/Tetris · qwen-24gb/)).closest('li')!
+    const figures = (label: string) => [...within(row).getByText(label).closest('div')!.querySelectorAll('dd > span')].map((item) => item.textContent)
+    expect(figures('Prefill')).toEqual(['1% low380', 'Average413', '1% high—'])
+    expect(figures('Decode')).toEqual(['1% low12.4', 'Average21.4', '1% high33.8'])
+    fireEvent.click(within(row).getByRole('button', { name: 'View run Tetris on qwen-24gb' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
+    expect((await within(dialog).findByText('Prompt', { selector: 'dt' })).nextSibling).toHaveTextContent('30 tokens + 9,000 cached')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Generate' }))
+    expect(within(dialog).getByRole('list', { name: 'Generation steps' })).toHaveTextContent('30 tokens · 9,000 cached')
+  })
+
+  it('compacts the context by default, and shows each compaction', async () => {
+    const compacted: BenchmarkRun = { ...finished, tools: true, tool_names: ALL_TOOLS, max_tokens: null, compact_context: true, stats: { ...finished.stats, compactions: 2, compactions_pruned: 1, compactions_summarised: 1 } }
+    const off: BenchmarkRun = { ...finished, id: 'run-6', tools: true, tool_names: ALL_TOOLS, compact_context: false }
+    mockApi([compacted, off])
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
+    vi.spyOn(api, 'benchmarkRun').mockResolvedValue({
+      ...compacted, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [],
+      timeline: [
+        { kind: 'compacting', round: 5, start: 100, end: 100.1, tokens_before: 14000, tokens_after: 6500, mode: 'pruned' },
+        { kind: 'compacting', round: 9, start: 200, end: 260, tokens_before: 15000, tokens_after: 2100, mode: 'summarised', tokens: 812, summary: 'Board done; scoring left.' },
+      ],
+    })
+    renderPanel()
+
+    const rows = await screen.findAllByRole('button', { name: /^View run/ })
+    expect(rows[0].closest('li')).toHaveTextContent('2 compactions')
+    expect(rows[1].closest('li')).not.toHaveTextContent('compaction')
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Compact context' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Compact context' }))
+    fireEvent.click(screen.getByRole('button', { name: /Run benchmark/ }))
+    await waitFor(() => expect(start).toHaveBeenCalledWith(expect.objectContaining({ compact_context: true })))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Compact context' }))
+    fireEvent.click(screen.getByRole('button', { name: /Run benchmark/ }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ compact_context: false })))
+
+    fireEvent.click(rows[0])
+    const dialog = await screen.findByRole('dialog', { name: 'Tetris benchmark' })
+    expect((await within(dialog).findByText('Compactions')).nextSibling).toHaveTextContent('2 (1 pruned, 1 summarised)')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Generate' }))
+    const steps = within(dialog).getByRole('list', { name: 'Generation steps' })
+    expect(steps).toHaveTextContent('Compacted context: pruned old tool output14,000 → 6,500 tokens')
+    expect(steps).toHaveTextContent('Compacted context: summarised15,000 → 2,100 tokens · summary, 812 tokens1m 0s')
+    fireEvent.click(within(steps).getByText('Compacted context: summarised'))
+    expect(within(steps).getByText('Board done; scoring left.')).toBeVisible()
+  })
+
+  it('shows a summary being written while the context is compacted', async () => {
+    mockApi([running])
+    vi.spyOn(api, 'benchmarkRun').mockResolvedValue({
+      ...running, tools: true, compact_context: true, live: { ...running.live, elapsed: 130, compaction: { tokens: 412 } },
+      prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [],
+      timeline: [{ kind: 'compacting', round: 4, start: 100, end: null, tokens_before: 15000 }],
+    })
+    renderPanel()
+
+    const toggle = await screen.findByRole('button', { name: /^Generate/ })
+    await waitFor(() => expect(toggle).toHaveTextContent('Generate(Compacting context (summary, 412 tokens)… 30.0 s)'))
+  })
+
   it('says what a running benchmark is doing next to Generate on the page', async () => {
     mockApi([running])
     const detail: BenchmarkRunDetail = {
@@ -537,10 +643,10 @@ describe('BenchmarksPanel', () => {
     const row = (await screen.findByText(/Tetris · qwen-24gb/)).closest('li')!
     expect(within(row).getByText('190 s')).toBeInTheDocument()
     expect(within(row).getByText('41.3 s')).toBeInTheDocument()
-    // Each phase stacks its 1% low, average and peak under one tok/s heading.
+    // Each phase stacks its 1% low, average and 1% high under one tok/s heading.
     const figures = (label: string) => [...within(row).getByText(label).closest('div')!.querySelectorAll('dd > span')].map((item) => item.textContent)
-    expect(figures('Prefill')).toEqual(['1% low380', 'Average413', 'Peak451'])
-    expect(figures('Decode')).toEqual(['1% low12.4', 'Average21.4', 'Peak33.8'])
+    expect(figures('Prefill')).toEqual(['1% low380', 'Average413', '1% high451'])
+    expect(figures('Decode')).toEqual(['1% low12.4', 'Average21.4', '1% high33.8'])
     expect(within(row).getByText('3,001')).toBeInTheDocument()
 
     fireEvent.click(within(row).getByRole('button', { name: 'View run Tetris on qwen-24gb' }))
@@ -549,7 +655,7 @@ describe('BenchmarksPanel', () => {
     expect(within(dialog).getByText('Reasoning (13 characters)')).toBeInTheDocument()
     expect(within(dialog).getByText('Finished: stop')).toBeInTheDocument()
     const speeds = within(dialog).getByRole('table', { name: 'Speed, tokens per second' })
-    expect(within(speeds).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual(['1% low', 'Average', 'Peak'])
+    expect(within(speeds).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual(['1% low', 'Average', '1% high'])
     expect(within(speeds).getByRole('row', { name: /Prefill/ })).toHaveTextContent('Prefill380413451')
     expect(within(speeds).getByRole('row', { name: /Decode/ })).toHaveTextContent('Decode12.421.433.8')
     expect(within(dialog).getByText('Decode at end (3 s)').nextSibling).toHaveTextContent('18.2 tok/s')

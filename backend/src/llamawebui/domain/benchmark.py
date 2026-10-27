@@ -7,6 +7,10 @@ modules and builds the page from them:
 
     typescript:
       strict: true   # optional; type checks are non-strict by default
+      tests: true    # optional; offers run_tests, for unit tests of the modules
+
+Its ``max_rounds`` key sets how many requests a tool-using run may make before it is
+stopped, for a job that needs more round trips than the default allows.
 """
 
 from __future__ import annotations
@@ -24,8 +28,10 @@ DEFAULT_SYSTEM_PROMPT_ID = "coding-agent"
 _ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 # Frontmatter: YAML between a first line of --- and the next line of ---.
 _FRONTMATTER = re.compile(r"\A---[ \t]*\r?\n(.*?)^---[ \t]*$", re.DOTALL | re.MULTILINE)
-FRONTMATTER_KEYS = frozenset({"tasks", "typescript"})
-TYPESCRIPT_KEYS = frozenset({"strict"})
+FRONTMATTER_KEYS = frozenset({"tasks", "typescript", "max_rounds"})
+# The most rounds a benchmark may allow, so a typo cannot let a run go on for hours.
+MAX_ROUNDS_LIMIT = 500
+TYPESCRIPT_KEYS = frozenset({"strict", "tests"})
 
 
 class BenchmarkError(ValueError):
@@ -41,6 +47,10 @@ class Benchmark:
     tasks: tuple[str, ...] = field(default=())
     # None for a plain benchmark; for a TypeScript one, whether type checks are strict.
     typescript_strict: bool | None = None
+    # A TypeScript benchmark whose agent can write and run unit tests with run_tests.
+    typescript_tests: bool = False
+    # Requests a tool-using run may make; None keeps the runner's default.
+    max_rounds: int | None = None
 
     @property
     def typescript(self) -> bool:
@@ -53,8 +63,11 @@ class Benchmark:
             "prompt": self.prompt,
             "tasks": list(self.tasks),
             "typescript": (
-                {"strict": self.typescript_strict} if self.typescript_strict is not None else None
+                {"strict": self.typescript_strict, "tests": self.typescript_tests}
+                if self.typescript_strict is not None
+                else None
             ),
+            "max_rounds": self.max_rounds,
         }
 
 
@@ -133,7 +146,24 @@ def _typescript_strict(name: str, value: object) -> bool | None:
     strict = value.get("strict", False)
     if not isinstance(strict, bool):
         raise BenchmarkError(f"{name}: typescript strict must be true or false")
+    if not isinstance(value.get("tests", False), bool):
+        raise BenchmarkError(f"{name}: typescript tests must be true or false")
     return strict
+
+
+def _max_rounds(name: str, value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_ROUNDS_LIMIT:
+        raise BenchmarkError(
+            f"{name}: max_rounds must be a whole number from 1 to {MAX_ROUNDS_LIMIT}"
+        )
+    return value
+
+
+def _typescript_tests(value: object) -> bool:
+    """Whether a TypeScript benchmark offers run_tests; checked by _typescript_strict."""
+    return isinstance(value, dict) and value.get("tests") is True
 
 
 def load_benchmarks(directory: Path = BENCHMARK_DIRECTORY) -> tuple[Benchmark, ...]:
@@ -149,6 +179,8 @@ def load_benchmarks(directory: Path = BENCHMARK_DIRECTORY) -> tuple[Benchmark, .
                 prompt=prompt,
                 tasks=_tasks(name, settings.get("tasks")),
                 typescript_strict=_typescript_strict(name, settings.get("typescript")),
+                typescript_tests=_typescript_tests(settings.get("typescript")),
+                max_rounds=_max_rounds(name, settings.get("max_rounds")),
             )
         )
     return tuple(benchmarks)

@@ -150,6 +150,10 @@ class BenchmarkRunRecord(Base):
     # Whether each tool call kept the arguments the model sent and its whole result,
     # rather than a short excerpt, so failed calls can be looked into afterwards.
     verbose_log: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # Whether the run compacted its history when the context filled; older runs never did.
+    compact_context: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
     # What generation spent its time on: reading, thinking, answering and tool calls.
     timeline: Mapped[list[dict[str, object]]] = mapped_column(
         JSON, default=list, server_default=text("'[]'")
