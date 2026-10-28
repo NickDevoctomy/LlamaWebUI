@@ -361,7 +361,7 @@ TAP = """TAP version 13
 
       code: 'ERR_ASSERTION'
       stack: |-
-        TestContext.<anonymous> ({folder}\src\board.test.ts:6:31)
+        TestContext.<anonymous> ({folder}\\src\\board.test.ts:6:31)
       ...
     1..2
 not ok 1 - board

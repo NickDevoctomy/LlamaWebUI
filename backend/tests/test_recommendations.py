@@ -1019,7 +1019,7 @@ def test_file_locations_never_count_as_a_change() -> None:
         configuration={
             "schema_version": 2,
             "arguments": [
-                {"id": "spec-draft-model", "value": "E:\models\draft.gguf"},
+                {"id": "spec-draft-model", "value": "E:/models/draft.gguf"},
                 {"id": "ctx-size", "value": 4096},
             ],
         },

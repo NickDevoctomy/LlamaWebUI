@@ -6,8 +6,10 @@ from collections.abc import Callable
 
 import keyring
 import pytest
+from argon2 import PasswordHasher, profiles
 from fastapi.testclient import TestClient
 
+from llamawebui.services import auth_service
 from llamawebui.services.auth_service import CSRF_HEADER, CSRF_HEADER_VALUE
 
 Login = Callable[[TestClient], TestClient]
@@ -30,6 +32,15 @@ def isolated_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(keyring, "set_password", set_password)
     monkeypatch.setattr(keyring, "get_password", get_password)
     monkeypatch.setattr(keyring, "delete_password", delete_password)
+
+
+@pytest.fixture(autouse=True)
+def cheap_password_hashing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hash passwords with Argon2's cheapest profile. The production parameters are
+    memory-hard on purpose and dominate the suite's time on slow CI runners."""
+    monkeypatch.setattr(
+        auth_service, "PasswordHasher", lambda: PasswordHasher.from_parameters(profiles.CHEAPEST)
+    )
 
 
 @pytest.fixture(autouse=True)
