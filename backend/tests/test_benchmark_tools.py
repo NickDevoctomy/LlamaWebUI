@@ -1095,6 +1095,42 @@ async def test_the_system_message_combines_the_chosen_prompt_and_the_tool_note(
     assert finished.system_prompt == ("agent framing" if system else None)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("system", "extra", "expected"),
+    [
+        (True, " Reasoning strength: high\n", ["agent framing", "Reasoning strength: high"]),
+        (False, "Reasoning strength: high", ["Reasoning strength: high"]),
+        (True, "  \n", ["agent framing"]),
+    ],
+)
+async def test_added_text_follows_the_chosen_prompt_before_the_tool_note(
+    tmp_path: Path, system: bool, extra: str, expected: list[str]
+) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    runner, runs, _ = _runner(engine, client)
+    prompt = SystemPrompt(id="agent", title="Agent", text="agent framing")
+
+    record = runner.start(
+        profile,
+        BENCHMARK,
+        256,
+        tools=True,
+        system_prompt=prompt if system else None,
+        system_prompt_extra=extra,
+    )
+    await runner.wait()
+
+    messages, _ = client.requests[0]
+    assert messages[0] == {
+        "role": "system",
+        "content": "\n\n".join([*expected, tool_system_prompt(UNLINTED)]),
+    }
+    # Kept trimmed, and not at all when it was blank.
+    assert runs.get(record.id).system_prompt_extra == (extra.strip() or None)
+
+
 @pytest.mark.parametrize(
     ("level", "options"),
     [

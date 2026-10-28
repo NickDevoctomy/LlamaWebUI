@@ -134,6 +134,8 @@ class BenchmarkRunRecord(Base):
     # The system prompt the run was sent with, if any, and its text at the time.
     system_prompt_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Text added after the chosen system prompt, such as a model's own reasoning switch.
+    system_prompt_extra: Mapped[str | None] = mapped_column(Text, nullable=True)
     # "off", or an effort level for the chat template; None keeps the model's default.
     reasoning_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
     tool_calls: Mapped[list[dict[str, object]]] = mapped_column(

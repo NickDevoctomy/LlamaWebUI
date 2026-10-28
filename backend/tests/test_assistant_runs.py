@@ -59,6 +59,7 @@ def _completed(
     decode: float,
     generated: int,
     level: str | None = "medium",
+    extra: str | None = None,
 ) -> str:
     app: Any = client.app
     profile = app.state.profile_registry.list()[0]
@@ -67,6 +68,7 @@ def _completed(
         app.state.benchmarks[0],
         None,
         reasoning_level=level,
+        system_prompt_extra=extra,
         conversation_id=conversation_id,
     )
     app.state.benchmark_runs.update(
@@ -121,7 +123,8 @@ def test_runs_use_the_briefs_level_and_record_their_settings(tmp_path: Path, log
     with TestClient(_app(tmp_path, ScriptedClient()), client=LOCAL) as client:
         _, conversation_id = _setup(client, login, tmp_path)
         app: Any = client.app
-        context = _context(client, conversation_id)
+        brief = {**BRIEF, "system_prompt_extra": " Reasoning strength: high\n"}
+        context = _context(client, conversation_id, brief=brief)
         approval = client.portal.call(  # type: ignore[union-attr]
             app.state.assistant_engine.tool("run_benchmark").approval_request,
             context,
@@ -137,6 +140,10 @@ def test_runs_use_the_briefs_level_and_record_their_settings(tmp_path: Path, log
     assert started["reasoning_level"] == "medium"
     assert started["benchmark"] == "tetris-no-details"
     assert record.reasoning_level == "medium"
+    # The brief's added text is trimmed and follows the system prompt on every run.
+    assert started["system_prompt_extra"] == "Reasoning strength: high"
+    assert record.system_prompt_extra == "Reasoning strength: high"
+    assert approval[1]["added to system prompt"] == "Reasoning strength: high"
     assert record.conversation_id == conversation_id
     assert record.settings_fingerprint == fingerprint(record.launch_settings)
     assert approval[1]["reasoning"] == "medium"
@@ -186,6 +193,15 @@ def test_runs_show_their_settings_and_compare_with_a_baseline(tmp_path: Path, lo
             _call(context, client, "list_benchmark_runs", {"limit": 2, "benchmark_id": "x"}).text
         )
         all_runs = json.loads(_call(context, client, "list_benchmark_runs", {"limit": 2}).text)
+        other_extra = _completed(
+            client,
+            conversation_id,
+            now + timedelta(minutes=15),
+            decode=90.0,
+            generated=1,
+            extra="Reasoning strength: high",
+        )
+        apart = json.loads(_call(context, client, "evaluate_run", {"run_id": other_extra}).text)
 
     assert detail["reasoning_level"] == "medium"
     assert detail["differs_from_profile_now"] == [
@@ -204,6 +220,8 @@ def test_runs_show_their_settings_and_compare_with_a_baseline(tmp_path: Path, lo
     # The conversation's first run compares with the latest comparable run before it.
     assert first["baseline"]["baseline_run_id"] == before
     assert lonely["baseline"] is None
+    # Different added system prompt text is a different workload, so it has no baseline.
+    assert apart["baseline"] is None
     assert chosen["baseline"]["baseline_run_id"] == before
     assert "cannot be a baseline" in bad_baseline.text
     assert runs == {"runs": [], "total": 0}

@@ -171,6 +171,7 @@ def test_brief_text_lists_the_targets_set() -> None:
             "min_context_tokens": 65536,
             "parallel_slots": 2,
             "reasoning_level": "low",
+            "system_prompt_extra": "Reasoning strength: high",
             "priority": ["load", "decode", "prefill", "memory"],
         }
     )
@@ -184,7 +185,8 @@ def test_brief_text_lists_the_targets_set() -> None:
         "VRAM use at most 16 GB",
         "at least 65536 tokens",
         "2 requests at once",
-        '"Tetris", reasoning level low',
+        '"Tetris", reasoning level low, with "Reasoning strength: high" added to its system '
+        "prompt",
         "load, decode, prefill, memory",
     ):
         assert expected in text
@@ -195,6 +197,7 @@ def test_brief_text_lists_the_targets_set() -> None:
     )
     assert "existing profile `qwen`" in plain
     assert "None set" in plain
+    assert "added to its system prompt" not in plain
 
 
 def test_system_template_uses_only_known_tokens_and_renders_completely() -> None:

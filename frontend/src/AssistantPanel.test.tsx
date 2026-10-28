@@ -93,7 +93,7 @@ describe('AssistantPanel', () => {
     await waitFor(() => expect(create).toHaveBeenCalled())
     const [brief, title] = create.mock.calls[0]
     expect(title).toBe('')
-    expect(brief).toMatchObject({ subject: 'model', model: { repo_id: 'owner/Model-GGUF', quantization: null }, profile_id: null, min_decode_tps: 30, min_context_tokens: 65536, max_ram_gb: null, parallel_slots: 1, priority: ['prefill', 'decode', 'load', 'memory'] })
+    expect(brief).toMatchObject({ subject: 'model', model: { repo_id: 'owner/Model-GGUF', quantization: null }, profile_id: null, min_decode_tps: 30, min_context_tokens: 65536, max_ram_gb: null, parallel_slots: 1, system_prompt_extra: null, priority: ['prefill', 'decode', 'load', 'memory'] })
   })
 
   it('starts a profile brief at the reasoning level the profile was last benchmarked at', async () => {
@@ -115,8 +115,9 @@ describe('AssistantPanel', () => {
     fireEvent.change(within(dialog).getByLabelText('Profile'), { target: { value: 'p2' } })
     expect(within(dialog).getByLabelText(/^Reasoning/)).toHaveValue('')
     fireEvent.change(within(dialog).getByLabelText('Profile'), { target: { value: 'p1' } })
+    fireEvent.change(within(dialog).getByLabelText(/^Added to system prompt/), { target: { value: '  Reasoning strength: high\n' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Start' }))
-    await waitFor(() => expect(create.mock.calls[0]?.[0]).toMatchObject({ profile_id: 'p1', reasoning_level: 'low' }))
+    await waitFor(() => expect(create.mock.calls[0]?.[0]).toMatchObject({ profile_id: 'p1', reasoning_level: 'low', system_prompt_extra: 'Reasoning strength: high' }))
   })
 
   it('deletes the benchmark runs a conversation started', async () => {

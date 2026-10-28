@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import re
-import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
 
 from llamawebui.domain.download_job import DownloadState
 from llamawebui.models import DownloadJobRecord
 from llamawebui.services.download_registry import DownloadRegistry
+from llamawebui.services.gguf_reader import GgufError, read_header
 
 _SHARD_PATTERN = re.compile(
     r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<count>\d{5})\.gguf$",
@@ -196,47 +195,28 @@ def _is_primary(name: str) -> bool:
     return match is None or match.group("index") == "00001"
 
 
+_SUMMARY_KEYS = frozenset(
+    {
+        "general.architecture",
+        "general.name",
+        "general.size_label",
+        "general.file_type",
+        "general.quantization_version",
+        "general.parameter_count",
+    }
+)
+
+
 def read_gguf_metadata(path: Path) -> dict[str, str | int]:
-    """Read a bounded set of scalar GGUF header metadata without loading tensors."""
-    metadata: dict[str, str | int] = {}
+    """A few identifying header values, plus the trained context as ``<arch>.context_length``."""
     try:
-        with path.open("rb") as stream:
-            if stream.read(4) != b"GGUF":
-                return metadata
-            version, _, count = struct.unpack("<IQQ", stream.read(20))
-            if version not in {1, 2, 3} or count > 100_000:
-                return metadata
-            for _ in range(count):
-                key = _read_gguf_string(stream)
-                value_type = struct.unpack("<I", stream.read(4))[0]
-                value = _read_gguf_scalar(stream, value_type)
-                if key in {
-                    "general.architecture",
-                    "general.name",
-                    "general.file_type",
-                    "general.quantization_version",
-                    "general.parameter_count",
-                    "general.context_length",
-                } and isinstance(value, (str, int)):
-                    metadata[key] = value
-    except (OSError, struct.error, UnicodeDecodeError, ValueError):
+        header = read_header(path)
+    except GgufError:
         return {}
-    return metadata
-
-
-def _read_gguf_string(stream: BinaryIO) -> str:
-    length = struct.unpack("<Q", stream.read(8))[0]
-    if length > 4096:
-        raise ValueError("GGUF metadata string is too long")
-    return stream.read(length).decode("utf-8")
-
-
-def _read_gguf_scalar(stream: BinaryIO, value_type: int) -> str | int | None:
-    if value_type == 4:
-        return _read_gguf_string(stream)
-    formats = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 5: "<I", 6: "<i", 7: "<?", 10: "<Q", 11: "<q"}
-    fmt = formats.get(value_type)
-    if fmt is None:
-        raise ValueError("unsupported GGUF metadata type")
-    value = struct.unpack(fmt, stream.read(struct.calcsize(fmt)))[0]
-    return value if isinstance(value, (str, int)) else None
+    architecture = header.metadata.get("general.architecture")
+    keys = _SUMMARY_KEYS | {f"{architecture}.context_length"}
+    return {
+        key: value
+        for key, value in header.metadata.items()
+        if key in keys and isinstance(value, str | int) and not isinstance(value, bool)
+    }

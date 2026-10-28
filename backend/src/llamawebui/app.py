@@ -147,6 +147,7 @@ from llamawebui.services.llama_release_installer import (
 )
 from llamawebui.services.logical_model_registry import LogicalModelRegistry
 from llamawebui.services.login_throttle import LoginRateLimitedError, LoginThrottle
+from llamawebui.services.memory_estimate import Devices, estimate_profile_memory
 from llamawebui.services.model_artifact_registry import ModelArtifactError, ModelArtifactRegistry
 from llamawebui.services.model_event_stream import stream_model_events
 from llamawebui.services.model_library import ModelLibrary
@@ -405,6 +406,8 @@ class BenchmarkRunRequest(BaseModel):
     tool_names: list[str] | None = Field(default=None, max_length=32)
     # A bundled system prompt to send first, by id; none sends the prompt on its own.
     system_prompt_id: str | None = Field(default=None, max_length=64)
+    # Text added after that system prompt, e.g. a model's "Reasoning strength: high" line.
+    system_prompt_extra: str | None = Field(default=None, max_length=4000)
     # "off" or an effort level for the chat template; none keeps the model's own default.
     reasoning_level: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = (
         None
@@ -574,6 +577,23 @@ def _runtime_executables(request: Request) -> dict[str, Path]:
     return {runtime.id: Path(runtime.executable_path) for runtime in registry.list()}
 
 
+def _runtime_devices(request: Request) -> dict[str, Devices]:
+    """The GPUs each registered runtime reported, by runtime id."""
+    registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+    return {runtime.id: Devices.from_listing(runtime.devices) for runtime in registry.list()}
+
+
+def _memory_estimate(profile: ModelProfile, devices: Devices) -> dict[str, object] | None:
+    """What the profile's model should take once loaded, or None if it cannot be read."""
+    values = {
+        argument.catalog_id: argument.value
+        for argument in profile.arguments
+        if argument.catalog_id is not None
+    }
+    estimate = estimate_profile_memory(profile.model_path, values, devices)
+    return estimate.to_payload() if estimate is not None else None
+
+
 def _saved_profile_payload(
     request: Request, record: ModelProfileRecord, profile: ModelProfile
 ) -> dict[str, object]:
@@ -586,6 +606,7 @@ def _saved_profile_payload(
         catalog=catalog,
         recommendations=request.app.state.recommendations,
         executables=_runtime_executables(request),
+        devices=_runtime_devices(request),
     )
     registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
     runtime = registry.get(record.runtime_id)
@@ -601,9 +622,11 @@ def _profile_payload(
     catalog: ArgumentCatalog,
     recommendations: Sequence[Recommendation] = (),
     executables: Mapping[str, Path] | None = None,
+    devices: Mapping[str, Devices] | None = None,
 ) -> dict[str, object]:
     source = artifacts.source_for_profile(profile) if artifacts is not None else None
     executable = (executables or {}).get(profile.runtime_id)
+    runtime_devices = (devices or {}).get(profile.runtime_id)
     validation_state = "available"
     download: dict[str, object] | None = None
     if artifacts is not None:
@@ -645,6 +668,11 @@ def _profile_payload(
         "hash": profile_hash(profile, catalog, executable) if executable is not None else None,
         "recommendation": recommendation_status(profile, recommendations, catalog),
         "benchmark_results": profile.benchmark_results or {},
+        "memory_estimate": (
+            _memory_estimate(profile_from_record(profile, catalog), runtime_devices)
+            if runtime_devices is not None
+            else None
+        ),
         "validation_state": validation_state,
         "auto_enable": profile.enable_on_download is not None,
         "download": download,
@@ -1835,6 +1863,7 @@ def create_app(
             "tools": record.tools,
             "tool_names": record.tool_names,
             "system_prompt_id": record.system_prompt_id,
+            "system_prompt_extra": record.system_prompt_extra,
             "reasoning_level": record.reasoning_level,
             "typescript_strict": record.typescript_strict,
             "verbose_log": record.verbose_log,
@@ -2013,6 +2042,7 @@ def create_app(
                 tools=run_request.tools,
                 tool_names=run_request.tool_names,
                 system_prompt=system_prompt,
+                system_prompt_extra=run_request.system_prompt_extra,
                 reasoning_level=run_request.reasoning_level,
                 verbose_log=run_request.verbose_log,
                 compact_context=run_request.compact_context,
@@ -2549,6 +2579,7 @@ def create_app(
                     catalog=catalog,
                     recommendations=request.app.state.recommendations,
                     executables=_runtime_executables(request),
+                    devices=_runtime_devices(request),
                 )
                 if applied.profile is not None
                 else None
@@ -2563,6 +2594,7 @@ def create_app(
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
         catalog = _argument_catalog(request)
         executables = _runtime_executables(request)
+        devices = _runtime_devices(request)
         return [
             _profile_payload(
                 profile,
@@ -2570,6 +2602,7 @@ def create_app(
                 catalog=catalog,
                 recommendations=request.app.state.recommendations,
                 executables=executables,
+                devices=devices,
             )
             for profile in registry.list()
         ]
@@ -2593,6 +2626,7 @@ def create_app(
                 "command": "",
                 "preset": "",
                 "router_arguments": _router_preview(request, runtime),
+                "memory_estimate": None,
             }
         issues = _profile_issues(request, profile, runtime)
         executable = Path(runtime.executable_path)
@@ -2602,6 +2636,7 @@ def create_app(
             "command": render_command(profile, catalog, executable),
             "preset": render_preset_unchecked(profile, catalog, redact=True),
             "router_arguments": _router_preview(request, runtime),
+            "memory_estimate": _memory_estimate(profile, Devices.from_listing(runtime.devices)),
         }
 
     @app.post("/api/profiles", status_code=status.HTTP_201_CREATED)
@@ -2719,7 +2754,9 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
             ) from error
-        return _profile_payload(record, catalog=_argument_catalog(request))
+        return _profile_payload(
+            record, catalog=_argument_catalog(request), devices=_runtime_devices(request)
+        )
 
     @app.delete(
         "/api/profiles/{profile_id}/snapshots/{snapshot_id}",
@@ -2748,6 +2785,7 @@ def create_app(
             catalog=_argument_catalog(request),
             recommendations=request.app.state.recommendations,
             executables=_runtime_executables(request),
+            devices=_runtime_devices(request),
         )
 
     @app.post("/api/profiles/{profile_id}/upgrade")
@@ -2791,6 +2829,7 @@ def create_app(
             artifacts,
             catalog=_argument_catalog(request),
             executables=_runtime_executables(request),
+            devices=_runtime_devices(request),
         )
 
     @app.delete("/api/profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -2840,6 +2879,7 @@ def create_app(
             artifacts,
             catalog=_argument_catalog(request),
             executables=_runtime_executables(request),
+            devices=_runtime_devices(request),
         )
 
     @app.get("/api/profiles/{profile_id}/export", response_class=PlainTextResponse)
@@ -2951,6 +2991,7 @@ def create_app(
                     artifacts,
                     catalog=catalog,
                     executables=_runtime_executables(request),
+                    devices=_runtime_devices(request),
                 )
             profile = ModelProfile(
                 alias=alias,
@@ -3242,6 +3283,7 @@ def create_app(
             artifacts,
             catalog=_argument_catalog(request),
             executables=_runtime_executables(request),
+            devices=_runtime_devices(request),
         )
 
     @app.delete("/api/library/{download_id}")

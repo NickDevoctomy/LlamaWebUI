@@ -71,7 +71,7 @@ describe('BenchmarksPanel', () => {
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Max tokens' }), { target: { value: '2048' } })
     fireEvent.click(run)
 
-    await waitFor(() => expect(start).toHaveBeenCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: 2048, tools: true, tool_names: ALL_TOOLS, system_prompt_id: 'coding-agent', reasoning_level: null, verbose_log: false, compact_context: true }))
+    await waitFor(() => expect(start).toHaveBeenCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: 2048, tools: true, tool_names: ALL_TOOLS, system_prompt_id: 'coding-agent', system_prompt_extra: null, reasoning_level: null, verbose_log: false, compact_context: true }))
   })
 
   it('picks the catalog\'s default benchmark until another is chosen', async () => {
@@ -135,7 +135,7 @@ describe('BenchmarksPanel', () => {
   })
 
   it('retries a run with its settings on the profile as it is now', async () => {
-    const chosen: BenchmarkRun = { ...finished, profile_version: 1, tools: true, tool_names: ['write_file', 'finish_job'], max_tokens: null, system_prompt_id: 'coding-agent', reasoning_level: 'high' }
+    const chosen: BenchmarkRun = { ...finished, profile_version: 1, tools: true, tool_names: ['write_file', 'finish_job'], max_tokens: null, system_prompt_id: 'coding-agent', system_prompt_extra: 'Reasoning strength: high', reasoning_level: 'high' }
     const legacy: BenchmarkRun = { ...finished, id: 'run-legacy', benchmark_title: 'Snake', tools: true }
     const gone: BenchmarkRun = { ...finished, id: 'run-gone', benchmark_title: 'Pong', profile_id: 'deleted', profile_alias: 'old-profile' }
     const off: BenchmarkRun = { ...finished, id: 'run-off', benchmark_title: 'Off', profile_id: 'p2', profile_alias: 'qwen-off' }
@@ -147,7 +147,7 @@ describe('BenchmarksPanel', () => {
     await waitFor(() => expect(retry).toBeEnabled())
     expect(retry).toHaveAttribute('title', 'Run again with the same settings on the profile as it is now (v2, this run used v1)')
     fireEvent.click(retry)
-    await waitFor(() => expect(start).toHaveBeenLastCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: null, tools: true, tool_names: ['write_file', 'finish_job'], system_prompt_id: 'coding-agent', reasoning_level: 'high', verbose_log: false, compact_context: false }))
+    await waitFor(() => expect(start).toHaveBeenLastCalledWith({ profile_id: 'p1', benchmark_id: 'tetris', max_tokens: null, tools: true, tool_names: ['write_file', 'finish_job'], system_prompt_id: 'coding-agent', system_prompt_extra: 'Reasoning strength: high', reasoning_level: 'high', verbose_log: false, compact_context: false }))
 
     // A run from before tools could be chosen had them all.
     fireEvent.click(screen.getByRole('button', { name: 'Retry run Snake on qwen-24gb' }))
@@ -287,6 +287,35 @@ describe('BenchmarksPanel', () => {
     expect(screen.getByRole('spinbutton', { name: 'Max tokens' })).toHaveAttribute('placeholder', 'Full context')
     fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
     await waitFor(() => expect(start).toHaveBeenCalledWith(expect.objectContaining({ system_prompt_id: null, max_tokens: null })))
+  })
+
+  it('adds text after the system prompt, trimmed, and shows it with the prompt', async () => {
+    mockApi([])
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
+    renderPanel()
+
+    const extra = await screen.findByRole('textbox', { name: 'Added to system prompt' })
+    expect(screen.queryByLabelText('Added system prompt text')).not.toBeInTheDocument()
+    fireEvent.change(extra, { target: { value: '  Reasoning strength: xhigh\n' } })
+    expect(screen.getByLabelText('Added system prompt text')).toHaveTextContent('Reasoning strength: xhigh')
+    // With no system prompt chosen, the added text is the whole system prompt.
+    fireEvent.change(screen.getByRole('combobox', { name: 'System prompt' }), { target: { value: '' } })
+    expect(screen.getByText('System prompt and prompt')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Run benchmark' }))
+    await waitFor(() => expect(start).toHaveBeenCalledWith(expect.objectContaining({ system_prompt_id: null, system_prompt_extra: 'Reasoning strength: xhigh' })))
+  })
+
+  it('leaves the added text out when it is blank and shows it on runs that had it', async () => {
+    mockApi([{ ...finished, system_prompt_id: 'coding-agent', system_prompt_extra: 'Reasoning strength: high' }])
+    const start = vi.spyOn(api, 'startBenchmark').mockResolvedValue({ ...running, prompt: 'make tetris', system_prompt: null, samples: [], output: '', reasoning: '', tool_calls: [], tasks: [], artifacts: [], timeline: [] })
+    renderPanel()
+
+    expect(await screen.findByText(/coding-agent · \+ Reasoning strength: high/)).toBeInTheDocument()
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Added to system prompt' }), { target: { value: '  \n ' } })
+    const run = screen.getByRole('button', { name: 'Run benchmark' })
+    await waitFor(() => expect(run).toBeEnabled())
+    fireEvent.click(run)
+    await waitFor(() => expect(start).toHaveBeenCalledWith(expect.objectContaining({ system_prompt_extra: null })))
   })
 
   it('shows the size of a tool call while it is being written', async () => {

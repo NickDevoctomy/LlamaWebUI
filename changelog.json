@@ -1,8 +1,34 @@
 {
   "versions": [
     {
-      "version": "0.5.0",
+      "version": "0.6.0",
       "release_date": null,
+      "changes": [
+        {
+          "type": "feat",
+          "description": "Estimated memory use for each profile, worked out from the model file and its settings. Hover over it in the profile list for the parts, or click it for a full breakdown of weights, KV cache, recurrent state and compute buffers across GPU and RAM."
+        },
+        {
+          "type": "feat",
+          "description": "The memory estimate updates live in the profile editor's launch preview as you change settings, and warns when a profile won't fit in GPU memory."
+        },
+        {
+          "type": "feat",
+          "description": "Benchmarks and assistant briefs can add text after the system prompt, such as a model's own reasoning switch. Runs are only compared with runs that added the same text."
+        },
+        {
+          "type": "change",
+          "description": "The assistant has new research notes for tuning Qwen3.6 35B A3B on a 24 GB GPU."
+        },
+        {
+          "type": "fix",
+          "description": "Model names now appear in the Library's logical models list. The model file header was being misread, so every model showed as \"Local model\"."
+        }
+      ]
+    },
+    {
+      "version": "0.5.0",
+      "release_date": "2026-10-28",
       "changes": [
         {
           "type": "feat",

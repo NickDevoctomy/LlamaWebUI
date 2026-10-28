@@ -35,6 +35,8 @@ class Brief(BaseModel):
     # None until the API fills in the default benchmark.
     benchmark_id: str | None = Field(default=None, max_length=64)
     reasoning_level: str | None = Field(default=None, max_length=16)
+    # Text every run adds after its system prompt, e.g. "Reasoning strength: high".
+    system_prompt_extra: str | None = Field(default=None, max_length=4000)
     priority: list[Target] = Field(default_factory=lambda: list(DEFAULT_PRIORITY))
     # Work through to the end without stopping to ask the operator questions.
     autonomous: bool = True
@@ -94,10 +96,12 @@ def brief_text(brief: Brief, *, profile_alias: str | None, benchmark_title: str)
     chosen = [target for target in targets if target]
     lines.extend(chosen or ["- None set: improve speed and memory use without breaking the model."])
     reasoning = f", reasoning level {brief.reasoning_level}" if brief.reasoning_level else ""
+    extra = (brief.system_prompt_extra or "").strip()
+    added = f', with "{extra}" added to its system prompt' if extra else ""
     lines.extend(
         [
             "",
-            f"Judge every result with the benchmark \"{benchmark_title}\"{reasoning}.",
+            f"Judge every result with the benchmark \"{benchmark_title}\"{reasoning}{added}.",
             "When targets conflict, favour them in this order: "
             + ", ".join(brief.priority)
             + ".",

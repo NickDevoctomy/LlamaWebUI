@@ -629,6 +629,7 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
                 "benchmark_id": "tetris",
                 "max_tokens": 128,
                 "system_prompt_id": "coding-agent",
+                "system_prompt_extra": "Reasoning strength: high",
                 "tool_names": ["write_file", "task_complete"],
                 "verbose_log": True,
             },
@@ -671,6 +672,7 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
     assert run["reasoning_level"] is None
     assert run["system_prompt_id"] == "coding-agent"
     assert "finish_job" in str(run["system_prompt"])
+    assert run["system_prompt_extra"] == "Reasoning strength: high"
     assert run["tools"] is True
     assert run["verbose_log"] is True
     # The old name for finish_job still works, so an old run can be run again.

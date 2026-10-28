@@ -909,6 +909,7 @@ class BenchmarkRunRegistry:
         tools: bool = False,
         tool_names: Sequence[str] | None = None,
         system_prompt: SystemPrompt | None = None,
+        system_prompt_extra: str | None = None,
         reasoning_level: str | None = None,
         tasks: Sequence[dict[str, object]] = (),
         typescript_strict: bool | None = None,
@@ -937,6 +938,7 @@ class BenchmarkRunRegistry:
                 compact_context=compact_context,
                 system_prompt_id=system_prompt.id if system_prompt else None,
                 system_prompt=system_prompt.text if system_prompt else None,
+                system_prompt_extra=system_prompt_extra,
                 reasoning_level=reasoning_level,
                 state="running",
                 stage="starting",
@@ -1145,6 +1147,7 @@ class BenchmarkRunner:
         tools: bool = False,
         tool_names: Sequence[str] | None = None,
         system_prompt: SystemPrompt | None = None,
+        system_prompt_extra: str | None = None,
         reasoning_level: str | None = None,
         verbose_log: bool = False,
         conversation_id: str | None = None,
@@ -1179,6 +1182,8 @@ class BenchmarkRunner:
             tools=tools,
             tool_names=chosen,
             system_prompt=system_prompt,
+            # Blank text adds nothing, so it is not kept either.
+            system_prompt_extra=(system_prompt_extra or "").strip() or None,
             reasoning_level=reasoning_level,
             tasks=tasks,
             # Kept only for a run that had the TypeScript tools, so it says how it was checked.
@@ -1421,12 +1426,14 @@ class BenchmarkRunner:
         )
         given = _given_tools(record)
         messages: list[dict[str, object]] = [{"role": "user", "content": prompt}]
-        # The chosen system prompt comes first; the workspace note follows it whenever the
-        # model has file tools, since it needs to know paths are relative either way.
+        # The chosen system prompt comes first, then any text the run added to it; the
+        # workspace note follows whenever the model has file tools, since it needs to know
+        # paths are relative either way.
         instructions = [
             text
             for text in (
                 record.system_prompt,
+                record.system_prompt_extra,
                 tool_system_prompt(given, len(cast(list[object], self._progress["tasks"])))
                 if workspace
                 else None,

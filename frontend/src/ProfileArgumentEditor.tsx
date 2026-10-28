@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { createContext, type KeyboardEvent, useContext, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ArgumentDefinition, EffectDirection, EffectiveArgumentCatalog, LibraryModel, ProfilePreview, RawOrigin, RuntimeOptionInfo } from './api'
+import { MemoryBreakdown, memorySummary } from './MemoryEstimate'
 import {
   type ClientIssue,
   type DraftValue,
@@ -591,6 +592,10 @@ export function LaunchPreview({ preview, pending, error, clientIssues, onRefresh
         {blockers.length ? <><strong>{blockers.length} launch blocker{blockers.length === 1 ? '' : 's'}</strong><ul>{blockers.map((message) => <li key={message}>{message}</li>)}</ul></> : <strong>No launch blockers</strong>}
       </div>
       {warnings.length > 0 && <div className="preflight warnings"><strong>{warnings.length} warning{warnings.length === 1 ? '' : 's'}</strong><ul>{warnings.map((message) => <li key={message}>{message}</li>)}</ul></div>}
+      {preview?.memory_estimate && <section aria-label="Estimated memory" className="launch-memory">
+        <h4>Estimated memory <span>{memorySummary(preview.memory_estimate)}</span></h4>
+        <MemoryBreakdown estimate={preview.memory_estimate} />
+      </section>}
       {preview && preview.arguments.length > 0 && <>
         <h4>Model arguments (preset equivalent)</h4>
         <ol aria-label="Model argument vector" className="argv">{preview.arguments.map((argument, index) => <li key={`${index}:${argument}`}><code>{argument}</code></li>)}</ol>

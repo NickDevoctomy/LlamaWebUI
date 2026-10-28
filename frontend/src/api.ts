@@ -89,6 +89,8 @@ export interface Profile {
   recommendation?: ProfileRecommendation | null
   /** Latest completed result per benchmark id; kept when the runs are deleted. */
   benchmark_results?: Record<string, BenchmarkResult>
+  /** What the model should take once loaded; null when its files cannot be read. */
+  memory_estimate?: MemoryEstimate | null
   validation_state: 'available' | 'unverified' | 'pending' | 'broken'
   /** Switches on by itself when its model download completes. */
   auto_enable?: boolean
@@ -209,6 +211,8 @@ export interface Brief {
   /** Null until the server fills in the default benchmark. */
   benchmark_id?: string | null
   reasoning_level?: string | null
+  /** Text every run adds after its system prompt, such as a model's own reasoning switch. */
+  system_prompt_extra?: string | null
   /** Every target, most important first. */
   priority?: BriefTarget[]
   /** Work through to the end without stopping to ask questions; true when absent. */
@@ -462,6 +466,8 @@ export interface BenchmarkRun {
   /** The tools it was given; null for runs from before they could be chosen, which had them all. */
   tool_names?: string[] | null
   system_prompt_id: string | null
+  /** Text added after the system prompt, such as a model's own reasoning switch. */
+  system_prompt_extra?: string | null
   /** 'off', an effort level, or null for the model's own default. */
   reasoning_level: string | null
   /** For a run with the TypeScript tools, whether check_typescript was strict; null otherwise. */
@@ -852,6 +858,30 @@ export interface ProfilePreview extends ProfileValidation {
   command: string
   preset: string
   router_arguments: string[]
+  memory_estimate?: MemoryEstimate | null
+}
+
+export interface MemoryPart {
+  id: string
+  label: string
+  gpu_bytes: number
+  cpu_bytes: number
+  detail: string
+  /** A rule of thumb rather than computed from the model. */
+  approximate: boolean
+}
+
+export interface MemoryEstimate {
+  gpu_bytes: number
+  cpu_bytes: number
+  /** Total memory of the runtime's GPUs; null without a GPU or when it is unknown. */
+  gpu_capacity_bytes: number | null
+  context_size: number
+  slots: number
+  parts: MemoryPart[]
+  /** RAM that fills up while the server runs; not counted in the totals. */
+  growth: MemoryPart[]
+  notes: string[]
 }
 
 export interface ProfileCreate {
@@ -1021,7 +1051,7 @@ export const api = {
   benchmarkRun: (runId: string) => request<BenchmarkRunDetail>(`/api/benchmarks/runs/${runId}`),
   benchmarkArtifact: (runId: string, path: string) =>
     request<{ path: string; content: string }>(`/api/benchmarks/runs/${runId}/artifacts/${path.split('/').map(encodeURIComponent).join('/')}`),
-  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number | null; tools: boolean; tool_names: string[] | null; system_prompt_id: string | null; reasoning_level: string | null; verbose_log: boolean; compact_context: boolean }) =>
+  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number | null; tools: boolean; tool_names: string[] | null; system_prompt_id: string | null; system_prompt_extra: string | null; reasoning_level: string | null; verbose_log: boolean; compact_context: boolean }) =>
     request<BenchmarkRunDetail>('/api/benchmarks/runs', { method: 'POST', body: JSON.stringify(body) }),
   cancelBenchmark: (runId: string) =>
     request<BenchmarkRun>(`/api/benchmarks/runs/${runId}/cancel`, { method: 'POST' }),
