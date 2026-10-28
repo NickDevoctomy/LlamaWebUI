@@ -4,7 +4,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from conftest import Login
@@ -26,6 +26,7 @@ from llamawebui.services.benchmark_runner import (
     BenchmarkRunner,
     BenchmarkRunNotFoundError,
     BenchmarkRunRegistry,
+    _slowest_share,
 )
 from llamawebui.services.profile_registry import ProfileRegistry
 from llamawebui.services.router_client import RouterModel, RouterUnavailableError
@@ -155,7 +156,7 @@ def _database(tmp_path: Path) -> tuple[Engine, ModelProfileRecord]:
 
 
 def _runner(
-    engine: Engine, client: FakeBenchmarkClient, *, router_stopped: bool = True
+    engine: Engine, client: FakeBenchmarkClient, *, router_stopped: bool = True, **options: Any
 ) -> tuple[BenchmarkRunner, BenchmarkRunRegistry, list[str]]:
     events: list[str] = []
 
@@ -173,6 +174,7 @@ def _runner(
         stop_router=stop_router,
         router_stopped=lambda: router_stopped,
         sample_seconds=0,
+        **options,
     )
     return runner, runs, events
 
@@ -238,8 +240,12 @@ async def test_a_benchmark_times_each_step_and_writes_its_result_to_the_profile(
     )
     # The average spans the whole run; the peak and the end come from 3 s windows.
     assert stats["decode_tokens_per_second"] == 26.0
-    assert stats["decode_peak_tokens_per_second"] == 40.0
+    assert stats["decode_high_tokens_per_second"] == pytest.approx(40.0, abs=0.5)
+    assert stats["decode_low_tokens_per_second"] == 20.0
     assert stats["decode_final_tokens_per_second"] == 20.0
+    # Prefill is measured batch by batch: both of its 10-token steps took 25 ms.
+    assert stats["prompt_high_tokens_per_second"] == 400.0
+    assert stats["prompt_low_tokens_per_second"] == 400.0
 
     prefill = [sample for sample in finished.samples if sample["phase"] == "prefill"]
     decode = [sample for sample in finished.samples if sample["phase"] == "decode"]
@@ -254,7 +260,10 @@ async def test_a_benchmark_times_each_step_and_writes_its_result_to_the_profile(
     result = ProfileRegistry(engine, default_catalog()).get(profile.id).benchmark_results
     assert result is not None
     assert result["tetris"]["decode_tokens_per_second"] == 26.0  # type: ignore[index]
-    assert result["tetris"]["decode_peak_tokens_per_second"] == 40.0  # type: ignore[index]
+    assert result["tetris"]["decode_high_tokens_per_second"] == pytest.approx(40.0, abs=0.5)  # type: ignore[index]
+    assert result["tetris"]["decode_low_tokens_per_second"] == 20.0  # type: ignore[index]
+    assert result["tetris"]["prompt_low_tokens_per_second"] == 400.0  # type: ignore[index]
+    assert result["tetris"]["prompt_high_tokens_per_second"] == 400.0  # type: ignore[index]
     assert result["tetris"]["decode_final_tokens_per_second"] == 20.0  # type: ignore[index]
     assert result["tetris"]["run_id"] == record.id  # type: ignore[index]
 
@@ -357,13 +366,23 @@ async def test_a_model_that_fails_to_load_fails_the_run_and_stops_the_router(
     client = FakeBenchmarkClient(
         load_states=[{"value": "unloaded", "failed": True, "exit_code": 1}]
     )
-    runner, runs, events = _runner(engine, client)
+    marks: list[int] = []
+
+    def logs_since(mark: int) -> list[str]:
+        marks.append(mark)
+        return [f"line {number}" for number in range(mark, mark + 250)]
+
+    runner, runs, events = _runner(engine, client, log_mark=lambda: 7, logs_since=logs_since)
 
     record = runner.start(profile, BENCHMARK, 256)
     await runner.wait()
 
     finished = runs.get(record.id)
     assert (finished.state, finished.stage) == ("failed", "loading")
+    # Only the run's own lines are kept, and only the newest of them.
+    assert marks == [7]
+    assert finished.server_log is not None
+    assert (len(finished.server_log), finished.server_log[-1]) == (200, "line 256")
     assert finished.error == "qwen failed to load (exit code 1)"
     assert events == ["start:runtime-1", "stop"]
     assert ProfileRegistry(engine, default_catalog()).get(profile.id).benchmark_results is None
@@ -487,6 +506,10 @@ async def test_a_cancelled_benchmark_keeps_its_partial_output(tmp_path: Path) ->
     elapsed = runner.generation_elapsed(record.id)
     assert elapsed is not None and elapsed >= 0
     assert runner.generation_elapsed("another-run") is None
+    # The total so far counts from the start, before the prompt was sent.
+    total = runner.total_elapsed(record.id)
+    assert total is not None and total >= elapsed
+    assert runner.total_elapsed("another-run") is None
     with pytest.raises(BenchmarkBusyError, match="already running"):
         runner.start(profile, BENCHMARK, 256)
     with pytest.raises(BenchmarkBusyError, match="cancel the benchmark"):
@@ -663,6 +686,7 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
         "check_file",
         "check_typescript",
         "bundle_typescript",
+        "run_tests",
         "list_tasks",
         "create_task",
         "complete_task",
@@ -749,3 +773,76 @@ def test_a_benchmark_cannot_start_while_the_router_runs(tmp_path: Path, login: L
 
     assert refused.status_code == 409
     assert refused.json()["detail"] == "stop the router before running a benchmark"
+
+
+def test_the_one_percent_low_weighs_each_speed_by_how_long_it_lasted() -> None:
+    # 99 s at 50 tok/s and 1 s at 10 tok/s: the slowest 1% of the time is that second.
+    assert _slowest_share([(50.0, 99.0), (10.0, 1.0)]) == 10.0
+    # Many short slow readings are still only their share of the time.
+    assert _slowest_share([(10.0, 0.5), (50.0, 99.5)]) == 30.0
+    assert _slowest_share([(42.0, 3.0)]) == 42.0
+    assert _slowest_share([]) is None
+    assert _slowest_share([(42.0, 0.0)]) is None
+
+
+@pytest.mark.asyncio
+async def test_prefill_without_streamed_progress_is_measured_per_request(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    client.replies = [[chunk for chunk in _chunks() if "prompt_progress" not in chunk]]
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, 256)
+    await runner.wait()
+
+    stats = runs.get(record.id).stats
+    assert stats["prompt_tokens_per_second"] == 400.0
+    assert stats["prompt_low_tokens_per_second"] == 400.0
+    assert stats["prompt_high_tokens_per_second"] == 400.0
+
+
+@pytest.mark.asyncio
+async def test_cached_tokens_and_tiny_batches_do_not_set_prefill_speeds(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    reply = [chunk for chunk in _chunks() if "prompt_progress" not in chunk]
+    prompt = {"prompt_n": 2000, "prompt_ms": 1001.0, "cache_n": 9000}
+    for chunk in reply:
+        if isinstance(chunk.get("timings"), dict):
+            chunk["timings"] = {**cast(dict[str, object], chunk["timings"]), **prompt}
+
+    def progress(processed: int, milliseconds: float) -> dict[str, object]:
+        return {
+            "prompt_progress": {
+                "total": 11000,
+                "cache": 9000,
+                "processed": processed,
+                "time_ms": milliseconds,
+            }
+        }
+
+    client.replies = [
+        [
+            # The cached 9,000 tokens arrive as processed within a millisecond.
+            progress(9000, 1.0),
+            # Then 2,000 read at 2,000 tok/s in 0.5 s steps, and a 1 ms tail of 2 tokens.
+            progress(9998, 500.0),
+            progress(10998, 1000.0),
+            progress(11000, 1001.0),
+            *reply,
+        ]
+    ]
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, 256)
+    await runner.wait()
+
+    finished = runs.get(record.id)
+    stats = finished.stats
+    assert stats["prompt_cached_tokens"] == 9000
+    assert stats["prompt_tokens"] == 2000
+    # No figure reads millions of tokens a second from the cache or the 1 ms tail.
+    assert 1990 < cast(float, stats["prompt_high_tokens_per_second"]) < 2010
+    assert 1990 < cast(float, stats["prompt_low_tokens_per_second"]) < 2010
+    reading = next(entry for entry in finished.timeline if entry["kind"] == "reading")
+    assert (reading["prompt_tokens"], reading["cached_tokens"]) == (2000, 9000)

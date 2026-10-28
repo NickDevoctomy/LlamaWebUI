@@ -30,7 +30,7 @@ async def test_search_requests_gguf_models_and_maps_results() -> None:
     results = await catalog.search("model", sort="likes", limit=5)
 
     api.list_models.assert_called_once_with(
-        filter="gguf", search="model", sort="likes", direction=-1, limit=5, full=True
+        filter="gguf", search="model", sort="likes", direction=-1, limit=5, full=True, token=None
     )
     assert results[0].repo_id == "owner/model-GGUF"
     assert results[0].downloads == 10
@@ -45,7 +45,21 @@ async def test_search_preserves_provider_relevance_order_by_default() -> None:
 
     await HuggingFaceCatalog(api=api).search("model")
 
-    api.list_models.assert_called_once_with(filter="gguf", search="model", limit=25, full=True)
+    api.list_models.assert_called_once_with(
+        filter="gguf", search="model", limit=25, full=True, token=None
+    )
+
+
+async def test_search_reads_the_current_token_on_each_request() -> None:
+    api = Mock(spec=HfApi)
+    api.list_models.return_value = []
+    tokens = iter(["hf_first", None])
+    catalog = HuggingFaceCatalog(lambda: next(tokens), api=api)
+
+    await catalog.search("model")
+    await catalog.search("model")
+
+    assert [call.kwargs["token"] for call in api.list_models.call_args_list] == ["hf_first", None]
 
 
 async def test_search_uses_recent_cache_when_hub_is_unavailable() -> None:
@@ -80,18 +94,19 @@ async def test_repository_pins_revision_and_groups_files(tmp_path: Path) -> None
             SimpleNamespace(rfilename="UD-IQ4_XS/model-UD-IQ4_XS-00002-of-00002.gguf", size=20),
         ],
     )
-    catalog = HuggingFaceCatalog(api=api)
+    catalog = HuggingFaceCatalog(lambda: "hf_saved", api=api)
 
     manifest = await catalog.repository("unsloth/Qwen3.8-Flash-Next-GGUF", revision="main")
 
     api.model_info.assert_called_once_with(
-        "unsloth/Qwen3.8-Flash-Next-GGUF", revision="main", files_metadata=True
+        "unsloth/Qwen3.8-Flash-Next-GGUF", revision="main", files_metadata=True, token="hf_saved"
     )
     api.hf_hub_download.assert_called_once_with(
         "unsloth/Qwen3.8-Flash-Next-GGUF",
         "README.md",
         revision="abc123",
         repo_type="model",
+        token="hf_saved",
     )
     assert manifest.revision == "abc123"
     assert manifest.groups[0].total_size == 30

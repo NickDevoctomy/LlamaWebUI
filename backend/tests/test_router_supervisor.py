@@ -357,6 +357,12 @@ async def test_supervisor_waits_for_health_and_captures_bounded_logs(tmp_path: P
 
     assert supervisor.state is RouterState.READY
     assert supervisor.logs == ("second", "third\ufffd")
+    # Lines after a mark, as far as the bounded buffer still holds them.
+    assert supervisor.log_mark == 3
+    assert supervisor.logs_since(1) == ("second", "third\ufffd")
+    assert supervisor.logs_since(0) == ("second", "third\ufffd")
+    assert supervisor.logs_since(2) == ("third\ufffd",)
+    assert supervisor.logs_since(3) == ()
     await supervisor.stop()
 
 

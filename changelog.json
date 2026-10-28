@@ -1,6 +1,32 @@
 {
   "versions": [
     {
+      "version": "0.5.0",
+      "release_date": null,
+      "changes": [
+        {
+          "type": "feat",
+          "description": "App settings for huggingface and openrouter tokens, stored securely on the system."
+        },
+        {
+          "type": "feat",
+          "description": "Option to prevent secret access via API from a remote host."
+        },
+        {
+          "type": "change",
+          "description": "Huggingface env var removed from template."
+        },
+        {
+          "type": "feat",
+          "description": "Lama the assistant which can tune your profiles for you automatically, get models running, optimise them etc."
+        },
+        {
+          "type": "change",
+          "description": "Various improvements to benchmarks, including new tools."
+        }         
+      ]
+    },    
+    {
       "version": "0.4.0",
       "release_date": "2026-10-25",
       "changes": [

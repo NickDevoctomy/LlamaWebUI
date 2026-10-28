@@ -10,6 +10,8 @@ from typing import Protocol, cast
 
 import httpx
 
+from llamawebui.services.chat_stream import completion_chunks
+
 
 class RouterAPIError(RuntimeError):
     def __init__(self, status_code: int, message: str) -> None:
@@ -195,20 +197,13 @@ class HttpRouterClient:
                 if response.is_error:
                     await response.aread()
                     raise RouterAPIError(response.status_code, _error_message(response))
-                async for line in response.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data = line.removeprefix("data:").strip()
-                    if data == "[DONE]":
-                        return
-                    try:
-                        chunk = json.loads(data)
-                    except json.JSONDecodeError as error:
-                        raise RouterAPIError(
-                            502, "llama.cpp returned an invalid completion chunk"
-                        ) from error
-                    if isinstance(chunk, dict):
-                        yield cast(dict[str, object], chunk)
+                try:
+                    async for chunk in completion_chunks(response.aiter_lines()):
+                        yield chunk
+                except ValueError as error:
+                    raise RouterAPIError(
+                        502, "llama.cpp returned an invalid completion chunk"
+                    ) from error
         except RouterAPIError:
             raise
         except httpx.HTTPError as error:

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -49,9 +50,15 @@ def _path_summary(value: str) -> dict[str, object]:
 
 class DiagnosticsExporter:
     def __init__(
-        self, settings: Settings, engine: Engine, catalog: ArgumentCatalog | None = None
+        self,
+        settings: Settings,
+        engine: Engine,
+        catalog: ArgumentCatalog | None = None,
+        *,
+        huggingface_token_configured: Callable[[], bool] = lambda: False,
     ) -> None:
         self._settings = settings
+        self._huggingface_token_configured = huggingface_token_configured
         self._engine = engine
         self._catalog = catalog or default_catalog()
 
@@ -98,7 +105,7 @@ class DiagnosticsExporter:
                 "router_host": self._settings.router_host,
                 "router_port": self._settings.router_port,
                 "log_level": self._settings.log_level,
-                "hugging_face_token_configured": self._settings.hf_token is not None,
+                "hugging_face_token_configured": self._huggingface_token_configured(),
             },
             "database": self._database_info(),
             "runtimes": [self._runtime(record) for record in runtime_records],

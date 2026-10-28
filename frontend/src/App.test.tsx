@@ -763,7 +763,7 @@ describe('App', () => {
     const base = { runtime_id: 'runtime-1', model_path: 'C:\\models\\qwen.gguf', configuration: {}, enabled: true, validation_state: 'available' }
     const profiles = [
       { ...base, id: 'fresh', alias: 'qwen-24gb', version: 1, recommendation: { id: 'rec', title: 'Qwen on 24 GB', latest_version: 2, modified: false, upgradable: true } },
-      { ...base, id: 'tuned', alias: 'qwen-tuned', version: 1, recommendation: { id: 'rec2', title: 'Qwen tuned', latest_version: 2, modified: true, upgradable: false } },
+      { ...base, id: 'tuned', alias: 'qwen-tuned', version: 1, recommendation: { id: 'rec2', title: 'Qwen tuned', latest_version: 2, modified: true, upgradable: false, baseline: { version: 1, arguments: [] }, latest: null } },
       { ...base, id: 'custom', alias: 'qwen-custom', version: 3, recommendation: null },
     ]
     const fetchMock = renderApp({ runtimeList: [runtime], profileList: profiles, onRequest: (path, init) => {
@@ -773,8 +773,11 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Profiles' }))
 
     expect(await screen.findByText('Recommended v1', { selector: '[title="Added from the recommendation Qwen on 24 GB"]' })).toBeInTheDocument()
-    expect(screen.getByText('Modified · v2 available')).toBeInTheDocument()
     expect(screen.getByText('v3')).toBeInTheDocument()
+    // The modified tag sets up the comparison with the settings the profile was added with.
+    fireEvent.click(screen.getByRole('button', { name: 'Modified · v2 available' }))
+    expect(screen.getByRole('combobox', { name: 'Left profile' })).toHaveValue('tuned')
+    expect(screen.getByRole('combobox', { name: 'Right profile' })).toHaveValue('recommended:tuned:1')
     expect(screen.getAllByRole('button', { name: /Upgrade to v2/ })).toHaveLength(1)
 
     fireEvent.click(screen.getByRole('button', { name: /Upgrade to v2/ }))
@@ -826,6 +829,29 @@ describe('App', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(document.activeElement).toBe(register)
+  })
+
+  it('shows the Assistant only once an OpenRouter key and model are set', async () => {
+    const me = responses['/api/auth/me'] as { privileges: string[] }
+    let status = { available: false, openrouter_key_configured: true, model: null as object | null }
+    const fetchMock = renderApp({
+      currentUser: { ...me, privileges: [...me.privileges, 'assistant.read'] },
+      onRequest: (path) => path === '/api/assistant/status' ? status : undefined,
+    })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/assistant/status', expect.anything()))
+    expect(screen.queryByRole('button', { name: 'Assistant' })).not.toBeInTheDocument()
+
+    status = { available: true, openrouter_key_configured: true, model: { id: 'anthropic/claude-sonnet-5.5' } }
+    await fetchMock.client.invalidateQueries({ queryKey: ['assistant-status'] })
+    fireEvent.click(await screen.findByRole('button', { name: 'Assistant' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Assistant' })).toBeInTheDocument()
+  })
+
+  it('never asks for the assistant status without assistant.read', async () => {
+    const fetchMock = renderApp()
+    await screen.findByRole('button', { name: 'Dashboard' })
+    expect(fetchMock.mock.calls.some(([path]) => path === '/api/assistant/status')).toBe(false)
+    expect(screen.queryByRole('button', { name: 'Assistant' })).not.toBeInTheDocument()
   })
 
   it('uses an accessible confirmation dialog for user deletion', async () => {

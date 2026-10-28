@@ -168,6 +168,45 @@ describe('ProfileCompare', () => {
     expect(take).toHaveAttribute('title', 'Stop the router to change a profile')
   })
 
+  it('compares a recommended profile with the settings it was added with, and reverts from them', async () => {
+    const update = vi.spyOn(api, 'updateProfile').mockImplementation(async (id) => profiles.find((item) => item.id === id)!)
+    const tuned = profile('tuned', {
+      version: 1,
+      configuration: { arguments: [{ id: 'ctx-size', value: 65536 }, { id: 'threads', value: 24 }] },
+      description: 'Mine',
+      recommendation: {
+        id: 'rec', title: 'Qwen', latest_version: 2, modified: true, upgradable: false,
+        baseline: { version: 1, arguments: [{ id: 'ctx-size', value: 262144 }, { id: 'threads', value: 24 }] },
+        latest: { version: 2, arguments: [{ id: 'ctx-size', value: 262144 }, { id: 'threads', value: 16 }], exclusive: true, description: 'Bundled' },
+      },
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    vi.spyOn(api, 'argumentCatalog').mockResolvedValue(catalog)
+    // A single profile is enough once it has recommended settings to compare against.
+    render(<QueryClientProvider client={client}><ProfileCompare focus={{ leftId: 'tuned', rightId: 'recommended:tuned:1', nonce: 1 }} profiles={[tuned]} runtimes={runtimes} /></QueryClientProvider>)
+
+    const table = await screen.findByRole('table', { name: 'tuned compared with tuned · recommended v1' })
+    const right = screen.getByRole('combobox', { name: 'Right profile' })
+    expect(within(right).getAllByRole('option').map((option) => option.textContent)).toEqual(['tuned', 'tuned · recommended v1', 'tuned · recommended v2'])
+    const context = await within(table).findByRole('row', { name: /Context size/ })
+    expect(context).toHaveTextContent('65,536262,144')
+    // Only the profile itself can change; the recommended side is read-only.
+    expect(within(context).queryByRole('button', { name: 'Take Context size from tuned' })).not.toBeInTheDocument()
+    expect(within(table).queryByRole('row', { name: /Description/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('1 difference across')
+
+    fireEvent.click(within(context).getByRole('button', { name: 'Take Context size from tuned · recommended v1' }))
+    await vi.waitFor(() => expect(update).toHaveBeenLastCalledWith('tuned', expect.objectContaining({
+      arguments: [{ id: 'ctx-size', value: 262144 }, { id: 'threads', value: 24 }],
+      description: 'Mine',
+    })))
+
+    // The bundled version brings its own description and exclusive setting.
+    fireEvent.change(right, { target: { value: 'recommended:tuned:2' } })
+    expect(screen.getByRole('row', { name: /Description/ })).toHaveTextContent('MineBundled')
+    expect(screen.getByRole('row', { name: /CPU threads/ })).toHaveTextContent('2416')
+  })
+
   it('stays hidden until there are two profiles to compare', () => {
     const { container } = renderCompare(profiles.slice(0, 1))
     expect(container).toBeEmptyDOMElement()

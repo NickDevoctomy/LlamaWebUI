@@ -1,0 +1,7 @@
+---
+typescript:
+  tests: true
+max_rounds: 80
+---
+
+Make a tetris clone in modular TypeScript, bundled into a single page, make it look cool.

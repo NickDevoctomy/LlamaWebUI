@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -11,7 +12,12 @@ from test_benchmark_linter import WIN_ZIP, FakeCommands, FakeDownloads, _node_zi
 from test_benchmarks import BENCHMARK, FakeBenchmarkClient, _database, _runner
 
 from llamawebui.domain.argument_catalog import default_catalog
-from llamawebui.domain.benchmark import BenchmarkError, SystemPrompt, load_system_prompts
+from llamawebui.domain.benchmark import (
+    BenchmarkError,
+    SystemPrompt,
+    load_benchmarks,
+    load_system_prompts,
+)
 from llamawebui.services import benchmark_runner
 from llamawebui.services.benchmark_linter import BenchmarkLinter, CommandResult
 from llamawebui.services.benchmark_runner import (
@@ -400,7 +406,29 @@ async def test_a_model_that_keeps_calling_tools_is_stopped(
     await runner.wait()
 
     assert runs.get(record.id).stats["finish_reason"] == "tool_round_limit"
+    assert runs.get(record.id).stats["round_limit"] == 2
     assert len(client.requests) == 2
+
+    # A benchmark can allow more rounds than the default.
+    client.replies = [looping] * 4
+    longer = replace(BENCHMARK, max_rounds=3)
+    record = runner.start(profile, longer, 256, tools=True)
+    await runner.wait()
+    assert runs.get(record.id).stats["round_limit"] == 3
+    assert len(client.requests) == 2 + 3
+
+
+def test_frontmatter_sets_the_round_limit(tmp_path: Path) -> None:
+    (tmp_path / "long.txt").write_text("---\nmax_rounds: 80\n---\nMake it.", encoding="utf-8")
+    long = load_benchmarks(tmp_path)[0]
+    assert long.max_rounds == 80
+    assert long.to_payload()["max_rounds"] == 80
+    for bad in ("0", "501", "true", "lots"):
+        (tmp_path / "long.txt").write_text(
+            f"---\nmax_rounds: {bad}\n---\nMake it.", encoding="utf-8"
+        )
+        with pytest.raises(BenchmarkError, match="max_rounds must be a whole number"):
+            load_benchmarks(tmp_path)
 
 
 @pytest.mark.asyncio
@@ -605,7 +633,9 @@ async def test_finish_job_needs_the_final_message_and_keeps_it_whole(tmp_path: P
 
 # Every tool a run gets by default while ESLint is not installed.
 UNLINTED = [
-    name for name in TOOL_NAMES if name != "check_file" and not name.endswith("_typescript")
+    name
+    for name in TOOL_NAMES
+    if name not in ("check_file", "run_tests") and not name.endswith("_typescript")
 ]
 
 
@@ -627,9 +657,20 @@ def test_the_workspace_note_names_only_the_tools_a_run_was_given() -> None:
 
 
 def test_tools_are_chosen_by_name_in_offer_order() -> None:
-    plain = [name for name in TOOL_NAMES if not name.endswith("_typescript")]
+    plain = [
+        name for name in TOOL_NAMES if not name.endswith("_typescript") and name != "run_tests"
+    ]
     assert choose_tools(None) == plain
-    assert choose_tools(None, typescript=True) == list(TOOL_NAMES)
+    typed = [name for name in TOOL_NAMES if name != "run_tests"]
+    assert choose_tools(None, typescript=True) == typed
+    assert choose_tools(None, typescript=True, tests=True) == list(TOOL_NAMES)
+    # Tests are only for a TypeScript benchmark that turns them on.
+    assert choose_tools(None, tests=True) == plain
+    with pytest.raises(ValueError, match="run_tests only works on a benchmark with tests"):
+        choose_tools(["run_tests"], typescript=True)
+    assert choose_tools(["run_tests"], typescript=True, tests=True) == ["run_tests"]
+    with pytest.raises(ValueError, match="TypeScript tools are not installed"):
+        choose_tools(None, typed, typescript=True, tests=True)
     assert choose_tools(["list_files", "write_file", "write_file"]) == ["write_file", "list_files"]
     assert choose_tools([]) == []
     with pytest.raises(ValueError, match="unknown tools: run_shell"):
@@ -1085,3 +1126,59 @@ async def test_a_run_asks_for_its_reasoning_level_and_records_it(tmp_path: Path)
     assert finished.reasoning_level == "low"
     results = cast(dict[str, dict[str, object]], profile_results(engine, profile.id))
     assert results["tetris"]["reasoning_level"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_a_call_repeated_in_one_reply_runs_once(tmp_path: Path) -> None:
+    engine, profile = _database(tmp_path)
+    client = FakeBenchmarkClient()
+    read = {"path": "a.txt"}
+    client.replies = [
+        _round(
+            [_tool_call(0, "write_file", {"path": "a.txt", "content": "one"})],
+            finish="tool_calls",
+            generated=5,
+            milliseconds=10.0,
+        ),
+        _round(
+            [
+                _tool_call(0, "read_file", read),
+                _tool_call(1, "read_file", {"path": "a.txt"}),
+                _raw_tool_call(2, "read_file", '{ "path":"a.txt" }'),
+                _tool_call(3, "list_files", {}),
+                _tool_call(
+                    4, "edit_file", {"path": "a.txt", "old_string": "one", "new_string": "two"}
+                ),
+                # After the edit the file reads differently, so this read runs again.
+                _tool_call(5, "read_file", read),
+                _tool_call(6, "read_file", read),
+            ],
+            finish="tool_calls",
+            generated=5,
+            milliseconds=10.0,
+        ),
+        _round([], finish="stop", generated=1, milliseconds=1.0),
+    ]
+    runner, runs, _ = _runner(engine, client)
+
+    record = runner.start(profile, BENCHMARK, None, tools=True)
+    await runner.wait()
+
+    finished = runs.get(record.id)
+    calls = [call for call in finished.tool_calls if call["round"] == 2]
+    assert [call["ok"] for call in calls] == [True, False, False, True, True, True, False]
+    assert calls[1] == {
+        "round": 2,
+        "name": "read_file",
+        "path": "a.txt",
+        "ok": False,
+        "result": "Error: duplicate of call #1 in this reply, which was run once; use its "
+        "result instead of calling it again.",
+    }
+    assert "call #6" in cast(str, calls[6]["result"])
+    assert "two" in cast(str, calls[5]["result"])
+    # Every call still gets its own result, so the history stays valid.
+    history, _ = client.requests[2]
+    results = [message for message in history if message["role"] == "tool"]
+    assert len(results) == 1 + 7
+    assert cast(str, results[2]["content"]).startswith("Error: duplicate of call #1")

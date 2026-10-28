@@ -383,6 +383,11 @@ class BenchmarkLinter:
         command = [str(self._node()), str(script), *arguments]
         return self._run(command, cwd, self._env(self.root), timeout, None)
 
+    def run_node_with(self, arguments: list[str], cwd: Path, timeout: float) -> CommandResult:
+        """Run the installed Node.js with its own options, such as for the test runner."""
+        command = [str(self._node()), *arguments]
+        return self._run(command, cwd, self._env(self.root), timeout, None)
+
     # -- linting ------------------------------------------------------------------------
 
     def check(self, text: str, path: str) -> str:

@@ -192,10 +192,19 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     by_id = {item.id: item for item in recommendations}
     strix = by_id["qwen3.8-flash-next-ud-iq4-xs-strix-halo"]
     nvidia = by_id["qwen3.8-flash-next-ud-iq4-xs-nvidia-24gb"]
-    mtp = by_id["qwen3.8-flash-next-ud-iq4-xs-mtp-nvidia-24gb"]
+    assert strix.family == nvidia.id
+    assert (strix.label, strix.alias, strix.vram_gb) == (
+        "96 GB Strix Halo",
+        "qwen3.8-flash-next",
+        None,
+    )
     assert strix.model.quantization == nvidia.model.quantization == "UD-IQ4_XS"
-    assert mtp.model.draft_group == "MTP/mtp-Qwen3.8-Flash-Next-BF16"
-    assert mtp.alias == "qwen3.8-flash-next-mtp-24gb"
+    assert nvidia.model.draft_group is None
+    assert strix.model.draft_group == "MTP/mtp-Qwen3.8-Flash-Next-Q8_0"
+    # The 24 GB card's expert offload and core pinning are not carried over to the APU.
+    pinning = {"n-cpu-moe", "threads-batch", "cpu-range", "cpu-range-batch", "cpu-strict"}
+    assert pinning <= {item["id"] for item in nvidia.arguments}
+    assert not pinning & {item["id"] for item in strix.arguments}
     dense = by_id["qwen3.8-27b-ud-q4-k-m-nvidia-24gb"]
     assert dense.model.quantization == "UD-Q4_K_M"
     assert dense.model.draft_group is None
@@ -205,9 +214,16 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     assert small.version == dense.version
     assert (small.label, small.alias, small.vram_gb) == ("16 GB VRAM", "qwen3.8-27b-16gb", 16)
     assert small.model.group == "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp"
-    # Only the context differs from the base settings.
+    # The context is smaller, and the 24 GB tuning of batches, threads and drafting is not
+    # carried over to a card it was not measured on.
     assert [item for item in small.arguments if item not in dense.arguments] == [
-        {"id": "ctx-size", "value": 98304}
+        {"id": "ctx-size", "value": 98304},
+        {"id": "batch-size", "value": 512},
+        {"id": "ubatch-size", "value": 256},
+        {"id": "threads", "value": 8},
+        {"id": "threads-batch", "value": 8},
+        {"id": "spec-draft-n-max", "value": 8},
+        {"id": "spec-draft-p-min", "value": 0},
     ]
     nvidia_host = {
         "cpu": "Intel(R) Core(TM) i7-14700F",
@@ -226,13 +242,33 @@ def test_bundled_recommendations_load_and_use_valid_catalog_arguments() -> None:
     assert assess(nvidia, **nvidia_host).hardware_match  # type: ignore[arg-type]
     assert assess(nvidia, **nvidia_host).fit == "fits"  # type: ignore[arg-type]
     assert not assess(nvidia, **strix_host).hardware_match  # type: ignore[arg-type]
-    assert assess(mtp, **nvidia_host).hardware_match  # type: ignore[arg-type]
     assert assess(dense, **nvidia_host).fit == "fits"  # type: ignore[arg-type]
     assert assess(small, **nvidia_host).hardware_match  # type: ignore[arg-type]
     sixteen = {**nvidia_host, "discrete_vram_bytes": 16303 * 1024**2, "memory_bytes": 16 * GIB}
     assert assess(small, **sixteen).hardware_match  # type: ignore[arg-type]
     assert not assess(dense, **sixteen).hardware_match  # type: ignore[arg-type]
     assert not assess(dense, **strix_host).hardware_match  # type: ignore[arg-type]
+    unified = by_id["qwen3.8-27b-ud-q8-k-l-strix-halo"]
+    assert unified.family == dense.id
+    assert (unified.label, unified.alias, unified.vram_gb) == (
+        "96 GB Strix Halo",
+        "qwen3.8-27b-96gb",
+        None,
+    )
+    assert unified.model.quantization == "UD-Q8_K_L"
+    # Only what was measured on the APU: the 24 GB card's batches, threads and sampling go.
+    assert {item["id"] for item in unified.arguments} == {
+        "ctx-size",
+        "flash-attn",
+        "cache-type-k",
+        "cache-type-v",
+        "spec-type",
+        "spec-draft-n-max",
+        "spec-draft-n-min",
+        "spec-draft-p-min",
+    }
+    assert assess(unified, **strix_host).hardware_match  # type: ignore[arg-type]
+    assert not assess(unified, **nvidia_host).hardware_match  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -670,6 +706,13 @@ def test_an_unchanged_recommended_profile_upgrades_and_keeps_its_place(
         "latest_version": 1,
         "modified": False,
         "upgradable": False,
+        "baseline": {"version": 1, "arguments": [{"id": "ctx-size", "value": 262144}]},
+        "latest": {
+            "version": 1,
+            "arguments": [{"id": "ctx-size", "value": 262144}],
+            "exclusive": True,
+            "description": "Long context for a unified-memory APU.",
+        },
     }
     assert too_early.status_code == 409
     assert too_early.json()["detail"] == "qwen-recommended is already at version 1"
@@ -719,6 +762,14 @@ def test_a_changed_recommended_profile_keeps_its_version_and_cannot_upgrade(
         refused = client.post(f"/api/profiles/{added['id']}/upgrade")
 
     assert listed["recommendation"]["upgradable"] is False
+    # Both what it was added with and the newer version are there to compare against.
+    assert listed["recommendation"]["baseline"] == {
+        "version": 1,
+        "arguments": [{"id": "ctx-size", "value": 262144}],
+    }
+    assert listed["recommendation"]["latest"]["version"] == 2
+    assert listed["recommendation"]["latest"]["arguments"] == [{"id": "ctx-size", "value": 131072}]
+    assert listed["recommendation"]["latest"]["description"] == "Shorter context, faster prompts."
     assert refused.status_code == 409
     assert "was changed after it was added" in refused.json()["detail"]
 
@@ -929,6 +980,13 @@ def test_a_draft_model_is_downloaded_and_the_profile_waits_for_both_files(
     assert listed["draft_download"]["state"] == "completed"
     assert listed["matches"] == {runtime_id: [profiles[0]["id"]]}
     assert profiles[0]["recommendation"]["modified"] is False
+    # The recommended settings carry this machine's draft path, so it never shows as a change.
+    draft = next(
+        item for item in profiles[0]["configuration"]["arguments"]
+        if item.get("id") == "spec-draft-model"
+    )
+    assert draft in profiles[0]["recommendation"]["baseline"]["arguments"]
+    assert draft in profiles[0]["recommendation"]["latest"]["arguments"]
 
 
 def test_a_missing_draft_model_group_is_reported(tmp_path: Path, login: Login) -> None:
@@ -961,7 +1019,7 @@ def test_file_locations_never_count_as_a_change() -> None:
         configuration={
             "schema_version": 2,
             "arguments": [
-                {"id": "spec-draft-model", "value": "E:\models\draft.gguf"},
+                {"id": "spec-draft-model", "value": "E:/models/draft.gguf"},
                 {"id": "ctx-size", "value": 4096},
             ],
         },

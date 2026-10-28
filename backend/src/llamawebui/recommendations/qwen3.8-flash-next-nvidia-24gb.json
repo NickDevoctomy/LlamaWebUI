@@ -1,9 +1,10 @@
 {
   "format": "llamawebui.recommendation.v1",
-  "version": 1,
+  "version": 2,
   "id": "qwen3.8-flash-next-ud-iq4-xs-nvidia-24gb",
-  "title": "Qwen3.8 Flash Next, 192K context on a 24 GB NVIDIA GPU",
-  "summary": "Starting point for a 24 GB NVIDIA card with 128 GB of system memory. Still being tuned for this hardware.",
+  "label": "24 GB VRAM",
+  "title": "Qwen3.8 Flash Next, 192K context on a 24 GB GPU",
+  "summary": "The 125B MoE model on a 24 GB NVIDIA card with 128 GB of system memory. Dense layers and the KV cache sit on the GPU and most MoE experts in system memory, with CPU threads pinned to the cores that compute the experts fastest.",
   "model": {
     "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
     "quantization": "UD-IQ4_XS",
@@ -15,7 +16,7 @@
     "memory_gb": 128,
     "unified_memory": false,
     "backend": "cuda",
-    "notes": null
+    "notes": "Thread pinning measured on an Intel Core i7-14700F: generation on its 16 P-core threads (0-15), prompt processing on all 28 (0-27)."
   },
   "requirements": {
     "memory_gb": 152,
@@ -24,20 +25,76 @@
   },
   "profile": {
     "alias": "qwen3.8-flash-next-24gb",
-    "description": "Qwen3.8 Flash Next for a 24 GB NVIDIA GPU with 128 GB of RAM. Dense layers and the KV cache sit on the GPU, most MoE experts in system memory. 192K context with a q8_0 cache. Uses nearly all VRAM and RAM, so it runs on its own.",
+    "description": "Qwen3.8 Flash Next for a 24 GB NVIDIA GPU with 128 GB of RAM. Dense layers and the KV cache sit on the GPU, most MoE experts in system memory. 192K context with a q8_0 cache. Generation threads pinned to cores 0-15 and prompt threads to 0-27, with a 2048-token ubatch. Uses nearly all VRAM and RAM, so it runs on its own.",
     "exclusive": true,
     "arguments": [
       { "id": "flash-attn", "value": "on" },
       { "id": "n-cpu-moe", "value": 38 },
       { "id": "n-gpu-layers", "value": 999 },
       { "id": "ctx-size", "value": 196608 },
-      { "id": "ubatch-size", "value": 512 },
+      { "id": "ubatch-size", "value": 2048 },
       { "id": "cache-type-k", "value": "q8_0" },
       { "id": "cache-type-v", "value": "q8_0" },
       { "id": "parallel", "value": 1 },
-      { "id": "threads-batch", "value": 32 },
-      { "id": "threads", "value": 24 },
-      { "id": "load-mode", "value": "none" }
+      { "id": "threads", "value": 16 },
+      { "id": "load-mode", "value": "none" },
+      { "id": "threads-batch", "value": 28 },
+      { "id": "cpu-range", "value": "0-15" },
+      { "id": "cpu-range-batch", "value": "0-27" },
+      { "id": "cpu-strict", "value": "1" }
     ]
-  }
+  },
+  "variants": [
+    {
+      "id": "qwen3.8-flash-next-ud-iq4-xs-strix-halo",
+      "label": "96 GB Strix Halo",
+      "title": "Qwen3.8 Flash Next with MTP, 262K context on a 96 GB Strix Halo APU",
+      "summary": "Full 262,144-token context on a 96 GB unified-memory APU, with speculative decoding from the model's MTP head. The KV cache is quantized to q4_0 with flash attention so the long context fits beside the weights, and per-layer token embeddings stay in system memory. Downloads the MTP draft model alongside the main model.",
+      "model": {
+        "draft_group": "MTP/mtp-Qwen3.8-Flash-Next-Q8_0"
+      },
+      "tested_on": {
+        "label": "AMD Ryzen AI Max+ 395 (Strix Halo), 96 GB unified memory",
+        "cpu_pattern": "Ryzen AI Max\\+? (PRO )?395",
+        "gpu_pattern": null,
+        "memory_gb": 96,
+        "unified_memory": true,
+        "backend": "vulkan",
+        "notes": "GPU memory left at the firmware minimum; the driver allocates from shared memory as needed."
+      },
+      "requirements": {
+        "memory_gb": 96,
+        "vram_gb": null,
+        "backends": ["vulkan", "rocm"]
+      },
+      "profile": {
+        "alias": "qwen3.8-flash-next",
+        "description": "Qwen3.8 Flash Next for a 96 GB Strix Halo APU, with MTP speculative decoding. Full 262K context with a q4_0 KV cache and flash attention, with per-layer token embeddings kept in system memory. Uses almost all unified memory, so it runs on its own.",
+        "arguments": [
+          { "id": "reasoning-preserve", "value": false },
+          { "id": "n-gpu-layers", "value": 60 },
+          { "id": "ctx-size", "value": 262144 },
+          { "id": "lazy-mode", "value": "on" },
+          { "id": "cache-ram", "value": 0 },
+          { "id": "fit", "value": "off" },
+          { "id": "override-tensor", "value": ["per_layer_token_embd=CPU"] },
+          { "id": "cache-type-k", "value": "q4_0" },
+          { "id": "cache-type-v", "value": "q4_0" },
+          { "id": "threads", "value": 24 },
+          { "id": "batch-size", "value": 1024 },
+          { "id": "ubatch-size", "value": 1024 },
+          { "id": "spec-type", "value": ["draft-mtp"] },
+          { "id": "spec-draft-n-max", "value": 3 },
+          { "id": "spec-draft-p-min", "value": 0.2 }
+        ],
+        "remove_arguments": [
+          "n-cpu-moe",
+          "threads-batch",
+          "cpu-range",
+          "cpu-range-batch",
+          "cpu-strict"
+        ]
+      }
+    }
+  ]
 }

@@ -1,6 +1,6 @@
 # Backlog: context compaction for benchmark runs
 
-**Status:** Proposed  
+**Status:** Implemented (2026-10-27)  
 **Raised:** 2026-10-24  
 **Scope:** Benchmark runner (`backend/src/llamawebui/services/benchmark_runner.py`), run storage and the benchmark run view
 
@@ -69,11 +69,18 @@ Our runs have an advantage: every file the agent wrote is still in its workspace
 - A "Compacting context" step in the generation timeline showing tokens before → after.
 - In the run form: a **Compact context** checkbox, on by default. Turning it off reproduces today's behaviour, for measuring raw context use.
 
-## Open questions
+## Decisions (implemented)
 
-- Should a compacted run's `completed` outcome look different from one that never compacted? Compaction changes what is being measured.
-- Which threshold and reserve fit best, and should they be fixed or shown in the run form?
-- Should the summary request use the run's reasoning level, or reasoning off to save tokens?
+The code is in `services/benchmark_compaction.py` (pruning, summary prompts) and `BenchmarkRunner._generate` (when to compact).
+
+- **Outcome is unchanged.** A run that compacted and called `finish_job` is still `completed`; `stats.compactions` (also on the profile's result), the run list and the timeline say that it compacted.
+- **Threshold and reserve are fixed, not in the form.** The reserve is the larger of 8,192 tokens (a quarter of the context for small contexts) and the largest reply so far, capped at half the context. Only the **Compact context** checkbox is in the form, on by default. The assistant's runs use the default.
+- **The summary request turns reasoning off**, so its 4,096-token cap goes to the summary. If a model reasons anyway and gives no answer, its reasoning is used as the summary.
+- **Size of the history:** the last request's whole prompt (`cache_n + prompt_n`), plus an estimate for the characters added or removed since. Tokens per character are learned from how the prompt grows between rounds (default 0.3). The context size comes from llama-server's slot log, then the size named in a refusal, then the size implied by a cut-off, then the profile's `--ctx-size`.
+- **Pruning** keeps the latest 2 rounds whole and replaces arguments and results over 400 characters in older rounds with placeholders that give the size (and the path, for results). It counts only when it frees at least 10% and leaves the reserve free; otherwise the run summarises.
+- **The summary** keeps the system prompt and task, then the summary (as an assistant message), then a user note listing the workspace's files (and `list_tasks`, when given), ending "Continue with the next steps." When the history is too long for the summary request itself, the oldest rounds are left out of that request.
+- **A failed proactive compaction does not end the run:** the round is still tried, as the reserve is only a guess. Reactive compaction (a refusal, or a cut-off with no token limit) throws away the cut-off reply, records its calls as not run, and retries the round. A run gives up with `finish_reason` `context` when compaction cannot help, or after 8 compactions.
+- The timeline entry `compacting` holds `tokens_before`, `tokens_after` (the next request's real prompt size), `mode`, the summary's `tokens` and text, or `failed`. While a summary is being written, the live payload's `compaction.tokens` counts it, and the Generate step shows "Compacting context (summary, N tokens)".
 
 ## Tests to add
 

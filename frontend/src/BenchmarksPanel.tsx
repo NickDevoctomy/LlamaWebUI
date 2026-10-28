@@ -2,9 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Check, ChevronDown, ChevronRight, Code, Copy, Download, Eye, FileText, LoaderCircle, Maximize2, Play, RotateCcw, Square, SquareCheck, SquareX, Timer, Trash2, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api, type BenchmarkRun, type BenchmarkRunDetail, type BenchmarkStage, type BenchmarkTask, type BenchmarkTool, type Profile, type RouterState, type TimelineEntry } from './api'
-import { formatRate, formatSeconds, formatWhen, reasoningLabel } from './benchmarkFormat'
-import { ContextChart, MemoryChart } from './BenchmarkCharts'
-import { Sparkline } from './Dashboard'
+import { formatRate, formatRateValue, formatSeconds, formatWhen, phaseSpeeds, reasoningLabel, SPEED_FIGURES } from './benchmarkFormat'
+import { ContextChart, MemoryChart, SpeedChart } from './BenchmarkCharts'
 import { Dialog } from './SetupPanels'
 
 const STEPS: { stage: BenchmarkStage; label: string }[] = [
@@ -60,7 +59,7 @@ function formatDuration(entry: TimelineEntry, elapsed?: number | null) {
 function currentActivity(run: BenchmarkRunDetail) {
   const entry = run.state === 'running' ? run.timeline?.at(-1) : undefined
   if (!entry || entry.end != null) return undefined
-  const writing = entry.kind === 'tool_call' ? liveToolCall(run) : ''
+  const writing = entry.kind === 'tool_call' ? liveToolCall(run) : entry.kind === 'compacting' ? liveSummary(run) : ''
   const doing = `${activityName(entry)}${writing ? ` (${writing})` : ''}`
   const soFar = formatDuration(entry, run.live?.elapsed)
   return soFar ? `${doing}… ${soFar}` : `${doing}…`
@@ -73,13 +72,51 @@ function liveToolCall(run: BenchmarkRunDetail) {
   return [call.name, formatSize(call.bytes)].filter(Boolean).join(', ')
 }
 
+/** The summary being written while the context is compacted, such as "summary, 812 tokens". */
+function liveSummary(run: BenchmarkRunDetail) {
+  const tokens = run.live?.compaction?.tokens
+  return tokens ? `summary, ${tokens.toLocaleString()} ${tokens === 1 ? 'token' : 'tokens'}` : ''
+}
+
+/** How many times a run compacted its context, or Off; null for a run without tools. */
+function compactionsLabel(run: BenchmarkRun) {
+  if (!run.tools) return null
+  if (!run.compact_context) return 'Off'
+  const { compactions = 0, compactions_pruned: pruned = 0, compactions_summarised: summarised = 0 } = run.stats
+  if (!compactions) return 'None'
+  const kinds = [pruned ? `${pruned} pruned` : '', summarised ? `${summarised} summarised` : ''].filter(Boolean).join(', ')
+  return kinds ? `${compactions} (${kinds})` : String(compactions)
+}
+
+/**
+ * The share of prompt tokens llama.cpp reused from its cache instead of reading again,
+ * such as "93% of 355,783 tokens"; undefined for runs that never reported the cache.
+ */
+function cacheHitRate(stats: BenchmarkRun['stats']) {
+  const cached = stats.prompt_cached_tokens
+  if (cached == null || stats.prompt_tokens == null) return undefined
+  const total = cached + stats.prompt_tokens
+  if (!total) return undefined
+  // Rounded down, so 100% means every token came from the cache.
+  const share = cached / total * 100
+  return `${share > 0 && share < 1 ? '<1' : Math.floor(share)}% of ${total.toLocaleString()} tokens`
+}
+
+/** How the agent's last test run went, such as "12 passed, 1 failed (last of 3 runs)". */
+function testsLabel(run: BenchmarkRun) {
+  const { test_runs: runs, tests_passed: passed = 0, tests_failed: failed = 0 } = run.stats
+  if (!runs) return 'Never run'
+  const result = failed ? `${passed} passed, ${failed} failed` : `${passed} passed`
+  return runs === 1 ? result : `${result} (last of ${runs} runs)`
+}
+
 /** Why generation ended, in words; the token limit and the context are told apart. */
 function finishLabel(run: BenchmarkRun) {
   switch (run.stats.finish_reason) {
     case undefined: return undefined
     case 'length': return run.max_tokens != null ? 'Hit the token limit' : 'Ran out of context'
     case 'context': return 'Ran out of context'
-    case 'tool_round_limit': return 'Hit the tool round limit'
+    case 'tool_round_limit': return `Hit the tool round limit${run.stats.round_limit ? ` (${run.stats.round_limit})` : ''}`
     case 'finish_job': return 'Agent called finish_job'
     case 'task_complete': return 'Agent called task_complete'
     default: return `Finished: ${run.stats.finish_reason}`
@@ -100,6 +137,7 @@ function activityName(entry: TimelineEntry) {
     case 'answer': return 'Writing answer'
     case 'tool_call': return 'Writing tool call'
     case 'tool': return `Running ${entry.name}`
+    case 'compacting': return 'Compacting context'
   }
 }
 
@@ -121,7 +159,7 @@ function GenerationTimeline({ run }: { run: BenchmarkRunDetail }) {
 }
 
 function timelineRow(run: BenchmarkRunDetail, entry: TimelineEntry, index: number) {
-  const expandable = entry.kind !== 'reading' && entry.kind !== 'tool_call'
+  const expandable = entry.kind === 'compacting' ? Boolean(entry.summary) : entry.kind !== 'reading' && entry.kind !== 'tool_call'
   const head = (label: React.ReactNode, detail = '') => <>
     <span className="timeline-label">{expandable ? <ChevronRight aria-hidden="true" className="timeline-chevron" size={13} /> : <span className="timeline-chevron" />}<span className="timeline-body"><span className="timeline-name">{label}{entry.end == null ? '…' : ''}</span><small>{detail}</small></span></span>
     <span className="timeline-time">{formatDuration(entry, run.live?.elapsed)}</span>
@@ -145,6 +183,15 @@ function timelineRow(run: BenchmarkRunDetail, entry: TimelineEntry, index: numbe
       </details>
     </li>
   }
+  if (entry.kind === 'compacting') {
+    const label = entry.end == null ? 'Compacting context' : entry.failed ? 'Could not compact context' : entry.mode === 'summarised' ? 'Compacted context: summarised' : 'Compacted context: pruned old tool output'
+    const sizes = entry.tokens_after != null ? `${entry.tokens_before.toLocaleString()} → ${entry.tokens_after.toLocaleString()} tokens` : `${entry.tokens_before.toLocaleString()} tokens`
+    const summary = entry.end == null ? liveSummary(run) : entry.tokens ? `summary, ${entry.tokens.toLocaleString()} ${entry.tokens === 1 ? 'token' : 'tokens'}` : ''
+    const row = head(label, [sizes, summary].filter(Boolean).join(' · '))
+    return <li data-kind="compacting" data-ok={entry.failed ? false : undefined} key={index}>
+      {entry.summary ? <details><summary>{row}</summary><pre>{entry.summary}</pre></details> : <div className="timeline-row">{row}</div>}
+    </li>
+  }
   if (entry.kind === 'tool_call') {
     // While it streams the call has no names yet; the live figures stand in for them.
     const live = entry.end == null ? run.live?.tool_call : undefined
@@ -154,7 +201,9 @@ function timelineRow(run: BenchmarkRunDetail, entry: TimelineEntry, index: numbe
     return <li data-kind="tool_call" key={index}><div className="timeline-row">{head(`Writing tool ${entry.names && entry.names.length > 1 ? 'calls' : 'call'}${names ? `: ${names}` : ''}`, detail)}</div></li>
   }
   const read = entry.kind === 'reading' ? entry.prompt_tokens : undefined
-  return <li data-kind="reading" key={index}><div className="timeline-row">{head(activityName(entry), read ? `${read.toLocaleString()} tokens` : '')}</div></li>
+  const cached = entry.kind === 'reading' ? entry.cached_tokens : undefined
+  const reading = [read ? `${read.toLocaleString()} tokens` : '', cached ? `${cached.toLocaleString()} cached` : ''].filter(Boolean).join(' · ')
+  return <li data-kind="reading" key={index}><div className="timeline-row">{head(activityName(entry), reading)}</div></li>
 }
 
 /** The run's steps; with the run's detail, Generate opens into what it spent its time on. */
@@ -333,7 +382,7 @@ function ContextFigure({ run }: { run: BenchmarkRun }) {
 /** The same benchmark and settings as an earlier run; the profile is whatever it is now. */
 function retryRequest(run: BenchmarkRun) {
   // Runs from before tools could be chosen had them all, which null asks for.
-  return { profile_id: run.profile_id, benchmark_id: run.benchmark_id, max_tokens: run.max_tokens, tools: run.tools, tool_names: run.tools ? run.tool_names ?? null : [], system_prompt_id: run.system_prompt_id, reasoning_level: run.reasoning_level, verbose_log: Boolean(run.verbose_log) }
+  return { profile_id: run.profile_id, benchmark_id: run.benchmark_id, max_tokens: run.max_tokens, tools: run.tools, tool_names: run.tools ? run.tool_names ?? null : [], system_prompt_id: run.system_prompt_id, reasoning_level: run.reasoning_level, verbose_log: Boolean(run.verbose_log), compact_context: Boolean(run.compact_context) }
 }
 
 function RetryButton({ run, profile, blocker, pending, onRetry }: { run: BenchmarkRun; profile?: Profile; blocker?: string; pending: boolean; onRetry: () => void }) {
@@ -343,20 +392,37 @@ function RetryButton({ run, profile, blocker, pending, onRetry }: { run: Benchma
 }
 
 // Offered only on a TypeScript benchmark, once an install that carries them is in place.
-const TYPESCRIPT_TOOLS = ['check_typescript', 'bundle_typescript']
+const TYPESCRIPT_TOOLS = ['check_typescript', 'bundle_typescript', 'run_tests']
+// Runs the agent's unit tests; only for a TypeScript benchmark that turns tests on.
+const TEST_TOOL = 'run_tests'
 
 /** Why a tool can't be chosen: the benchmark isn't TypeScript, or what it needs isn't installed. */
 type PickerTool = BenchmarkTool & { reason?: string }
 
-function toolsFor(tools: BenchmarkTool[], typescript: boolean): PickerTool[] {
+function toolsFor(tools: BenchmarkTool[], typescript: boolean, tests = false): PickerTool[] {
   return tools.map((tool) => {
+    if (tool.name === TEST_TOOL && !(typescript && tests)) return { ...tool, available: false, reason: 'Only for TypeScript benchmarks with tests turned on.' }
     if (!TYPESCRIPT_TOOLS.includes(tool.name)) return tool.available ? tool : { ...tool, reason: 'Needs ESLint: download it in Settings, under Benchmark.' }
     if (!typescript) return { ...tool, available: false, reason: 'Only for TypeScript benchmarks.' }
     return tool.available ? tool : { ...tool, reason: 'Needs the TypeScript tools: download or update ESLint in Settings, under Benchmark.' }
   })
 }
 
-/** File tools for a run: all on or off at once, or chosen one by one when expanded. */
+// How the tool list is grouped when expanded; a tool not named here goes under Other.
+const TOOL_GROUPS: { title: string; names: string[] }[] = [
+  { title: 'Files', names: ['write_file', 'edit_file', 'read_file', 'delete_file', 'list_files'] },
+  { title: 'Tasks', names: ['list_tasks', 'create_task', 'complete_task', 'delete_task'] },
+  { title: 'Source', names: ['check_file', 'check_typescript', 'bundle_typescript', 'run_tests'] },
+  { title: 'Job', names: ['finish_job'] },
+]
+
+function groupTools(tools: PickerTool[]) {
+  const known = TOOL_GROUPS.flatMap((group) => group.names)
+  return [...TOOL_GROUPS.map((group) => ({ title: group.title, tools: tools.filter((tool) => group.names.includes(tool.name)) })),
+    { title: 'Other', tools: tools.filter((tool) => !known.includes(tool.name)) }].filter((group) => group.tools.length)
+}
+
+/** Tools for a run: all on or off at once, or chosen one by one, by group, when expanded. */
 function ToolPicker({ tools, chosen, onChange }: { tools: PickerTool[]; chosen: string[]; onChange: (names: string[]) => void }) {
   const [open, setOpen] = useState(false)
   const all = useRef<HTMLInputElement>(null)
@@ -370,12 +436,17 @@ function ToolPicker({ tools, chosen, onChange }: { tools: PickerTool[]; chosen: 
       : `All ${usable.length} tools. The model works on files only inside this run's own folder, and they appear as artifacts on the run.`
   return <div className="benchmark-tools">
     <div className="benchmark-tools-head">
-      <label className="benchmark-option"><input aria-label="File tools" checked={chosen.length > 0 && !some} onChange={(event) => onChange(event.target.checked ? usable : [])} ref={all} type="checkbox" /><span><strong>File tools</strong><small>{summary}</small></span></label>
+      <label className="benchmark-option"><input aria-label="Tools" checked={chosen.length > 0 && !some} onChange={(event) => onChange(event.target.checked ? usable : [])} ref={all} type="checkbox" /><span><strong>Tools</strong><small>{summary}</small></span></label>
       <button aria-controls="benchmark-tool-list" aria-expanded={open} className="button secondary compact" onClick={() => setOpen(!open)} type="button">Choose tools<ChevronDown aria-hidden="true" className="benchmark-tools-chevron" size={14} /></button>
     </div>
-    {open && <ul className="benchmark-tool-list" id="benchmark-tool-list">
-      {tools.map((tool) => <li key={tool.name}><label className="benchmark-option" data-disabled={!tool.available || undefined}><input checked={tool.available && chosen.includes(tool.name)} disabled={!tool.available} onChange={(event) => toggle(tool.name, event.target.checked)} type="checkbox" /><span><code>{tool.name}</code><small>{tool.summary}{tool.reason && ` ${tool.reason}`}</small></span></label></li>)}
-    </ul>}
+    {open && <div className="benchmark-tool-groups" id="benchmark-tool-list">
+      {groupTools(tools).map((group) => <section aria-labelledby={`benchmark-tools-${group.title}`} className="benchmark-tool-group" key={group.title}>
+        <h4 id={`benchmark-tools-${group.title}`}>{group.title}</h4>
+        <ul className="benchmark-tool-list">
+          {group.tools.map((tool) => <li key={tool.name}><label className="benchmark-option" data-disabled={!tool.available || undefined}><input checked={tool.available && chosen.includes(tool.name)} disabled={!tool.available} onChange={(event) => toggle(tool.name, event.target.checked)} type="checkbox" /><span><code>{tool.name}</code><small>{tool.summary}{tool.reason && ` ${tool.reason}`}</small></span></label></li>)}
+        </ul>
+      </section>)}
+    </div>}
   </div>
 }
 
@@ -429,28 +500,39 @@ function TaskList({ run }: { run: BenchmarkRunDetail }) {
   </section>
 }
 
+const PHASES = [['prefill', 'Prefill'], ['decode', 'Decode']] as const
+
+/** One phase's 1% low, average and 1% high, stacked under its name, for the run list. */
+function SpeedStack({ run, phase, label }: { run: BenchmarkRun; phase: 'prefill' | 'decode'; label: string }) {
+  const speeds = phaseSpeeds(run.stats, phase)
+  // While a run is going only the current speed is known.
+  const average = speeds.average ?? run.live?.[phase]?.rate
+  return <div className="benchmark-speed">
+    <dt>{label} <span>tok/s</span></dt>
+    <dd>{SPEED_FIGURES.map((figure) => <span key={figure.key} title={figure.title}><small>{figure.label}</small>{formatRateValue(figure.key === 'average' ? average : speeds[figure.key])}</span>)}</dd>
+  </div>
+}
+
 function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpenArtifact: (path: string) => void }) {
   const offered = useQuery({ queryKey: ['benchmarks'], queryFn: api.benchmarks }).data?.tools
   const { stats } = run
-  const decode = run.samples.filter((sample) => sample.phase === 'decode').map((sample) => sample.rate)
-  const prefill = run.samples.filter((sample) => sample.phase === 'prefill').map((sample) => sample.rate)
   const context = contextUse(run)
   const facts: [string, string][] = [
     ['Server start', formatSeconds(stats.server_start_seconds)],
     ['Model load', formatSeconds(stats.load_seconds)],
     ['First token', formatSeconds(stats.first_token_seconds)],
-    ['Prompt', stats.prompt_tokens != null ? `${stats.prompt_tokens.toLocaleString()} tokens` : '—'],
-    ['Prefill', formatRate(stats.prompt_tokens_per_second)],
+    ['Prompt', stats.prompt_tokens != null ? `${stats.prompt_tokens.toLocaleString()} tokens${stats.prompt_cached_tokens ? ` + ${stats.prompt_cached_tokens.toLocaleString()} cached` : ''}` : '—'],
+    ...(cacheHitRate(stats) ? [['Cache hit rate', cacheHitRate(stats)!] as [string, string]] : []),
     ['Tokens / limit', stats.generated_tokens != null ? `${stats.generated_tokens.toLocaleString()} / ${run.max_tokens?.toLocaleString() ?? 'context'}` : '—'],
-    ['Decode average', formatRate(stats.decode_tokens_per_second)],
-    ['Decode peak (3 s)', formatRate(stats.decode_peak_tokens_per_second)],
     ['Decode at end (3 s)', formatRate(stats.decode_final_tokens_per_second)],
     [context?.live ? 'Context (now)' : 'Context (most used)', context ? `${context.used.toLocaleString()} / ${context.size.toLocaleString()} (${context.percent}%)` : '—'],
     ['Reasoning', reasoningLabel(run.reasoning_level)],
     ...(run.verbose_log ? [['Log', 'Verbose'] as [string, string]] : []),
     ...(run.typescript_strict != null ? [['TypeScript', run.typescript_strict ? 'Strict checks' : 'Non-strict checks'] as [string, string]] : []),
-    ['Total', formatSeconds(stats.total_seconds)],
+    ['Total', formatSeconds(stats.total_seconds ?? run.live?.total)],
     ...(run.tools && run.tool_names ? [['Tools', offered && run.tool_names.length === offered.length ? 'All' : run.tool_names.join(', ')] as [string, string]] : []),
+    ...(run.tool_names?.includes(TEST_TOOL) ? [['Tests', testsLabel(run)] as [string, string]] : []),
+    ...(compactionsLabel(run) != null ? [['Compactions', compactionsLabel(run)] as [string, string]] : []),
     ...(run.tools ? [['Tool calls', `${stats.tool_calls ?? run.tool_calls.length} in ${stats.rounds ?? 1} ${stats.rounds === 1 ? 'request' : 'requests'}`] as [string, string]] : []),
   ]
   const refused = run.tool_calls.filter((call) => !call.ok).length
@@ -459,9 +541,19 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
     {run.error && run.state !== 'cancelled' && <div className="form-error" role="alert"><AlertCircle size={15} /> {run.error}</div>}
     <div className="benchmark-detail-head"><StatePill run={run} /><OutcomeTag run={run} />{finishLabel(run) && <span className="profile-tag" title="Why generation ended">{finishLabel(run)}</span>}</div>
     <RunSteps detail={run} run={run} />
-    <dl className="benchmark-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-    {decode.length > 1 && <div className="benchmark-chart"><span>Decode speed over the run (3 s windows)</span><Sparkline ceiling={stats.decode_peak_tokens_per_second} values={decode} /></div>}
-    {prefill.length > 1 && <div className="benchmark-chart"><span>Prefill speed</span><Sparkline values={prefill} /></div>}
+    <div className="benchmark-stats">
+      <table className="benchmark-speed-table">
+        <caption>Speed, tokens per second</caption>
+        <thead><tr><td />{SPEED_FIGURES.map((figure) => <th key={figure.key} scope="col" title={figure.title}>{figure.label}</th>)}</tr></thead>
+        <tbody>{PHASES.map(([phase, name]) => {
+          const speeds = phaseSpeeds(stats, phase)
+          return <tr key={phase}><th scope="row">{name}</th>{SPEED_FIGURES.map((figure) => <td key={figure.key}>{formatRateValue(speeds[figure.key])}</td>)}</tr>
+        })}</tbody>
+      </table>
+      <dl className="benchmark-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+    </div>
+    <p className="benchmark-hint speed-hint">Decode speeds are measured over 3-second windows and prefill speeds batch by batch. The 1% low and 1% high are the averages over the slowest and fastest 1% of that time. Prompt tokens reused from llama.cpp's cache are counted apart, as reading them takes no time.</p>
+    <SpeedChart run={run} />
     <ContextChart resources={run.resources ?? []} />
     <MemoryChart resources={run.resources ?? []} />
     <TaskList run={run} />
@@ -510,17 +602,21 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   // '' sends no level, so the model's chat template picks its own default.
   const [reasoningLevel, setReasoningLevel] = useState('')
   const [verboseLog, setVerboseLog] = useState(false)
+  const [compactContext, setCompactContext] = useState(true)
   const [viewing, setViewing] = useState<string>()
   const [deleting, setDeleting] = useState<BenchmarkRun>()
+  // Runs ticked for deleting together, and whether that is being confirmed.
+  const [chosen, setChosen] = useState<string[]>([])
+  const [deletingChosen, setDeletingChosen] = useState(false)
   const runPanel = useRef<HTMLElement>(null)
   const enabled = profiles.filter((profile) => profile.enabled)
   const profile = profiles.find((item) => item.id === profileId) ?? enabled[0]
   const benchmarks = catalog.data?.benchmarks ?? []
   const benchmark = benchmarks.find((item) => item.id === (benchmarkId || catalog.data?.default_benchmark_id)) ?? benchmarks[0]
   const systemPrompts = catalog.data?.system_prompts ?? []
-  const allTools = toolsFor(catalog.data?.tools ?? [], Boolean(benchmark?.typescript))
+  const allTools = toolsFor(catalog.data?.tools ?? [], Boolean(benchmark?.typescript), Boolean(benchmark?.typescript?.tests))
   // A TypeScript benchmark without its tools would run as a plain one, so say so.
-  const typescriptMissing = Boolean(benchmark?.typescript) && allTools.some((tool) => TYPESCRIPT_TOOLS.includes(tool.name) && !tool.available)
+  const typescriptMissing = Boolean(benchmark?.typescript) && allTools.some((tool) => TYPESCRIPT_TOOLS.includes(tool.name) && (tool.name !== TEST_TOOL || Boolean(benchmark?.typescript?.tests)) && !tool.available)
   const usableTools = allTools.filter((tool) => tool.available).map((tool) => tool.name)
   // A tool chosen earlier drops out if what it needs is removed in the meantime.
   const chosenTools = (toolNames ?? usableTools).filter((name) => usableTools.includes(name))
@@ -567,6 +663,19 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
       await queryClient.invalidateQueries({ queryKey: ['benchmark-runs'] })
     },
   })
+  const bulkRemoval = useMutation({
+    mutationFn: (runIds: string[]) => api.deleteBenchmarkRuns(runIds),
+    onSuccess: async (result) => {
+      setDeletingChosen(false)
+      setChosen((current) => current.filter((id) => !result.deleted.includes(id)))
+      await queryClient.invalidateQueries({ queryKey: ['benchmark-runs'] })
+    },
+  })
+  // A running run cannot be deleted, so it cannot be ticked either.
+  const deletable = (runs.data ?? []).filter((run) => run.state !== 'running').map((run) => run.id)
+  const picked = chosen.filter((id) => deletable.includes(id))
+  const allPicked = deletable.length > 0 && picked.length === deletable.length
+  const toggle = (runId: string, on: boolean) => setChosen((current) => on ? [...current, runId] : current.filter((id) => id !== runId))
 
   const blocker = !canRun ? 'Running a benchmark needs permission to start and stop the server.'
     : active ? 'A benchmark is already running.'
@@ -579,7 +688,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   return <>
     <section className="data-panel benchmark-run-panel" ref={runPanel}>
       <div className="panel-heading"><div><h2>Run a benchmark</h2><p>Starts the server, loads one profile, sends the prompt and measures it, then stops the server again.</p></div><Timer size={18} /></div>
-      <form className="benchmark-form" onSubmit={(event) => { event.preventDefault(); start.mutate({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools: chosenTools.length > 0, tool_names: chosenTools, system_prompt_id: systemPrompt?.id ?? null, reasoning_level: reasoningLevel || null, verbose_log: chosenTools.length > 0 && verboseLog }) }}>
+      <form className="benchmark-form" onSubmit={(event) => { event.preventDefault(); start.mutate({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools: chosenTools.length > 0, tool_names: chosenTools, system_prompt_id: systemPrompt?.id ?? null, reasoning_level: reasoningLevel || null, verbose_log: chosenTools.length > 0 && verboseLog, compact_context: chosenTools.length > 0 && compactContext }) }}>
         <label className="compare-pick"><span>Profile</span><select aria-label="Profile" onChange={(event) => setProfileId(event.target.value)} value={profile?.id ?? ''}>
           {profiles.map((item) => <option disabled={!item.enabled} key={item.id} value={item.id}>{item.alias}{item.enabled ? '' : ' (disabled)'}</option>)}
         </select></label>
@@ -591,6 +700,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
       </form>
       {allTools.length > 0 && <ToolPicker chosen={chosenTools} onChange={setToolNames} tools={allTools} />}
       {chosenTools.length > 0 && <label className="benchmark-option"><input aria-label="Verbose log" checked={verboseLog} onChange={(event) => setVerboseLog(event.target.checked)} type="checkbox" /><span><strong>Verbose log</strong><small>Keeps the arguments of every tool call and its whole result, so you can see why a call failed. Runs take more space.</small></span></label>}
+      {chosenTools.length > 0 && <label className="benchmark-option"><input aria-label="Compact context" checked={compactContext} onChange={(event) => setCompactContext(event.target.checked)} type="checkbox" /><span><strong>Compact context</strong><small>When the conversation nears the context size, old tool output is pruned, then the session is summarised if that is not enough, so the agent can keep going. Turn it off to measure raw context use: the run ends when the context fills.</small></span></label>}
       {typescriptMissing && <p className="benchmark-note" role="status"><AlertCircle size={15} /> {benchmark?.title} is a TypeScript benchmark, but the TypeScript tools are not installed, so it would run without them. Download or update ESLint in Settings, under Benchmark, to add them.</p>}
       <div className="benchmark-choices">
         {systemPrompts.length > 0 && <label className="compare-pick"><span>System prompt</span><select aria-label="System prompt" onChange={(event) => setSystemPromptId(event.target.value)} value={chosenSystemPrompt}>
@@ -618,19 +728,23 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
     </section>
 
     <section className="data-panel">
-      <div className="panel-heading"><div><h2>Runs</h2><p>Every run keeps its timings and output until you delete it. The latest result of each benchmark also stays on its profile.</p></div></div>
+      <div className="panel-heading"><div><h2>Runs</h2><p>Every run keeps its timings and output until you delete it. The latest result of each benchmark also stays on its profile.</p></div>
+        {canRun && deletable.length > 0 && <div className="panel-heading-actions">
+          <label className="benchmark-select-all"><input aria-label="Select every finished run" checked={allPicked} onChange={(event) => setChosen(event.target.checked ? deletable : [])} ref={(input) => { if (input) input.indeterminate = picked.length > 0 && !allPicked }} type="checkbox" /> Select all</label>
+          <button className="button danger compact" disabled={!picked.length} onClick={() => setDeletingChosen(true)} type="button"><Trash2 size={14} /> Delete{picked.length ? ` ${picked.length}` : ''}</button>
+        </div>}
+      </div>
       {runs.data?.length ? <ul className="benchmark-runs">
-        {runs.data.map((run) => <li key={run.id}>
+        {runs.data.map((run) => <li data-selectable={canRun || undefined} key={run.id}>
+          {canRun && <input aria-label={`Select run ${run.benchmark_title} on ${run.profile_alias}, ${formatWhen(run.started_at)}`} checked={picked.includes(run.id)} className="benchmark-run-check" disabled={run.state === 'running'} onChange={(event) => toggle(run.id, event.target.checked)} type="checkbox" />}
           <span className="benchmark-run-copy">
             <strong><button aria-label={`View run ${run.benchmark_title} on ${run.profile_alias}`} className="benchmark-run-title" onClick={() => setViewing(run.id)} type="button">{run.benchmark_title} · {run.profile_alias}</button> <span className="profile-tag">v{run.profile_version}</span> <OutcomeTag run={run} /></strong>
-            <span>{formatWhen(run.started_at)}{run.system_prompt_id ? ` · ${run.system_prompt_id}` : ''}{run.reasoning_level ? ` · reasoning ${reasoningLabel(run.reasoning_level).toLowerCase()}` : ''}{run.stats.files_written ? ` · ${run.stats.files_written} ${run.stats.files_written === 1 ? 'file' : 'files'}` : ''}{run.error && run.state === 'failed' ? ` · ${run.error}` : ''}</span>
+            <span>{formatWhen(run.started_at)}{run.system_prompt_id ? ` · ${run.system_prompt_id}` : ''}{run.reasoning_level ? ` · reasoning ${reasoningLabel(run.reasoning_level).toLowerCase()}` : ''}{run.stats.files_written ? ` · ${run.stats.files_written} ${run.stats.files_written === 1 ? 'file' : 'files'}` : ''}{run.stats.compactions ? ` · ${run.stats.compactions} ${run.stats.compactions === 1 ? 'compaction' : 'compactions'}` : ''}{run.error && run.state === 'failed' ? ` · ${run.error}` : ''}</span>
           </span>
           <dl className="benchmark-run-figures">
-            <div><dt>Total</dt><dd>{formatSeconds(run.stats.total_seconds)}</dd></div>
+            <div><dt>Total</dt><dd>{formatSeconds(run.stats.total_seconds ?? run.live?.total)}</dd></div>
             <div><dt>Load</dt><dd>{formatSeconds(run.stats.load_seconds)}</dd></div>
-            <div><dt>Prefill</dt><dd>{formatRate(run.stats.prompt_tokens_per_second ?? run.live?.prefill?.rate)}</dd></div>
-            <div><dt>Decode avg</dt><dd>{formatRate(run.stats.decode_tokens_per_second ?? run.live?.decode?.rate)}</dd></div>
-            <div><dt>Peak</dt><dd>{formatRate(run.stats.decode_peak_tokens_per_second)}</dd></div>
+            {PHASES.map(([phase, label]) => <SpeedStack key={phase} label={label} phase={phase} run={run} />)}
             <div><dt>Tokens</dt><dd>{run.stats.generated_tokens?.toLocaleString() ?? run.live?.decode?.tokens?.toLocaleString() ?? '—'}</dd></div>
             <div><dt>Context</dt><ContextFigure run={run} /></div>
           </dl>
@@ -648,6 +762,10 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
     </section>
 
     {viewing && <RunDetail onClose={() => setViewing(undefined)} runId={viewing} />}
+    {deletingChosen && <Dialog description="Their timings and output are removed. The latest result already written to each profile is kept." onClose={() => setDeletingChosen(false)} title={`Delete ${picked.length} benchmark ${picked.length === 1 ? 'run' : 'runs'}?`}>
+      <div className="confirm-body"><Trash2 size={24} /><p>{picked.length === deletable.length ? 'Every finished run' : `${picked.length} of ${deletable.length} finished runs`} will be deleted.</p>{bulkRemoval.error && <div className="form-error"><AlertCircle size={15} /> {bulkRemoval.error.message}</div>}</div>
+      <footer className="dialog-actions"><button className="button secondary" onClick={() => setDeletingChosen(false)} type="button">Keep runs</button><button className="button danger" disabled={bulkRemoval.isPending || !picked.length} onClick={() => bulkRemoval.mutate(picked)} type="button">{bulkRemoval.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete {picked.length === 1 ? 'run' : 'runs'}</button></footer>
+    </Dialog>}
     {deleting && <Dialog description="The run's timings and output are removed. The latest result already written to the profile is kept." onClose={() => setDeleting(undefined)} title="Delete benchmark run?">
       <div className="confirm-body"><Trash2 size={24} /><p><strong>{deleting.benchmark_title}</strong> on <strong>{deleting.profile_alias}</strong>, {formatWhen(deleting.started_at)}.</p>{removal.error && <div className="form-error"><AlertCircle size={15} /> {removal.error.message}</div>}</div>
       <footer className="dialog-actions"><button className="button secondary" onClick={() => setDeleting(undefined)} type="button">Keep run</button><button className="button danger" disabled={removal.isPending} onClick={() => removal.mutate(deleting.id)} type="button">{removal.isPending ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete run</button></footer>

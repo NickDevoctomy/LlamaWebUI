@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, GitCompareArrows, LoaderCircle } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, type ArgumentCatalog, type BenchmarkResult, type Profile, type ProfileCreate, type Runtime, type StoredArgument } from './api'
-import { formatRate, formatSeconds, reasoningLabel } from './benchmarkFormat'
+import { formatRate, formatSeconds, phaseSpeeds, reasoningLabel } from './benchmarkFormat'
 
 type Side = string | null
 
@@ -24,6 +24,38 @@ interface CompareRow {
 }
 
 const GENERAL = 'Profile'
+const REFERENCE = 'recommended:'
+
+/** The compare-side id of a profile's recommended settings at one version. */
+export const recommendedId = (profile: Profile, version: number) => `${REFERENCE}${profile.id}:${version}`
+
+const isReference = (profile: Profile) => profile.id.startsWith(REFERENCE)
+
+/**
+ * A profile's recommended settings as read-only sides to compare against: the version it was
+ * added from and, when newer, the bundled one. Anything a recommendation does not set is
+ * taken from the profile, so only real setting changes show.
+ */
+export function recommendedReferences(profile: Profile): Profile[] {
+  const recommendation = profile.recommendation
+  if (!recommendation) return []
+  const reference = (version: number, args: StoredArgument[], extra: Partial<Profile> = {}): Profile => ({
+    ...profile,
+    ...extra,
+    id: recommendedId(profile, version),
+    alias: `${profile.alias} · recommended v${version}`,
+    version,
+    configuration: { ...profile.configuration, arguments: args },
+    hash: null,
+    recommendation: null,
+    benchmark_results: {},
+  })
+  const { baseline, latest } = recommendation
+  const latestReference = latest ? reference(latest.version, latest.arguments, { exclusive: latest.exclusive, description: latest.description }) : undefined
+  // The bundled version also has the description and exclusive setting, so it wins a tie.
+  const baselineReference = baseline && baseline.version !== latest?.version ? reference(baseline.version, baseline.arguments) : undefined
+  return [baselineReference, latestReference].filter((item): item is Profile => item !== undefined)
+}
 
 function storedArguments(profile: Profile): StoredArgument[] {
   return Array.isArray(profile.configuration.arguments) ? profile.configuration.arguments as StoredArgument[] : []
@@ -42,7 +74,7 @@ function fileName(path: string) {
 
 function generalRows(left: Profile, right: Profile, runtimes: Runtime[]): CompareRow[] {
   const runtime = (profile: Profile) => runtimes.find((item) => item.id === profile.runtime_id)?.name ?? 'Missing runtime'
-  const version = (profile: Profile) => profile.recommendation ? `v${profile.version ?? 1} (recommended)` : `v${profile.version ?? 1}`
+  const version = (profile: Profile) => profile.recommendation || isReference(profile) ? `v${profile.version ?? 1} (recommended)` : `v${profile.version ?? 1}`
   const rows: Omit<CompareRow, 'group'>[] = [
     { key: 'runtime', label: 'Runtime', takeable: true, left: runtime(left), right: runtime(right) },
     { key: 'model', label: 'Model file', takeable: true, left: left.model_path || null, right: right.model_path || null, leftDisplay: left.model_path ? fileName(left.model_path) : null, rightDisplay: right.model_path ? fileName(right.model_path) : null, leftTitle: left.model_path, rightTitle: right.model_path },
@@ -98,9 +130,12 @@ function benchmarkRows(left: Profile, right: Profile): CompareRow[] {
   const rightResults = right.benchmark_results ?? {}
   const ids = [...new Set([...Object.keys(leftResults), ...Object.keys(rightResults)])].sort()
   const figures: [string, string, (result: BenchmarkResult) => string][] = [
+    ['decode-low', 'Decode 1% low', (result) => formatRate(result.decode_low_tokens_per_second)],
     ['decode', 'Decode average', (result) => formatRate(result.decode_tokens_per_second)],
-    ['peak', 'Decode peak (3 s)', (result) => formatRate(result.decode_peak_tokens_per_second)],
-    ['prefill', 'Prefill', (result) => formatRate(result.prompt_tokens_per_second)],
+    ['decode-high', 'Decode 1% high', (result) => formatRate(phaseSpeeds(result, 'decode').high)],
+    ['prefill-low', 'Prefill 1% low', (result) => formatRate(result.prompt_low_tokens_per_second)],
+    ['prefill', 'Prefill average', (result) => formatRate(result.prompt_tokens_per_second)],
+    ['prefill-high', 'Prefill 1% high', (result) => formatRate(phaseSpeeds(result, 'prefill').high)],
     ['load', 'Model load', (result) => formatSeconds(result.load_seconds)],
     ['first', 'First token', (result) => formatSeconds(result.first_token_seconds)],
     ['reasoning', 'Reasoning', (result) => reasoningLabel(result.reasoning_level)],
@@ -153,29 +188,55 @@ function takeValue(target: Profile, source: Profile, key: string): ProfileCreate
   return { ...body, arguments: updated }
 }
 
-/** Pick two profiles and see where their settings differ, and copy values across. */
-export function ProfileCompare({ profiles, runtimes, running = false }: { profiles: Profile[]; runtimes: Runtime[]; running?: boolean }) {
-  const [leftId, setLeftId] = useState(profiles[0]?.id ?? '')
-  const [rightId, setRightId] = useState(profiles[1]?.id ?? '')
+/** A request to show two sides, such as a profile beside its recommended settings. */
+export interface CompareFocus {
+  leftId: string
+  rightId: string
+  /** Changes on every request, so asking for the same pair again still scrolls to it. */
+  nonce: number
+}
+
+/** Pick two profiles, or a profile and its recommended settings, see where they differ, and copy values across. */
+export function ProfileCompare({ profiles, runtimes, running = false, focus }: { profiles: Profile[]; runtimes: Runtime[]; running?: boolean; focus?: CompareFocus }) {
+  const [leftId, setLeftId] = useState(focus?.leftId ?? profiles[0]?.id ?? '')
+  const [rightId, setRightId] = useState(focus?.rightId ?? profiles[1]?.id ?? '')
   const [differencesOnly, setDifferencesOnly] = useState(true)
+  const [focused, setFocused] = useState(focus?.nonce)
+  const section = useRef<HTMLElement>(null)
+  if (focus && focus.nonce !== focused) {
+    setFocused(focus.nonce)
+    setLeftId(focus.leftId)
+    setRightId(focus.rightId)
+    setDifferencesOnly(true)
+  }
+  useEffect(() => {
+    if (focus) section.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  }, [focus])
   const catalog = useQuery({ queryKey: ['argument-catalog', 'base'], queryFn: api.argumentCatalog, refetchInterval: false, staleTime: Infinity })
   const queryClient = useQueryClient()
   const take = useMutation({
     mutationFn: ({ target, source, key }: { target: Profile; source: Profile; key: string }) => api.updateProfile(target.id, takeValue(target, source, key)),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['profiles'] }),
   })
-  const left = profiles.find((profile) => profile.id === leftId) ?? profiles[0]
-  const right = profiles.find((profile) => profile.id === rightId) ?? profiles.find((profile) => profile.id !== left?.id)
+  const references = useMemo(() => profiles.flatMap(recommendedReferences), [profiles])
+  const sides = [...profiles, ...references]
+  const left = sides.find((profile) => profile.id === leftId) ?? sides[0]
+  const right = sides.find((profile) => profile.id === rightId) ?? sides.find((profile) => profile.id !== left?.id)
 
   const rows = useMemo(() => left && right
-    ? [...generalRows(left, right, runtimes), ...argumentRows(left, right, catalog.data), ...benchmarkRows(left, right)]
+    ? [
+        ...generalRows(left, right, runtimes),
+        ...argumentRows(left, right, catalog.data),
+        // Recommended settings have no benchmark results of their own.
+        ...(isReference(left) || isReference(right) ? [] : benchmarkRows(left, right)),
+      ]
     : [], [left, right, runtimes, catalog.data])
-  if (profiles.length < 2 || !left || !right) return null
+  if (sides.length < 2 || !left || !right) return null
 
   const differing = rows.filter((row) => row.left !== row.right)
   // A button on one side takes the other side's value; it is offered only where they differ.
   const takeButton = (row: CompareRow, target: Profile, source: Profile, Icon: typeof ArrowLeft) => {
-    if (!row.takeable || row.left === row.right || target.id === source.id) return null
+    if (!row.takeable || row.left === row.right || target.id === source.id || isReference(target)) return null
     const pending = take.isPending && take.variables?.key === row.key && take.variables.target.id === target.id
     return <button
       aria-label={`Take ${row.label} from ${source.alias}`}
@@ -192,15 +253,18 @@ export function ProfileCompare({ profiles, runtimes, running = false }: { profil
     <label className="compare-pick">
       <span>{label}</span>
       <select aria-label={`${label} profile`} onChange={(event) => onChange(event.target.value)} value={value}>
-        {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.alias}</option>)}
+        {references.length > 0 ? <>
+          <optgroup label="Profiles">{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.alias}</option>)}</optgroup>
+          <optgroup label="Recommended settings">{references.map((profile) => <option key={profile.id} value={profile.id}>{profile.alias}</option>)}</optgroup>
+        </> : profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.alias}</option>)}
       </select>
     </label>
   )
 
   return (
-    <section aria-labelledby="compare-heading" className="data-panel profile-compare">
+    <section aria-labelledby="compare-heading" className="data-panel profile-compare" ref={section}>
       <div className="panel-heading">
-        <div><h2 id="compare-heading">Compare profiles</h2><p>Pick two profiles to see where their settings differ.</p></div>
+        <div><h2 id="compare-heading">Compare profiles</h2><p>Pick two profiles, or a profile and its recommended settings, to see where they differ.</p></div>
         <GitCompareArrows size={18} />
       </div>
       <div className="compare-controls">

@@ -246,23 +246,56 @@ def _find(
     return next((item for item in recommendations if item.id == recommendation_id), None)
 
 
+def _with_own_locations(
+    arguments: Iterable[Mapping[str, object]],
+    record: ModelProfileRecord,
+    catalog: ArgumentCatalog,
+) -> list[Mapping[str, object]]:
+    """Recommended arguments with the profile's own file locations, which never count as changes."""
+    current = _current_arguments(record, catalog)
+    locations = [item for item in current if _is_location(item, catalog)]
+    return [item for item in arguments if not _is_location(item, catalog)] + locations
+
+
 def recommendation_status(
     record: ModelProfileRecord,
     recommendations: Sequence[Recommendation],
     catalog: ArgumentCatalog,
 ) -> dict[str, object] | None:
-    """How a profile added from a recommendation compares with the bundled version."""
+    """How a profile added from a recommendation compares with the bundled version.
+
+    ``baseline`` holds the arguments it was added or last upgraded with and ``latest`` the
+    bundled version's settings, so the two can be compared with what the profile has now.
+    """
     if record.recommendation_id is None:
         return None
     recommendation = _find(recommendations, record.recommendation_id)
     modified = is_modified(record, catalog)
     latest = recommendation.version if recommendation is not None else None
+    baseline = record.recommendation_baseline
     return {
         "id": record.recommendation_id,
         "title": recommendation.title if recommendation is not None else None,
         "latest_version": latest,
         "modified": modified,
         "upgradable": latest is not None and latest > record.version and not modified,
+        "baseline": (
+            {"version": record.version, "arguments": _with_own_locations(baseline, record, catalog)}
+            if isinstance(baseline, list)
+            else None
+        ),
+        "latest": (
+            {
+                "version": recommendation.version,
+                "arguments": _with_own_locations(
+                    recommended_arguments(recommendation, catalog), record, catalog
+                ),
+                "exclusive": recommendation.exclusive,
+                "description": recommendation.description,
+            }
+            if recommendation is not None
+            else None
+        ),
     }
 
 

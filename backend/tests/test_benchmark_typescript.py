@@ -84,7 +84,7 @@ def test_frontmatter_makes_a_typescript_benchmark(tmp_path: Path) -> None:
     names = ("plain", "on", "empty", "strict", "off")
     assert [loaded[name].typescript_strict for name in names] == [None, False, False, True, None]
     assert loaded["strict"].typescript
-    assert loaded["strict"].to_payload()["typescript"] == {"strict": True}
+    assert loaded["strict"].to_payload()["typescript"] == {"strict": True, "tests": False}
     assert loaded["plain"].to_payload()["typescript"] is None
 
 
@@ -144,10 +144,10 @@ async def test_check_typescript_reports_errors_against_workspace_paths(tmp_path:
     config = commands.configs[-1]
     options = cast(dict[str, object], config["compilerOptions"])
     assert (options["strict"], options["noImplicitAny"], options["noEmit"]) == (True, True, True)
-    assert sorted(cast(list[str], config["files"])) == [
-        str(folder / "src/main.ts"),
-        str(folder / "src/util.ts"),
-    ]
+    files = cast(list[str], config["files"])
+    # The workspace's files, and the types for node:test and node:assert test files use.
+    assert sorted(files[:-1]) == [str(folder / "src/main.ts"), str(folder / "src/util.ts")]
+    assert files[-1].endswith("node-test.d.ts")
     # tsc runs from the workspace with a config written outside it, then cleaned up.
     command, cwd, _, _ = commands.calls[-1]
     assert cwd == folder
@@ -337,3 +337,200 @@ async def test_a_typescript_run_keeps_its_strict_mode(tmp_path: Path) -> None:
     await runner.wait()
     assert runs.get(plain.id).typescript_strict is None
     assert "check_typescript" not in (runs.get(plain.id).tool_names or [])
+
+
+TAP = """TAP version 13
+# Subtest: board
+    # Subtest: clears full rows
+    ok 1 - clears full rows
+      ---
+      duration_ms: 0.6
+      type: 'test'
+      ...
+    # Subtest: scores a tetris
+    not ok 2 - scores a tetris
+      ---
+      duration_ms: 3.1
+      type: 'test'
+      location: '{folder}\\src\\board.test.ts:6:3'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        800 !== 400
+
+      code: 'ERR_ASSERTION'
+      stack: |-
+        TestContext.<anonymous> ({folder}\\src\\board.test.ts:6:31)
+      ...
+    1..2
+not ok 1 - board
+  ---
+  duration_ms: 4.0
+  type: 'suite'
+  location: '{folder}\\src\\board.test.ts:4:1'
+  failureType: 'subtestsFailed'
+  error: '1 subtest failed'
+  ...
+hello from a test
+1..1
+# tests 2
+# suites 1
+# pass 1
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 12.3
+"""
+
+
+class FakeTestRunner(FakeToolchain):
+    """Node's test runner gives a set TAP reply; the run's options are recorded."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tests = CommandResult(0, "", "")
+        self.timeout = False
+
+    def __call__(
+        self,
+        command: list[str],
+        cwd: Path,
+        env: Mapping[str, str],
+        timeout: float,
+        stdin: str | None,
+    ) -> CommandResult:
+        if "--test" not in command:
+            return super().__call__(command, cwd, env, timeout, stdin)
+        self.calls.append((command, cwd, env, stdin))
+        # The preload that turns the network off is written beside the compiled tests.
+        assert (cwd / "no-network.mjs").read_text(encoding="utf-8").count("refuse") > 1
+        if self.timeout:
+            import subprocess
+
+            raise LinterError("node took too long") from subprocess.TimeoutExpired(command, 60)
+        return self.tests
+
+
+async def _test_runner(tmp_path: Path) -> tuple[BenchmarkLinter, FakeTestRunner]:
+    commands = FakeTestRunner()
+    linter = _linter(tmp_path, commands)
+    await _install(linter)
+    return linter, commands
+
+
+@pytest.mark.asyncio
+async def test_run_tests_reports_counts_failures_and_output(tmp_path: Path) -> None:
+    linter, commands = await _test_runner(tmp_path / "home")
+    workspace = _workspace(tmp_path)
+    workspace.write("src/board.test.ts", "import { test } from 'node:test'\n")
+    folder = workspace.folder.resolve()
+    commands.tests = CommandResult(1, TAP.format(folder=str(folder).replace("\\", "\\\\")), "")
+
+    report, counts = benchmark_typescript.run_tests(linter, workspace)
+
+    assert counts == {"passed": 1, "failed": 1}
+    assert report.splitlines() == [
+        "Ran 2 tests in 1 test file: 1 passed, 1 failed.",
+        "FAIL scores a tetris (src/board.test.ts:6:3)",
+        "  Expected values to be strictly equal:",
+        "  800 !== 400",
+        "Output:",
+        "hello from a test",
+    ]
+    build, _, _, _ = commands.calls[-2]
+    assert Path(build[1]).name == "esbuild"
+    assert "src/board.test.ts" in build and "--platform=node" in build
+    run, cwd, _, _ = commands.calls[-1]
+    # One locked-down process that may only read the compiled tests.
+    assert "--permission" in run and f"--allow-fs-read={cwd}" in run
+    assert "--test-isolation=none" in run
+    assert run[-1] == "src/board.test.mjs"
+    assert any(option.startswith("--max-old-space-size=") for option in run)
+    # The compiled tests are cleaned up afterwards.
+    assert not cwd.exists()
+
+
+@pytest.mark.asyncio
+async def test_run_tests_says_why_nothing_ran(tmp_path: Path) -> None:
+    linter, commands = await _test_runner(tmp_path / "home")
+    workspace = _workspace(tmp_path)
+
+    with pytest.raises(WorkspaceError, match="there are no tests yet"):
+        benchmark_typescript.run_tests(linter, workspace)
+
+    workspace.write("src/board.spec.ts", "nope")
+    commands.esbuild = CommandResult(1, "", "✘ [ERROR] Expected ';'\n")
+    with pytest.raises(WorkspaceError, match="the tests did not build"):
+        benchmark_typescript.run_tests(linter, workspace)
+
+    commands.esbuild = CommandResult(0, "", "")
+    commands.tests = CommandResult(1, "", "SyntaxError: Unexpected token\n")
+    with pytest.raises(WorkspaceError, match="could not run:\nSyntaxError: Unexpected token"):
+        benchmark_typescript.run_tests(linter, workspace)
+
+    commands.timeout = True
+    with pytest.raises(WorkspaceError, match="took longer than 60 s"):
+        benchmark_typescript.run_tests(linter, workspace)
+
+
+@pytest.mark.asyncio
+async def test_a_benchmark_with_tests_offers_run_tests_and_counts_the_runs(
+    tmp_path: Path,
+) -> None:
+    engine, profile = _database(tmp_path)
+    linter, commands = await _test_runner(tmp_path / "tools-home")
+    commands.tests = CommandResult(0, "# tests 3\n# pass 3\n# fail 0\n", "")
+    client = FakeBenchmarkClient()
+    client.replies = [
+        _round(
+            [
+                _tool_call(0, "write_file", {"path": "src/a.test.ts", "content": "x"}),
+                _tool_call(1, "run_tests", {}),
+            ],
+            finish="tool_calls",
+            generated=5,
+            milliseconds=10.0,
+        ),
+        _round([], finish="stop", generated=1, milliseconds=1.0),
+    ]
+    runner, runs, _ = _runner(engine, client)
+    runner._linter = linter
+    tested = replace(BENCHMARK, typescript_strict=False, typescript_tests=True)
+
+    record = runner.start(profile, tested, None, tools=True)
+    await runner.wait()
+
+    finished = runs.get(record.id)
+    assert "run_tests" in (finished.tool_names or [])
+    assert finished.tool_calls[1]["result"] == "Ran 3 tests in 1 test file: 3 passed."
+    assert finished.tool_calls[1]["tests"] == {"passed": 3, "failed": 0}
+    assert (
+        finished.stats["test_runs"],
+        finished.stats["tests_passed"],
+        finished.stats["tests_failed"],
+    ) == (1, 3, 0)
+    messages, offered = client.requests[0]
+    assert "run_tests" in offered
+    assert "node:test" in str(messages[0]["content"])
+
+    # A TypeScript benchmark without tests turned on does not offer them.
+    plain = runner.start(profile, replace(BENCHMARK, typescript_strict=False), None, tools=True)
+    await runner.wait()
+    assert "run_tests" not in (runs.get(plain.id).tool_names or [])
+
+
+def test_frontmatter_turns_tests_on(tmp_path: Path) -> None:
+    (tmp_path / "tested.txt").write_text(
+        "---\ntypescript:\n  tests: true\n---\nMake it.", encoding="utf-8"
+    )
+    (tmp_path / "bad.txt").write_text(
+        "---\ntypescript:\n  tests: maybe\n---\nMake it.", encoding="utf-8"
+    )
+    with pytest.raises(BenchmarkError, match="typescript tests must be true or false"):
+        load_benchmarks(tmp_path)
+    (tmp_path / "bad.txt").unlink()
+    tested = load_benchmarks(tmp_path)[0]
+    assert (tested.typescript, tested.typescript_tests) == (True, True)
+    assert tested.to_payload()["typescript"] == {"strict": False, "tests": True}

@@ -193,6 +193,8 @@ class RouterSupervisor:
         self._state = RouterState.STOPPED
         self._last_exit_code: int | None = None
         self._logs: deque[str] = deque(maxlen=log_capacity)
+        # Lines ever logged, so a caller can mark a point and read what came after it.
+        self._log_total = 0
         self._state_observer: RouterStateObserver | None = None
         self._restart_policy = restart_policy
         self._restart_attempts: deque[float] = deque()
@@ -219,6 +221,20 @@ class RouterSupervisor:
     @property
     def logs(self) -> tuple[str, ...]:
         return tuple(self._logs)
+
+    @property
+    def log_mark(self) -> int:
+        """A point in the log to read on from with logs_since."""
+        return self._log_total
+
+    def logs_since(self, mark: int) -> tuple[str, ...]:
+        """The lines logged after a mark that are still kept."""
+        count = min(self._log_total - mark, len(self._logs))
+        return tuple(self._logs)[-count:] if count > 0 else ()
+
+    def _append_log(self, text: str) -> None:
+        self._logs.append(redact_text(text))
+        self._log_total += 1
 
     @property
     def timing(self) -> dict[str, float | int | None]:
@@ -249,7 +265,7 @@ class RouterSupervisor:
 
     def record_log(self, message: str) -> None:
         """Add a control-plane launch detail to the same bounded log tail."""
-        self._logs.append(redact_text(message))
+        self._append_log(message)
 
     def set_state_observer(self, observer: RouterStateObserver | None) -> None:
         self._state_observer = observer
@@ -470,7 +486,7 @@ class RouterSupervisor:
     async def _capture_logs(self, output: RouterOutput) -> None:
         while line := await output.readline():
             text = line.decode(errors="replace").rstrip("\r\n")
-            self._logs.append(redact_text(text))
+            self._append_log(text)
             self._parse_timing(text)
             self._telemetry.observe(text)
             LOGGER.debug(

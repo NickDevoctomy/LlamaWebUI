@@ -116,8 +116,10 @@ export interface Benchmark {
   prompt: string
   /** Tasks a run with complete_task starts with, from the prompt file's frontmatter. */
   tasks: string[]
-  /** Set for a TypeScript benchmark, which gets the TypeScript tools; null otherwise. */
-  typescript: { strict: boolean } | null
+  /** Set for a TypeScript benchmark, which gets the TypeScript tools; null otherwise. With tests, it also gets run_tests. */
+  typescript: { strict: boolean; tests?: boolean } | null
+  /** Requests a tool-using run may make; null keeps the default. */
+  max_rounds?: number | null
 }
 
 /** A task on the agent's task list; deleting one only marks it deleted. */
@@ -158,6 +160,212 @@ export interface BenchmarkTool {
   available: boolean
 }
 
+export type SecretName = 'huggingface-token' | 'openrouter-api-key'
+
+/** A credential kept in the system credential store. The value itself never reaches the browser. */
+export interface SecretStatus {
+  name: SecretName
+  configured: boolean
+  last_four: string | null
+}
+
+export interface OpenRouterModel {
+  id: string
+  name: string
+  description: string
+  context_length: number | null
+  /** USD per unit as OpenRouter reports it, e.g. prompt and completion per token. "-1" means it varies. */
+  pricing: Record<string, string>
+}
+
+/** The assistant's model, with OpenRouter's pricing as it was when it was selected. */
+export interface SelectedOpenRouterModel extends OpenRouterModel {
+  selected_at: string
+}
+
+export interface AssistantStatus {
+  /** An OpenRouter key is saved and a model is selected. */
+  available: boolean
+  openrouter_key_configured: boolean
+  model: SelectedOpenRouterModel | null
+  /** What the assistant is called, from Settings. */
+  name: string
+}
+
+export type BriefTarget = 'decode' | 'prefill' | 'load' | 'memory'
+
+/** What a conversation works on, and the targets it aims for. Exactly one subject is set. */
+export interface Brief {
+  subject: 'model' | 'profile'
+  model?: { repo_id: string; quantization?: string | null } | null
+  profile_id?: string | null
+  max_load_seconds?: number | null
+  min_prefill_tps?: number | null
+  min_decode_tps?: number | null
+  max_ram_gb?: number | null
+  max_vram_gb?: number | null
+  min_context_tokens?: number | null
+  parallel_slots?: number
+  /** Null until the server fills in the default benchmark. */
+  benchmark_id?: string | null
+  reasoning_level?: string | null
+  /** Every target, most important first. */
+  priority?: BriefTarget[]
+  /** Work through to the end without stopping to ask questions; true when absent. */
+  autonomous?: boolean
+}
+
+export interface AssistantConversation {
+  id: string
+  title: string
+  created_by: string
+  model_id: string | null
+  brief: Brief
+  /** paused: the spending limit was reached; continuing raises it. */
+  state: 'idle' | 'running' | 'awaiting_approval' | 'paused' | 'interrupted' | 'failed'
+  error: string | null
+  cost_usd: number
+  spend_limit_usd: number
+  prompt_tokens: number
+  completion_tokens: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AssistantMessage {
+  id: string
+  seq: number
+  /** event: a note for the reader, such as a pause or a brief edit. */
+  role: 'user' | 'assistant' | 'tool' | 'event'
+  content: string
+  reasoning: string
+  tool_calls: { id: string; function: { name: string; arguments: string } }[] | null
+  tool_call_id: string | null
+  tool_name: string | null
+  /** A tool result's one-line summary and outcome, or an event's kind. */
+  summary: { summary?: string; ok?: boolean; kind?: string } | null
+  cost_usd: number | null
+  created_at: string
+}
+
+/** The reply being streamed while a turn runs. */
+export interface AssistantProgress {
+  round: number
+  content: string
+  reasoning: string
+  tool_call: { name: string; bytes: number } | null
+  running_tool?: string | null
+  /** Set while waiting to retry a request the provider failed. */
+  retrying?: { attempt: number; error: string } | null
+}
+
+export type ApprovalCategory = 'downloads' | 'runtimes' | 'profiles' | 'benchmarks'
+
+/** An action the assistant asked to take; the turn waits while it is pending. */
+export interface AssistantApproval {
+  id: string
+  tool_call_id: string
+  tool_name: string
+  category: ApprovalCategory
+  title: string
+  /** What to decide on; a profile change lists its arguments before and after. */
+  details: Record<string, unknown> & { changes?: { argument: string; before: unknown; after: unknown }[] }
+  /** expired: the turn ended before anyone decided. */
+  state: 'pending' | 'approved' | 'rejected' | 'expired'
+  decided_by: string | null
+  created_at: string
+  decided_at: string | null
+}
+
+export interface AssistantConversationDetail extends AssistantConversation {
+  messages: AssistantMessage[]
+  progress: AssistantProgress | null
+  approvals: AssistantApproval[]
+  /** Benchmark runs this conversation started that still exist. */
+  benchmark_runs?: number
+}
+
+/** What a bulk delete removed, and why it skipped the rest. */
+export interface RunDeletion {
+  deleted: string[]
+  skipped: { run_id: string; reason: string }[]
+}
+
+export interface AssistantSettings {
+  name: string
+  spend_limit_usd: number
+  max_rounds_per_turn: number
+  /** Whether each kind of action waits for the operator's approval. */
+  approvals: Record<ApprovalCategory, boolean>
+  /** Write research and reports straight into the repository (source checkouts only). */
+  auto_publish: boolean
+  /** The OpenRouter model that answers web searches; null uses the assistant's model. */
+  search_model: string | null
+}
+
+/** What every research document and report has in its frontmatter, and where it comes from. */
+interface LibrarySummary {
+  slug: string
+  title: string
+  summary: string
+  tags: string[]
+  updated: string
+  author: { model?: string | null; conversation?: string | null } | null
+  /** Shipped with LlamaWebUI, or written on this machine. */
+  origin: 'shipped' | 'local'
+  /** A local document that takes the place of a shipped one with the same slug. */
+  replaces_shipped: boolean
+}
+
+/** General knowledge the assistant found, with its sources. */
+export interface ResearchSummary extends LibrarySummary {
+  researched: string
+  confidence: 'high' | 'medium' | 'low'
+  sources: { title: string; url?: string | null; accessed?: string | null }[]
+  applies_to: { models: string[]; hardware: string[]; runtime?: string | null }
+}
+
+export interface ResearchDocument extends ResearchSummary {
+  body: string
+}
+
+/** The record of one piece of optimisation work. */
+export interface ReportSummary extends LibrarySummary {
+  created: string
+  subject: { profile?: string | null; model?: string | null }
+  hardware: string[]
+  runtime?: string | null
+  benchmark?: string | null
+  outcome: 'improved' | 'unchanged' | 'worse' | 'failed' | 'incomplete'
+  results: ReportResult[]
+  /** Setups measured and kept as options without replacing the subject. */
+  alternatives?: { name: string; profile?: string | null; summary?: string; results: ReportResult[] }[]
+  /** What the work left on the machine for the operator to keep or remove. */
+  left_behind?: string[]
+}
+
+export interface ReportResult { metric: string; before?: number | null; after?: number | null; unit?: string | null }
+
+export interface ReportDocument extends ReportSummary {
+  /** Markdown; ```chart blocks hold the charts. */
+  body: string
+}
+
+export type LibraryKind = 'research' | 'reports'
+
+export interface LibraryList<T> {
+  documents: T[]
+  /** Why this browser cannot publish documents into the repository, or null if it can. */
+  publish_problem: string | null
+}
+
+export interface SecuritySettings {
+  /** Secrets calls are accepted from other machines, not only from the server itself. */
+  allow_remote_secrets: boolean
+  /** This browser is on the server itself. */
+  local_request: boolean
+}
+
 export interface LinterStatus {
   state: 'missing' | 'installing' | 'installed' | 'failed'
   /** Installed versions of Node.js and each package. */
@@ -181,12 +389,25 @@ export interface BenchmarkStats {
   first_token_seconds?: number
   prompt_tokens?: number
   prompt_seconds?: number
+  /** Average over every prompt read in the run. */
   prompt_tokens_per_second?: number
+  /** Average over the slowest 1% of prefill time, measured batch by batch. */
+  prompt_low_tokens_per_second?: number
+  /** Average over the fastest 1% of prefill time. */
+  prompt_high_tokens_per_second?: number
+  /** Older runs only: the fastest single batch, which a near-instant batch could inflate. */
+  prompt_peak_tokens_per_second?: number
+  /** Prompt tokens reused from llama.cpp's cache instead of read again. */
+  prompt_cached_tokens?: number
   generated_tokens?: number
   decode_seconds?: number
   /** Average over the whole generation, as llama.cpp reports it. */
   decode_tokens_per_second?: number
-  /** Fastest 3-second window, comparable to the dashboard's peak. */
+  /** Average over the slowest 1% of generation time, in 3-second windows. */
+  decode_low_tokens_per_second?: number
+  /** Average over the fastest 1% of generation time, in 3-second windows. */
+  decode_high_tokens_per_second?: number
+  /** Older runs only: the fastest 3-second window. */
   decode_peak_tokens_per_second?: number
   /** Speed over the last 3 seconds of generation. */
   decode_final_tokens_per_second?: number
@@ -198,11 +419,21 @@ export interface BenchmarkStats {
   outcome?: 'completed' | 'unfinished'
   /** Requests sent: one, plus one more after each round of tool calls. */
   rounds?: number
+  /** With finish_reason tool_round_limit: the most rounds the run was allowed. */
+  round_limit?: number
   tool_calls?: number
   files_written?: number
   /** The most tokens the model's context held during the run, and the context's size. */
   context_peak?: number
   context_size?: number
+  /** Times the history was compacted to fit the context; absent when compaction was off or on older runs. */
+  compactions?: number
+  compactions_pruned?: number
+  compactions_summarised?: number
+  /** With run_tests: how often the agent ran its tests, and how the last run went. */
+  test_runs?: number
+  tests_passed?: number
+  tests_failed?: number
 }
 
 /** The latest completed result of a benchmark, written onto the profile. */
@@ -237,6 +468,10 @@ export interface BenchmarkRun {
   typescript_strict?: boolean | null
   /** Whether each tool call kept its arguments and whole result. */
   verbose_log?: boolean
+  /** Whether the run compacted its history when the context filled, rather than ending there. */
+  compact_context?: boolean
+  /** The assistant conversation that started the run, if one did. */
+  conversation_id?: string | null
   state: BenchmarkState
   stage: BenchmarkStage
   error: string | null
@@ -251,8 +486,12 @@ export interface BenchmarkRun {
     tool_call?: { name: string; bytes: number } | null
     /** Tokens in the model's context right now, and its size. */
     context?: { used: number; size: number } | null
+    /** The summary being written while the context is compacted: tokens so far. */
+    compaction?: { tokens: number } | null
     /** Seconds since the prompt was sent, on the same clock as the run's timeline. */
     elapsed?: number | null
+    /** Seconds since the run started, for its total so far. */
+    total?: number | null
   }
 }
 
@@ -261,10 +500,12 @@ export interface BenchmarkRun {
  * Thinking and answer entries point into the run's reasoning and output text by position.
  */
 export type TimelineEntry = { round: number; start: number; end: number | null } & (
-  | { kind: 'reading'; prompt_tokens?: number }
+  | { kind: 'reading'; prompt_tokens?: number; cached_tokens?: number }
   | { kind: 'thinking' | 'answer'; tokens?: number; from: number; to?: number }
   | { kind: 'tool_call'; tokens?: number; names?: string[]; bytes?: number }
   | { kind: 'tool'; name: string; call: number; path?: string | null; ok?: boolean }
+  /** Old tool payloads pruned, or the session summarised; tokens is the summary's length. */
+  | { kind: 'compacting'; tokens_before: number; tokens_after?: number; mode?: 'pruned' | 'summarised'; tokens?: number; summary?: string; failed?: boolean }
 )
 
 /** Context and model memory in use at one moment of a run; a reading not available is left out. */
@@ -310,6 +551,10 @@ export interface ProfileRecommendation {
   /** Its settings changed since it was added, so it cannot be upgraded. */
   modified: boolean
   upgradable: boolean
+  /** The arguments it was added or last upgraded with, carrying this profile's file locations. */
+  baseline?: { version: number; arguments: StoredArgument[] } | null
+  /** The bundled version's settings, with this profile's file locations; null once it is no longer bundled. */
+  latest?: { version: number; arguments: StoredArgument[]; exclusive: boolean; description: string | null } | null
 }
 
 export interface Recommendation {
@@ -776,15 +1021,45 @@ export const api = {
   benchmarkRun: (runId: string) => request<BenchmarkRunDetail>(`/api/benchmarks/runs/${runId}`),
   benchmarkArtifact: (runId: string, path: string) =>
     request<{ path: string; content: string }>(`/api/benchmarks/runs/${runId}/artifacts/${path.split('/').map(encodeURIComponent).join('/')}`),
-  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number | null; tools: boolean; tool_names: string[] | null; system_prompt_id: string | null; reasoning_level: string | null; verbose_log: boolean }) =>
+  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number | null; tools: boolean; tool_names: string[] | null; system_prompt_id: string | null; reasoning_level: string | null; verbose_log: boolean; compact_context: boolean }) =>
     request<BenchmarkRunDetail>('/api/benchmarks/runs', { method: 'POST', body: JSON.stringify(body) }),
   cancelBenchmark: (runId: string) =>
     request<BenchmarkRun>(`/api/benchmarks/runs/${runId}/cancel`, { method: 'POST' }),
   benchmarkTools: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools'),
   installEslint: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools/eslint', { method: 'POST' }),
   removeEslint: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools/eslint', { method: 'DELETE' }),
+  securitySettings: () => request<SecuritySettings>('/api/settings/security'),
+  updateSecuritySettings: (allowRemoteSecrets: boolean) => request<SecuritySettings>('/api/settings/security', { method: 'PUT', body: JSON.stringify({ allow_remote_secrets: allowRemoteSecrets }) }),
+  openRouterModels: (query: string) => request<{ models: OpenRouterModel[]; total: number }>(`/api/settings/openrouter/models?${new URLSearchParams({ q: query })}`),
+  openRouterModel: () => request<{ model: SelectedOpenRouterModel | null }>('/api/settings/openrouter/model'),
+  selectOpenRouterModel: (id: string) => request<{ model: SelectedOpenRouterModel }>('/api/settings/openrouter/model', { method: 'PUT', body: JSON.stringify({ id }) }),
+  clearOpenRouterModel: () => request<{ model: null }>('/api/settings/openrouter/model', { method: 'DELETE' }),
+  assistantStatus: () => request<AssistantStatus>('/api/assistant/status'),
+  assistantConversations: () => request<AssistantConversation[]>('/api/assistant/conversations'),
+  assistantConversation: (id: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}`),
+  createAssistantConversation: (brief: Brief, title?: string) => request<AssistantConversationDetail>('/api/assistant/conversations', { method: 'POST', body: JSON.stringify({ brief, title: title || null }) }),
+  updateAssistantBrief: (id: string, brief: Brief) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/brief`, { method: 'PUT', body: JSON.stringify(brief) }),
+  deleteAssistantConversation: (id: string) => request<void>(`/api/assistant/conversations/${id}`, { method: 'DELETE' }),
+  sendAssistantMessage: (id: string, content: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/messages`, { method: 'POST', body: JSON.stringify({ content }) }),
+  decideAssistantApproval: (id: string, approve: boolean) => request<AssistantConversationDetail>(`/api/assistant/approvals/${id}`, { method: 'POST', body: JSON.stringify({ approve }) }),
+  stopAssistant: (id: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/stop`, { method: 'POST' }),
+  retryAssistant: (id: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/retry`, { method: 'POST' }),
+  continueAssistant: (id: string) => request<AssistantConversationDetail>(`/api/assistant/conversations/${id}/continue`, { method: 'POST' }),
+  libraryDocuments: <T,>(kind: LibraryKind, query = '') => request<LibraryList<T>>(`/api/assistant/${kind}${query ? `?q=${encodeURIComponent(query)}` : ''}`),
+  libraryDocument: <T,>(kind: LibraryKind, slug: string) => request<T>(`/api/assistant/${kind}/${encodeURIComponent(slug)}`),
+  deleteLibraryDocument: (kind: LibraryKind, slug: string) => request<void>(`/api/assistant/${kind}/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
+  publishLibrary: (kind: LibraryKind, slugs: string[]) => request<{ published: string[]; folder: string }>(`/api/assistant/${kind}/publish`, { method: 'POST', body: JSON.stringify({ slugs }) }),
+  assistantSettings: () => request<AssistantSettings>('/api/settings/assistant'),
+  updateAssistantSettings: (settings: AssistantSettings) => request<AssistantSettings>('/api/settings/assistant', { method: 'PUT', body: JSON.stringify(settings) }),
+  secrets: () => request<{ store: string; secrets: SecretStatus[] }>('/api/secrets'),
+  saveSecret: (name: SecretName, value: string) => request<SecretStatus>(`/api/secrets/${name}`, { method: 'PUT', body: JSON.stringify({ value }) }),
+  removeSecret: (name: SecretName) => request<SecretStatus>(`/api/secrets/${name}`, { method: 'DELETE' }),
   deleteBenchmarkRun: (runId: string) =>
     request<void>(`/api/benchmarks/runs/${runId}`, { method: 'DELETE' }),
+  deleteBenchmarkRuns: (runIds: string[]) =>
+    request<RunDeletion>('/api/benchmarks/runs/delete', { method: 'POST', body: JSON.stringify({ run_ids: runIds }) }),
+  deleteConversationRuns: (conversationId: string) =>
+    request<RunDeletion>(`/api/assistant/conversations/${conversationId}/benchmark-runs/delete`, { method: 'POST' }),
   upgradeProfile: (profileId: string) =>
     request<Profile>(`/api/profiles/${profileId}/upgrade`, { method: 'POST' }),
   setProfileEnabled: (profileId: string, enabled: boolean) =>
