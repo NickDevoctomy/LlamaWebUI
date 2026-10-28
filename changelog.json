@@ -17,6 +17,10 @@
           "description": "Benchmarks and assistant briefs can add text after the system prompt, such as a model's own reasoning switch. Runs are only compared with runs that added the same text."
         },
         {
+          "type": "feat",
+          "description": "New recommended profile: Qwen 3.6 35B A3B with MTP for 24 GB GPUs, in Q4 (about 120 tok/s decode) and Q8 (about 54 tok/s decode, higher quality) variants."
+        },
+        {
           "type": "change",
           "description": "The assistant has new research notes for tuning Qwen3.6 35B A3B on a 24 GB GPU."
         },
