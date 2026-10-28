@@ -10,8 +10,8 @@ the backend and are only approximated.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from llamawebui.domain.profile_arguments import ArgumentValue
@@ -38,7 +38,7 @@ _SWA_PATTERNS = {"gemma2": 2, "gemma3": 6, "cohere2": 4, "gpt-oss": 2}
 _UNMODELLED_CACHE_KEYS = ("attention.compress_ratios", "attention.indexer.head_count")
 _EXPERT_TENSOR = re.compile(r"\.ffn_(up|down|gate|gate_up)_(ch|)exps")
 _LAYER_TENSOR = re.compile(r"^blk\.(\d+)\.")
-_DEVICE_MEMORY = re.compile(r"^\s*([^:\s]+):.*\((\d+) MiB,\s*\d+ MiB free\)")
+_DEVICE_MEMORY = re.compile(r"^\s*([^:\s]+):.*\((\d+) MiB,\s*(\d+) MiB free\)")
 # llama-server's defaults when an option is not set.
 _DEFAULT_UBATCH = 512
 _DEFAULT_BATCH = 2048
@@ -107,16 +107,21 @@ class Devices:
 
     gpu_count: int = 0
     capacity_bytes: int | None = None
+    # Free when the runtime was probed: what --fit has to work with, since the desktop
+    # and other programs hold the rest.
+    free_bytes: int | None = None
 
     @classmethod
     def from_listing(cls, lines: Iterable[str]) -> Devices:
-        matches = (_DEVICE_MEMORY.match(line) for line in lines)
-        sizes = [
-            int(match.group(2)) * MIB
-            for match in matches
-            if match and not match.group(1).upper().startswith("CPU")
+        matches = [
+            match
+            for line in lines
+            if (match := _DEVICE_MEMORY.match(line))
+            and not match.group(1).upper().startswith("CPU")
         ]
-        return cls(len(sizes), sum(sizes) or None)
+        total = sum(int(match.group(2)) for match in matches) * MIB
+        free = sum(int(match.group(3)) for match in matches) * MIB
+        return cls(len(matches), total or None, free or None)
 
 
 def estimate_profile_memory(
@@ -149,14 +154,13 @@ def estimate_memory(
 ) -> MemoryEstimate:
     settings = _Settings.from_values(values, model, gpu=devices.gpu_count > 0)
     notes: list[str] = []
-    main = _ModelEstimate.build(model, settings, _Placement.main(values, settings.gpu))
-    parts = [main.weights, main.kv, *([main.recurrent] if main.recurrent else []), main.compute]
+    extra: list[MemoryPart] = []
     if draft is not None and draft.arch_value("block_count") is not None:
         draft_settings = settings.for_draft(values, draft)
         estimate = _ModelEstimate.build(
             draft, draft_settings, _Placement.draft(values, settings.gpu)
         )
-        parts.append(estimate.as_draft())
+        extra.append(estimate.as_draft())
     elif any("mtp" in item for item in _items(values.get("spec-type"))):
         notes.append(
             "Multi-token prediction uses the model's own extra layers; the small extra "
@@ -164,7 +168,7 @@ def estimate_memory(
         )
     if projector_bytes is not None:
         offload = settings.gpu and values.get("mmproj-offload") is not False
-        parts.append(
+        extra.append(
             MemoryPart(
                 "projector",
                 "Multimodal projector",
@@ -173,9 +177,43 @@ def estimate_memory(
                 "Projector weights; its compute buffer is not included.",
             )
         )
+    placement = _Placement.main(values, settings.gpu)
+    main = _ModelEstimate.build(model, settings, placement)
+    target = (_first_int(values.get("fit-target")) or _DEFAULT_FIT_TARGET_MIB) * MIB
+    budget = _fit_budget(devices, target)
+    fitted: str | None = None
+    if (
+        settings.gpu
+        and values.get("fit") != "off"
+        and budget is not None
+        and main.gpu_bytes + sum(part.gpu_bytes for part in extra) > budget
+    ):
+        placement, fitted = _fit(
+            model, settings, placement, values, budget - sum(part.gpu_bytes for part in extra)
+        )
+        main = _ModelEstimate.build(model, settings, placement)
+    parts = [
+        main.weights,
+        main.kv,
+        *([main.recurrent] if main.recurrent else []),
+        main.compute,
+        *extra,
+    ]
     growth = _growth(values, settings, main)
     notes.extend(main.notes)
-    notes.extend(_fit_notes(values, settings, devices, sum(part.gpu_bytes for part in parts)))
+    if main.weights.cpu_bytes >= 1024**3 and values.get("load-mode") in {
+        None,
+        "auto",
+        "mmap",
+        "mmap+mlock",
+    }:
+        notes.append(
+            "The weights kept in RAM are memory-mapped from the model file, so the "
+            "process's measured RAM counts only the pages resident at the time."
+        )
+    notes.extend(
+        _fit_notes(values, settings, devices, sum(part.gpu_bytes for part in parts), fitted)
+    )
     return MemoryEstimate(
         parts=tuple(parts),
         growth=tuple(growth),
@@ -247,6 +285,8 @@ class _Placement:
     cpu_moe_layers: int | None  # None: no experts forced to RAM; -1: all of them
     overrides: tuple[tuple[str, bool], ...] = ()  # (pattern, on GPU)
     invalid_overrides: tuple[str, ...] = ()
+    # Tensors --fit keeps in system RAM, by name.
+    fitted_to_ram: frozenset[str] = frozenset()
 
     @classmethod
     def main(cls, values: Mapping[str, ArgumentValue], gpu: bool) -> _Placement:
@@ -288,6 +328,8 @@ class _Placement:
         for pattern, on_gpu in self.overrides:
             if re.search(pattern, tensor.name):
                 return on_gpu
+        if tensor.name in self.fitted_to_ram:
+            return False
         layer = _tensor_layer(tensor.name)
         experts = self.cpu_moe_layers
         if (
@@ -314,6 +356,11 @@ class _ModelEstimate:
     # Per-slot sizes of the state a context checkpoint copies.
     checkpoint_bytes: int
     notes: tuple[str, ...]
+
+    @property
+    def gpu_bytes(self) -> int:
+        parts = (self.weights, self.kv, self.recurrent, self.compute)
+        return sum(part.gpu_bytes for part in parts if part is not None)
 
     @classmethod
     def build(cls, model: GgufModel, settings: _Settings, placement: _Placement) -> _ModelEstimate:
@@ -634,34 +681,120 @@ def _growth(
     return growth
 
 
+def _fit_budget(devices: Devices, target: int) -> int | None:
+    """GPU memory --fit lets a model use: what was free, less the margin it leaves."""
+    free = devices.free_bytes if devices.free_bytes is not None else devices.capacity_bytes
+    return None if free is None else free - target
+
+
+def _fit(
+    model: GgufModel,
+    settings: _Settings,
+    placement: _Placement,
+    values: Mapping[str, ArgumentValue],
+    budget: int,
+) -> tuple[_Placement, str | None]:
+    """Place the model the way llama.cpp's --fit does when it does not fit as set.
+
+    --fit only changes what the profile leaves unset: it keeps MoE expert weights in
+    system RAM, a layer at a time from the first, and failing that offloads fewer layers.
+    Returns the placement and what it changed, or None when it can change nothing.
+    """
+    layer_count = _int(model.arch_value("block_count")) or 0
+
+    def fits(candidate: _Placement) -> bool:
+        return _ModelEstimate.build(model, settings, candidate).gpu_bytes <= budget
+
+    changed: list[str] = []
+    experts = [
+        tensor.name
+        for tensor in sorted(model.tensors, key=lambda tensor: _tensor_layer(tensor.name) or 0)
+        if _tensor_layer(tensor.name) is not None and _EXPERT_TENSOR.search(tensor.name)
+    ]
+    if experts and placement.cpu_moe_layers is None and not placement.overrides:
+
+        def moved(count: int) -> _Placement:
+            return replace(placement, fitted_to_ram=frozenset(experts[:count]))
+
+        count = _smallest(len(experts), lambda count: fits(moved(count)))
+        placement = moved(len(experts) if count is None else count)
+        layers = len({_tensor_layer(name) for name in placement.fitted_to_ram})
+        changed.append(f"keeps the experts of {layers} of {layer_count} layers in system RAM")
+        if count is not None:
+            return placement, changed[0]
+    if values.get("n-gpu-layers") in {None, "auto"}:
+
+        def offloaded(layers: int) -> _Placement:
+            return replace(placement, gpu_layers=layers)
+
+        offload = _largest(layer_count + 1, lambda layers: fits(offloaded(layers))) or 0
+        placement = offloaded(offload)
+        changed.append(f"puts {min(offload, layer_count)} of {layer_count} layers on the GPU")
+    return placement, " and ".join(changed) or None
+
+
+def _smallest(limit: int, ok: Callable[[int], bool]) -> int | None:
+    """The smallest value in 0..limit that is ok, for a test that stays ok once it is."""
+    low, high = 0, limit
+    if not ok(high):
+        return None
+    while low < high:
+        middle = (low + high) // 2
+        if ok(middle):
+            high = middle
+        else:
+            low = middle + 1
+    return low
+
+
+def _largest(limit: int, ok: Callable[[int], bool]) -> int | None:
+    """The largest value in 0..limit that is ok, for a test that stays ok below it."""
+    low, high = 0, limit
+    if not ok(low):
+        return None
+    while low < high:
+        middle = (low + high + 1) // 2
+        if ok(middle):
+            low = middle
+        else:
+            high = middle - 1
+    return low
+
+
 def _fit_notes(
-    values: Mapping[str, ArgumentValue], settings: _Settings, devices: Devices, gpu_bytes: int
+    values: Mapping[str, ArgumentValue],
+    settings: _Settings,
+    devices: Devices,
+    gpu_bytes: int,
+    fitted: str | None,
 ) -> list[str]:
     if not settings.gpu:
         return []
     notes: list[str] = []
     fit = values.get("fit") != "off"
-    unset = [
-        flag
-        for flag, key in (("--n-gpu-layers", "n-gpu-layers"), ("--ctx-size", "ctx-size"))
-        if key not in values or values.get(key) in {"auto", 0}
-    ]
     target = _first_int(values.get("fit-target")) or _DEFAULT_FIT_TARGET_MIB
+    budget = _fit_budget(devices, target * MIB)
     capacity = devices.capacity_bytes
-    if fit and unset:
+    if fit and fitted:
         notes.append(
-            f"--fit is on, so llama.cpp may change {' and '.join(unset)} at load to leave "
-            f"{target:,} MiB free per GPU; these figures assume it changes nothing."
+            "This does not fit in GPU memory as set, so these figures follow what --fit "
+            f"does at load: it {fitted}, leaving {target:,} MiB free."
         )
-        if capacity is not None and gpu_bytes > capacity - target * MIB:
-            notes.append(
-                "As set, this does not fit in GPU memory, so --fit will move layers to "
-                "system RAM or shorten the context when it loads."
-            )
-    elif capacity is not None and gpu_bytes > capacity:
+    if fit and budget is not None and gpu_bytes > budget:
+        notes.append(
+            "This needs more GPU memory than was free when the runtime was checked, and "
+            "--fit can only change options the profile leaves unset, so it may not load "
+            "or may run slowly."
+        )
+    elif not fit and capacity is not None and gpu_bytes > capacity:
         notes.append(
             "This is more than the GPU memory the runtime reported. On Windows the driver "
             "spills into system RAM instead of failing, which is much slower."
+        )
+    if fit and fitted and values.get("ctx-size") in {None, 0}:
+        notes.append(
+            "No context size is set, so --fit may shorten the context instead; these "
+            "figures assume it keeps the model's own."
         )
     return notes
 

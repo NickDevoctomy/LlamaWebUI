@@ -34,7 +34,10 @@ def write_gguf(
         content += struct.pack("<IQ", 0, offset)
         offset += -(-nbytes // alignment) * alignment
     content += bytes(-len(content) % alignment)
-    path.write_bytes(bytes(content) + bytes(offset))
+    with path.open("wb") as stream:
+        stream.write(content)
+        # Extending the file reads back as zeros without writing them.
+        stream.truncate(len(content) + offset)
     return path
 
 

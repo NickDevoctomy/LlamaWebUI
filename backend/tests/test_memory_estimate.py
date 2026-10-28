@@ -268,30 +268,86 @@ def test_sliding_window_layers_keep_only_the_window(tmp_path: Path) -> None:
     assert part(result, "checkpoints")[1] == 32 * 5 * 1024 * 64
 
 
-def test_unset_context_uses_the_model_and_warns_about_fit(tmp_path: Path) -> None:
+def test_unset_context_uses_the_model(tmp_path: Path) -> None:
     result = estimate(dense_model(tmp_path / "m.gguf"))
 
     assert result.context_size == 8192
     assert result.slots == 4
     assert "the model's own context" in result.parts[1].detail
-    assert any("--n-gpu-layers and --ctx-size" in note for note in result.notes)
+    # It fits, so --fit changes nothing and there is nothing to say about it.
+    assert not any("--fit" in note for note in result.notes)
+
+
+def test_fit_keeps_experts_in_ram_until_the_model_fits(tmp_path: Path) -> None:
+    path = moe_model(tmp_path / "moe.gguf")
+    values: dict[str, ArgumentValue] = {"ctx-size": 512, "parallel": 1}
+    full = estimate(path, values)
+    # Room for everything but about three expert tensors, less the 1 GiB margin.
+    devices = Devices(1, 24 * 1024 * MIB, 1024 * MIB + full.gpu_bytes - 3 * EXPERT_BYTES + 100)
+
+    fitted = estimate(path, values, devices)
+    moved = (part(fitted, "weights")[1] - EMBEDDING_BYTES) // EXPERT_BYTES
+
+    # Each expert moved to RAM also needs a copy buffer on the GPU for large batches,
+    # so more than three must move.
+    assert 3 < moved < 8
+    assert fitted.gpu_bytes <= devices.free_bytes - 1024 * MIB  # type: ignore[operator]
+    layers = (moved + 1) // 2
+    assert any(f"keeps the experts of {layers} of 4 layers" in note for note in fitted.notes)
+    assert f"experts of {layers} layers in RAM" in fitted.parts[0].detail
+    # Set placement options are left alone, so the model stays over the limit.
+    pinned = estimate(path, {**values, "n-cpu-moe": 0, "n-gpu-layers": 999}, devices)
+    assert part(pinned, "weights")[1] == EMBEDDING_BYTES
+    assert any("--fit can only change options" in note for note in pinned.notes)
+
+
+def test_fit_offloads_fewer_layers_of_a_dense_model(tmp_path: Path) -> None:
+    path = dense_model(tmp_path / "m.gguf")
+    values: dict[str, ArgumentValue] = {"parallel": 1}
+    full = estimate(path, values)
+    devices = Devices(1, 24 * 1024 * MIB, 1024 * MIB + full.gpu_bytes - 1)
+
+    fitted = estimate(path, values, devices)
+
+    assert fitted.gpu_bytes < full.gpu_bytes
+    assert any("of 4 layers on the GPU" in note for note in fitted.notes)
+    assert any("may shorten the context instead" in note for note in fitted.notes)
+    nothing = estimate(path, values, Devices(1, 24 * 1024 * MIB, 1024 * MIB))
+    assert part(nothing, "weights")[0] == 0
 
 
 def test_fit_notes_compare_against_gpu_memory(tmp_path: Path) -> None:
     path = dense_model(tmp_path / "m.gguf")
-    tiny = Devices(gpu_count=1, capacity_bytes=1024 * MIB)
 
-    fitted = estimate(path, {"ctx-size": 0}, tiny)
     unfitted = estimate(
         path, {"ctx-size": 8192, "n-gpu-layers": 99, "fit": "off", "flash-attn": "off"},
         Devices(gpu_count=1, capacity_bytes=1),
     )
-    fit_target = estimate(path, {"fit-target": "4096"}, tiny)
+    full = estimate(path, {"ctx-size": 1024}).gpu_bytes
+    target = estimate(
+        path, {"ctx-size": 1024, "fit-target": "4096"}, Devices(1, None, 4096 * MIB + full - 1)
+    )
 
-    assert any("does not fit in GPU memory" in note for note in fitted.notes)
     assert any("spills into system RAM" in note for note in unfitted.notes)
-    assert any("4,096 MiB free" in note for note in fit_target.notes)
+    assert any("4,096 MiB free" in note for note in target.notes)
     assert "attention matrix" in unfitted.parts[-1].detail
+
+
+def test_mapped_weights_in_ram_are_explained(tmp_path: Path) -> None:
+    path = write_gguf(
+        tmp_path / "big.gguf",
+        [
+            ("general.architecture", "llama"),
+            ("llama.block_count", 1),
+            ("llama.embedding_length", 64),
+            ("llama.attention.head_count", 8),
+        ],
+        [("token_embd.weight", (64, 1000), 1024**3)],
+    )
+
+    assert any("memory-mapped" in note for note in estimate(path, {"ctx-size": 512}).notes)
+    loaded = estimate(path, {"ctx-size": 512, "load-mode": "none"})
+    assert not any("memory-mapped" in note for note in loaded.notes)
 
 
 def test_draft_projector_and_mtp_parts(tmp_path: Path) -> None:
@@ -367,10 +423,10 @@ def test_profile_estimate_reads_files_and_gives_up_on_unreadable_ones(tmp_path: 
                 "  CUDA0: NVIDIA GeForce RTX 4090 (24563 MiB, 23036 MiB free)",
                 "  CUDA1: NVIDIA GeForce RTX 3090 (24576 MiB, 24000 MiB free)",
             ],
-            Devices(2, (24563 + 24576) * MIB),
+            Devices(2, (24563 + 24576) * MIB, (23036 + 24000) * MIB),
         ),
-        (["Available devices:"], Devices(0, None)),
-        (["  CPU: AMD Ryzen (65536 MiB, 60000 MiB free)"], Devices(0, None)),
+        (["Available devices:"], Devices(0, None, None)),
+        (["  CPU: AMD Ryzen (65536 MiB, 60000 MiB free)"], Devices(0, None, None)),
     ],
 )
 def test_devices_come_from_the_runtime_listing(lines: list[str], expected: Devices) -> None:
