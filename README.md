@@ -287,45 +287,20 @@ publishes a release whose version files disagree, and CI fails it.
 
 ### 1. Bump the version
 
-The root `VERSION` file is the single version source, but five other files
-carry a copy that must match it, and CI's `test_version.py` fails when any of
-them differs. Editing `VERSION` by hand does not update them. From the
-repository root, with `0.4.0` standing for the new version:
+From the repository root, with `0.4.0` standing for the new version:
 
-1. Set the new version in `VERSION`, as `MAJOR.MINOR.PATCH` without a leading
-   `v`, for example `0.4.0`.
-2. Copy it into the other version files:
+```powershell
+.\packaging\set-version.ps1 -Version 0.4.0
+```
 
-   ```powershell
-   & .\.venv\Scripts\python.exe .\packaging\sync-version.py --version 0.4.0
-   ```
+This sets the version everywhere: `VERSION`, the five files that copy it
+(CI's `test_version.py` fails if any of them differs) and the frontend build in
+`backend/src/llamawebui/static/`. Then:
 
-   This rewrites `backend/pyproject.toml`, `backend/src/llamawebui/version.py`,
-   `frontend/package.json`, `frontend/package-lock.json` and
-   `frontend/src/version.ts`.
-3. Add exactly one entry for the version at the top of the `versions` list in
-   `changelog.json`. Its `version` is the same `0.4.0`, its `release_date` is
-   the day you release in `yyyy-MM-dd` form, and it lists at least one change,
-   each with a `type` and a `description`. Separate it from the entry below it
-   with a comma, then check the file is still valid JSON:
-
-   ```powershell
-   & .\.venv\Scripts\python.exe -m json.tool .\changelog.json > $null
-   ```
-
-4. Rebuild the frontend, which compiles the version into the committed bundle
-   in `backend/src/llamawebui/static/`:
-
-   ```powershell
-   Set-Location frontend; npm run build; Set-Location ..
-   ```
-
-5. Run the quality gates (see AGENTS.md), or run `.\packaging\release.ps1`
-   without `-Publish`. That script repeats step 2, checks the changelog entry is
-   dated today, runs every gate, generates the release notes and builds the
-   Windows package, without committing anything.
-6. Commit `VERSION`, `changelog.json`, the five files from step 2 and the
-   rebuilt `backend/src/llamawebui/static/`, and get the commit onto `main`.
+1. Add an entry for `0.4.0` at the top of `changelog.json`, with today's date as
+   its `release_date` (`yyyy-MM-dd`) and at least one change.
+2. Commit everything the script changed, plus `changelog.json`, and get the
+   commit onto `main`.
 
 ### 2. Tag `main`
 

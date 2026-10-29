@@ -16,11 +16,9 @@ Updates must replace only package output after the application is stopped. Never
 
 ## Creating a release
 
-The application version is maintained in one place: the root [`VERSION`](../VERSION) file. The frontend footer reads this file at build time. Release metadata in `backend/pyproject.toml`, `frontend/package.json`, and `frontend/package-lock.json` is synchronized automatically by the release script.
-
 Before releasing:
 
-1. Set the intended semantic version in `VERSION`, for example `0.4.0`.
+1. Set the version with `.\packaging\set-version.ps1 -Version 0.4.0`. It updates `VERSION`, every file that copies it and the frontend build.
 2. Add exactly one matching entry to `changelog.json`.
 3. Set that entry's `release_date` to today's date in `yyyy-MM-dd` format.
 4. Include at least one change in the entry.

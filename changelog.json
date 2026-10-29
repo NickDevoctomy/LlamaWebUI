@@ -2,7 +2,7 @@
   "versions": [
     {
       "version": "0.6.0",
-      "release_date": null,
+      "release_date": "2026-10-28",
       "changes": [
         {
           "type": "feat",

@@ -52,7 +52,7 @@ npm run build
 - The maintainer often has the app and a model running. Before a live test, check for a running backend, frontend, router or `llama-server`, and ask before stopping any of them. Don't stop, restart or load models in a session you didn't start.
 - To test without touching the maintainer's data, run a second backend on another port (for example `18081`) with `LLAMAWEBUI_DATA_DIR` pointing at a scratch copy of `data\llamawebui.db`. Link `models` and `runtimes` into the scratch folder (directory junctions, removed afterwards with `rmdir`), and create a throwaway login in the copy only. The router still listens on `1234`, so it must not be running elsewhere.
 - UI quality is required on every change, not only when asked. Any UI you add or change must match the existing design system (tokens, spacing, type scale, components) and work at desktop and phone widths, in light and dark themes. Look at it in a real browser before calling it done: open every new state (expanded, empty, loading, running, error), check text never wraps word by word or overlaps, and fix what you find. Passing tests are not evidence that a layout looks right.
-- The `VERSION` file at the root is the single version source. `packaging/sync-version.py` propagates it to `backend/pyproject.toml`, `frontend/package.json`, `frontend/package-lock.json` and the backend version module.
+- The `VERSION` file at the root is the single version source. To change the version, run `.\packaging\set-version.ps1 -Version X.Y.Z`: it writes `VERSION`, updates every file that copies it and rebuilds the frontend.
 - `.\packaging\build-windows.ps1` builds the Windows package into `dist\llamawebui\`.
 
 ## CI/CD
