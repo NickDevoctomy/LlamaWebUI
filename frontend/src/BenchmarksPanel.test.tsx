@@ -34,7 +34,7 @@ const running: BenchmarkRun = {
   state: 'running',
   stage: 'decoding',
   stats: { server_start_seconds: 2.0, load_seconds: 40.1, first_token_seconds: 3.2 },
-  live: { prefill: { tokens: 30, rate: 400 }, decode: { tokens: 120, rate: 19.5 } },
+  live: { prefill: { tokens: 30, rate: 400, average: 380 }, decode: { tokens: 120, rate: 19.5, average: 24.1 } },
   finished_at: null,
 }
 
@@ -562,6 +562,16 @@ describe('BenchmarksPanel', () => {
     expect(within(items[4]).getByText(/outside your workspace/)).toBeInTheDocument()
     expect(items[5]).toHaveTextContent('Reading tool results120 tokens1.5 s')
     expect(within(items[6]).getByText('Saved tetris/index.html.')).toBeInTheDocument()
+  })
+
+  it('shows the average so far, not the current speed, as a running run\'s average', async () => {
+    mockApi([running])
+    renderPanel()
+
+    const row = (await screen.findByText(/Tetris · qwen-24gb/)).closest('li')!
+    const figures = (label: string) => [...within(row).getByText(label).closest('div')!.querySelectorAll('dd > span')].map((item) => item.textContent)
+    expect(figures('Prefill')).toEqual(['1% low—', 'Average380', '1% high—'])
+    expect(figures('Decode')).toEqual(['1% low—', 'Average24.1', '1% high—'])
   })
 
   it('shows the decode peak of an older run as its 1% high, but not its prefill peak, and counts cached prompt tokens', async () => {

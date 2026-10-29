@@ -502,6 +502,40 @@ async def evaluate_run(context: ToolContext, arguments: Mapping[str, object]) ->
     return json_result(result, summary)
 
 
+def _running(context: ToolContext) -> BenchmarkRunRecord:
+    run_id = context.services.benchmark_runner.active_run_id
+    if run_id is None:
+        raise ToolError("no benchmark is running")
+    return _run(context, run_id)
+
+
+async def describe_stop_benchmark(
+    context: ToolContext, arguments: Mapping[str, object]
+) -> tuple[str, dict[str, object]]:
+    record = _running(context)
+    return f"Stop the benchmark of {record.profile_alias}", {
+        "run": record.id,
+        "profile": record.profile_alias,
+    }
+
+
+async def stop_benchmark(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
+    record = _running(context)
+    if not await context.services.benchmark_runner.cancel(record.id):
+        raise ToolError(f"run {record.id} has already finished")
+    return json_result(
+        {
+            "run_id": record.id,
+            "profile": record.profile_alias,
+            "state": "cancelled",
+            "note": "The run is saved as cancelled with what it measured so far, and the router "
+            "is stopped. Its figures cover only part of a run, so don't compare them with "
+            "completed runs.",
+        },
+        "benchmark stopped",
+    )
+
+
 async def describe_stop(
     context: ToolContext, arguments: Mapping[str, object]
 ) -> tuple[str, dict[str, object]]:
@@ -621,6 +655,18 @@ BENCHMARK_TOOLS = (
         ),
         "server.read",
         evaluate_run,
+    ),
+    Tool(
+        "stop_benchmark",
+        "Stop the running benchmark, for example when the operator asks, or when a run has gone "
+        "wrong: the model repeating the same tool call, or its context filling up. The run is "
+        "saved as cancelled with what it measured so far, and the router is stopped. You aren't "
+        "woken while a run goes, only when it ends or the operator writes.",
+        object_schema(),
+        "server.lifecycle.write",
+        stop_benchmark,
+        approval="benchmarks",
+        describe=describe_stop_benchmark,
     ),
     Tool(
         "stop_router",

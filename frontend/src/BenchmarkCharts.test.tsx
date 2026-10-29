@@ -35,7 +35,8 @@ describe('benchmark resource charts', () => {
     // Powers of ten from under the slowest reading to over the fastest.
     expect([...chart.querySelectorAll('.time-chart-axis span')].map((item) => item.textContent)).toEqual(['10,000', '1,000', '100'])
     const legend = chart.querySelector('.time-chart-legend') as HTMLElement
-    expect([...legend.querySelectorAll('li')].map((item) => item.textContent)).toEqual(['Decode120 tok/s', 'Prefill2,400 tok/s', 'Decode 1% high135 tok/s', 'Prefill 1% high2,600 tok/s'])
+    // The legend only names the lines: the last reading isn't an average, and hovering shows values.
+    expect([...legend.querySelectorAll('li')].map((item) => item.textContent)).toEqual(['Decode', 'Prefill', 'Decode 1% high', 'Prefill 1% high'])
     expect(chart.querySelectorAll('.time-chart-reference')).toHaveLength(2)
     // Prefill between decode readings breaks the decode line into its rounds.
     expect(chart.querySelectorAll('g[data-series="decode"]')).toHaveLength(2)

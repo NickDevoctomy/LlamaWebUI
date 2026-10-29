@@ -1474,7 +1474,13 @@ class BenchmarkRunner:
             if measured is None:
                 return
             rate, span = measured
-            self._progress[phase] = {"tokens": tokens, "rate": round(rate, 2)}
+            # rate is the recent window; average is the run so far, worked out the same
+            # way as the final stats so the figure doesn't jump when the run ends.
+            self._progress[phase] = {
+                "tokens": tokens,
+                "rate": round(rate, 2),
+                "average": round(tokens / seconds, 2) if seconds > 0 else None,
+            }
             elapsed = self._clock() - sent
             if elapsed - last_sample.get(phase, float("-inf")) >= self._sample_seconds:
                 last_sample[phase] = elapsed

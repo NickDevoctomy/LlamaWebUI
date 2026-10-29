@@ -11,6 +11,7 @@ Instructions for AI coding agents working in this repository.
 2. **No AI attribution.** Never add `Co-Authored-By`, "Generated with…" or similar lines to commits, PRs, tags or files.
 3. **Pushing a `v*` tag publishes a release.** Never create or push tags.
 4. If an action is blocked or fails, stop and report it. Don't substitute a different or more destructive action.
+5. **Benchmark models and runtimes with the app's own benchmarking system, not your own scripts.** The maintainer runs benchmarks in the app, or has the in-app assistant run and report them. Don't offer, start or script your own speed tests (standalone `llama-server` runs, A/B scripts and the like) to measure or confirm performance. If more measurement is needed, say what to run, or write a prompt for the in-app assistant.
 
 ## Project
 

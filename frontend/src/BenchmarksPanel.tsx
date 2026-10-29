@@ -511,8 +511,8 @@ const PHASES = [['prefill', 'Prefill'], ['decode', 'Decode']] as const
 /** One phase's 1% low, average and 1% high, stacked under its name, for the run list. */
 function SpeedStack({ run, phase, label }: { run: BenchmarkRun; phase: 'prefill' | 'decode'; label: string }) {
   const speeds = phaseSpeeds(run.stats, phase)
-  // While a run is going only the current speed is known.
-  const average = speeds.average ?? run.live?.[phase]?.rate
+  // While a run is going, the average so far.
+  const average = speeds.average ?? run.live?.[phase]?.average
   return <div className="benchmark-speed">
     <dt>{label} <span>tok/s</span></dt>
     <dd>{SPEED_FIGURES.map((figure) => <span key={figure.key} title={figure.title}><small>{figure.label}</small>{formatRateValue(figure.key === 'average' ? average : speeds[figure.key])}</span>)}</dd>

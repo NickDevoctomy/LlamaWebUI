@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime, timedelta
@@ -149,6 +150,56 @@ def test_runs_use_the_briefs_level_and_record_their_settings(tmp_path: Path, log
     assert approval[1]["reasoning"] == "medium"
     assert detail["benchmark_runs"] == 1
     assert listed[0]["conversation_id"] == conversation_id
+
+
+class _RunningRunner:
+    """Stands in for a runner with a benchmark under way."""
+
+    def __init__(self, run_id: str, *, finished: bool = False) -> None:
+        self.active_run_id: str | None = run_id
+        self.finished = finished
+        self.cancelled: list[str] = []
+
+    async def cancel(self, run_id: str) -> bool:
+        self.cancelled.append(run_id)
+        return not self.finished
+
+
+def test_stop_benchmark_cancels_the_running_run(tmp_path: Path, login: Login) -> None:
+    with TestClient(_app(tmp_path, ScriptedClient()), client=LOCAL) as client:
+        _, conversation_id = _setup(client, login, tmp_path)
+        app: Any = client.app
+        idle = _call(_context(client, conversation_id), client, "stop_benchmark", {})
+        profile = app.state.profile_registry.list()[0]
+        run = app.state.benchmark_runs.create(profile, app.state.benchmarks[0], None)
+
+        def context_with(runner: _RunningRunner) -> ToolContext:
+            services = dataclasses.replace(
+                app.state.assistant_engine.services, benchmark_runner=runner
+            )
+            return ToolContext(
+                services,
+                frozenset(tool.privilege for tool in TOOLS),
+                brief=BRIEF,
+                conversation_id=conversation_id,
+            )
+
+        runner = _RunningRunner(run.id)
+        context = context_with(runner)
+        approval = client.portal.call(  # type: ignore[union-attr]
+            app.state.assistant_engine.tool("stop_benchmark").approval_request, context, {}
+        )
+        stopped = _call(context, client, "stop_benchmark", {})
+        done = context_with(_RunningRunner(run.id, finished=True))
+        late = _call(done, client, "stop_benchmark", {})
+
+    assert idle.ok is False and "no benchmark is running" in idle.text
+    assert approval[0] == "Stop the benchmark of test-model"
+    assert approval[1] == {"run": run.id, "profile": "test-model"}
+    assert stopped.ok is True and stopped.summary == "benchmark stopped"
+    assert json.loads(stopped.text)["state"] == "cancelled"
+    assert runner.cancelled == [run.id]
+    assert late.ok is False and "has already finished" in late.text
 
 
 def test_runs_show_their_settings_and_compare_with_a_baseline(tmp_path: Path, login: Login) -> None:

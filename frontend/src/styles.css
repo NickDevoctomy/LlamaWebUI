@@ -851,7 +851,6 @@ button.shortcut:hover .shortcut-arrow { color: var(--accent-ink); transform: tra
 .time-chart-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
 .time-chart-legend { margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; list-style: none; }
 .time-chart-legend li { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.time-chart-legend li span { color: var(--fg-2); font: 500 12px var(--font-mono); font-variant-numeric: tabular-nums; }
 .time-chart-legend i, .time-chart-tip i { width: 10px; height: 3px; flex: none; border-radius: 2px; background: var(--series); }
 .time-chart-body { display: grid; grid-template-columns: 52px minmax(0, 1fr); column-gap: 8px; }
 .time-chart-axis { height: 96px; display: flex; flex-direction: column; justify-content: space-between; color: var(--faint); font: 10.5px var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }

@@ -14,7 +14,12 @@ from llamawebui.models import AssistantMessageRecord
 
 PROFILE_CHANGES = frozenset({"create_profile", "update_profile"})
 # Whether each action leaves the router running once it is done.
-ROUTER_ACTIONS = {"start_router": True, "stop_router": False, "run_benchmark": False}
+ROUTER_ACTIONS = {
+    "start_router": True,
+    "stop_router": False,
+    "run_benchmark": False,
+    "stop_benchmark": False,
+}
 
 
 def is_check(record: AssistantMessageRecord) -> bool:

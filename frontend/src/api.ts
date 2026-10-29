@@ -525,8 +525,9 @@ export interface BenchmarkRun {
   finished_at: string | null
   /** Current speeds while the run is in progress. */
   live?: {
-    prefill?: { tokens: number | null; rate: number | null } | null
-    decode?: { tokens: number | null; rate: number | null } | null
+    /** rate is the speed over the recent window, average the run so far. */
+    prefill?: { tokens: number | null; rate: number | null; average?: number | null } | null
+    decode?: { tokens: number | null; rate: number | null; average?: number | null } | null
     /** The tool call being written: its name and bytes of arguments so far. */
     tool_call?: { name: string; bytes: number } | null
     /** Tokens in the model's context right now, and its size. */
