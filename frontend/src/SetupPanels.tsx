@@ -33,6 +33,7 @@ import {
 } from './argumentCatalog'
 import { LaunchPreview, ProfileArgumentEditor } from './ProfileArgumentEditor'
 import { BenchmarkSummary } from './benchmarkFormat'
+import { MemoryBreakdown, MemoryEstimateToggle } from './MemoryEstimate'
 import { ProfileCompare, recommendedReferences, type CompareFocus } from './ProfileCompare'
 
 function optionalNumber(value: string) {
@@ -387,6 +388,14 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
   const [actionError, setActionError] = useState('')
   const [actionPending, setActionPending] = useState<string>()
   const [compareFocus, setCompareFocus] = useState<CompareFocus>()
+  const [memoryShown, setMemoryShown] = useState<ReadonlySet<string>>(new Set())
+  function toggleMemory(profileId: string) {
+    setMemoryShown((current) => {
+      const next = new Set(current)
+      if (!next.delete(profileId)) next.add(profileId)
+      return next
+    })
+  }
   const queryClient = useQueryClient()
   const runtime = runtimes.find((item) => item.id === runtimeId)
   const supports = (option: string) => runtime?.options.includes(option) ?? false
@@ -695,7 +704,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
         {profiles.length ? <div className="record-list">{profiles.map((profile) => (
           <article className="record-row" key={profile.id}>
             <span className="record-icon"><FileCog size={18} /></span>
-            <div className="record-copy"><span className="record-title"><button className="record-link" onClick={() => editProfile(profile)} type="button"><strong>{profile.alias}</strong></button><ProfileVersionTags onCompare={(focus) => setCompareFocus((current) => ({ ...focus, nonce: (current?.nonce ?? 0) + 1 }))} profile={profile} />{profile.exclusive && <span className="profile-tag" title="Nothing else can be loaded beside this profile">Exclusive</span>}<ProfileHashTags profile={profile} profiles={profiles} /></span>{profile.description && <span className="record-description">{profile.description}</span>}{Object.entries(profile.benchmark_results ?? {}).map(([id, result]) => <span className="record-benchmark" key={id}><BenchmarkSummary result={result} /></span>)}<span>{profile.model_path}</span></div>
+            <div className="record-copy"><span className="record-title"><button className="record-link" onClick={() => editProfile(profile)} type="button"><strong>{profile.alias}</strong></button><ProfileVersionTags onCompare={(focus) => setCompareFocus((current) => ({ ...focus, nonce: (current?.nonce ?? 0) + 1 }))} profile={profile} />{profile.exclusive && <span className="profile-tag" title="Nothing else can be loaded beside this profile">Exclusive</span>}<ProfileHashTags profile={profile} profiles={profiles} /></span>{profile.description && <span className="record-description">{profile.description}</span>}{Object.entries(profile.benchmark_results ?? {}).map(([id, result]) => <span className="record-benchmark" key={id}><BenchmarkSummary result={result} /></span>)}{profile.memory_estimate && <span className="record-memory"><MemoryEstimateToggle controls={`memory-${profile.id}`} estimate={profile.memory_estimate} expanded={memoryShown.has(profile.id)} onToggle={() => toggleMemory(profile.id)} /></span>}<span>{profile.model_path}</span></div>
             <div className="record-meta wide"><small>Runtime</small><span>{runtimes.find((item) => item.id === profile.runtime_id)?.name ?? 'Missing runtime'}</span></div>
             {profile.validation_state === 'pending' ? <span className="state-pill downloading" title={profile.auto_enable ? 'Model is downloading. The profile switches on by itself when it finishes.' : 'Model is downloading.'}>{profile.download?.total_bytes ? `Downloading ${Math.min(100, Math.round(profile.download.completed_bytes / profile.download.total_bytes * 100))}%` : 'Downloading'}</span> : profile.validation_state === 'broken' ? <button className="state-pill error" disabled={running || !profile.source_download} onClick={() => setRepairing(profile)} title={profile.source_download ? 'Repair missing model' : 'Model file is missing'} type="button">Broken</button> : <div className="profile-state">
               {profile.recommendation?.upgradable && <button className="button primary compact" disabled={running || upgrade.isPending} onClick={() => upgrade.mutate(profile)} title={running ? 'Stop the router to upgrade a profile' : `Replace these settings with version ${profile.recommendation.latest_version} of the recommendation. The alias, model location and enabled state are kept.`} type="button">{upgrade.isPending && upgrade.variables?.id === profile.id ? <LoaderCircle className="spin" size={14} /> : <CircleArrowUp size={14} />} Upgrade to v{profile.recommendation.latest_version}</button>}
@@ -705,6 +714,7 @@ export function ProfilePanel({ profiles, runtimes, library, initialModel, onInit
               </button>
             </div>}
             <div className="row-actions"><button className="button row-button" disabled={running || validate.isPending} onClick={() => validate.mutate(profile)} type="button"><Check size={13} /> Validate</button><button className="button row-button" disabled={running} onClick={() => editProfile(profile)} type="button"><Pencil size={13} /> Edit</button><span className="action-divider" aria-hidden="true" /><button aria-label="Reset" className="icon-button small" disabled={running} onClick={() => setResetting(profile)} title="Reset settings" type="button"><RotateCcw size={15} /></button><button aria-label="Export" className="icon-button small" disabled={running || actionPending !== undefined} onClick={() => void exportProfile(profile)} title="Export profile JSON" type="button">{actionPending === `export:${profile.id}` ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}</button><button aria-label="Command" className="icon-button small" disabled={running || actionPending !== undefined} onClick={() => void showCommand(profile)} title="Show llama-server command" type="button">{actionPending === `command:${profile.id}` ? <LoaderCircle className="spin" size={15} /> : <TerminalSquare size={15} />}</button><button aria-label="Clone" className="icon-button small" disabled={running} onClick={() => { setCloning(profile); setCloneAlias(`${profile.alias}-copy`) }} title="Clone profile" type="button"><Copy size={15} /></button><button aria-label={`Delete profile ${profile.alias}`} className="icon-button small danger-icon" disabled={running} onClick={() => setDeleting(profile)} title="Delete profile" type="button"><Trash2 size={15} /></button></div>
+            {profile.memory_estimate && memoryShown.has(profile.id) && <div className="record-details memory-details"><MemoryBreakdown estimate={profile.memory_estimate} id={`memory-${profile.id}`} /></div>}
           </article>
         ))}</div> : <div className="empty"><FileCog size={28} /><strong>No profiles configured</strong><span>{runtimes.length ? 'Create a profile for a local GGUF model.' : 'Register a runtime before creating a model profile.'}</span>{runtimes.length > 0 && <button className="button primary" onClick={() => openCreate()} type="button"><Plus size={15} /> Create profile</button>}</div>}
       </section>

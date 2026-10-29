@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, Field, field_validator
@@ -147,6 +147,7 @@ from llamawebui.services.llama_release_installer import (
 )
 from llamawebui.services.logical_model_registry import LogicalModelRegistry
 from llamawebui.services.login_throttle import LoginRateLimitedError, LoginThrottle
+from llamawebui.services.memory_estimate import Devices, estimate_profile_memory
 from llamawebui.services.model_artifact_registry import ModelArtifactError, ModelArtifactRegistry
 from llamawebui.services.model_event_stream import stream_model_events
 from llamawebui.services.model_library import ModelLibrary
@@ -189,6 +190,7 @@ from llamawebui.services.router_client import (
 )
 from llamawebui.services.router_event_sync import RouterEventSynchronizer
 from llamawebui.services.router_port import RouterPortProbe, probe_router_port
+from llamawebui.services.router_profiler import ProfilerConfig, ProfilerError, RouterProfiler
 from llamawebui.services.router_supervisor import RouterRestartPolicy, RouterSupervisor
 from llamawebui.services.runtime_probe import RuntimeProber, probe_runtime
 from llamawebui.services.runtime_registry import (
@@ -374,6 +376,16 @@ class SecuritySettingsRequest(BaseModel):
     allow_remote_secrets: bool
 
 
+class ProfilerSettingsRequest(BaseModel):
+    enabled: bool
+    nsys_path: str = Field(default="", max_length=1000)
+    trace: str = Field(min_length=1, max_length=200)
+    cpu_sampling: bool
+    sampling_hz: int = 250
+    capture_on_start: bool
+    graph_nodes: bool = False
+
+
 class OpenRouterModelRequest(BaseModel):
     id: str = Field(min_length=1, max_length=300)
 
@@ -405,6 +417,8 @@ class BenchmarkRunRequest(BaseModel):
     tool_names: list[str] | None = Field(default=None, max_length=32)
     # A bundled system prompt to send first, by id; none sends the prompt on its own.
     system_prompt_id: str | None = Field(default=None, max_length=64)
+    # Text added after that system prompt, e.g. a model's "Reasoning strength: high" line.
+    system_prompt_extra: str | None = Field(default=None, max_length=4000)
     # "off" or an effort level for the chat template; none keeps the model's own default.
     reasoning_level: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = (
         None
@@ -574,6 +588,23 @@ def _runtime_executables(request: Request) -> dict[str, Path]:
     return {runtime.id: Path(runtime.executable_path) for runtime in registry.list()}
 
 
+def _runtime_devices(request: Request) -> dict[str, Devices]:
+    """The GPUs each registered runtime reported, by runtime id."""
+    registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
+    return {runtime.id: Devices.from_listing(runtime.devices) for runtime in registry.list()}
+
+
+def _memory_estimate(profile: ModelProfile, devices: Devices) -> dict[str, object] | None:
+    """What the profile's model should take once loaded, or None if it cannot be read."""
+    values = {
+        argument.catalog_id: argument.value
+        for argument in profile.arguments
+        if argument.catalog_id is not None
+    }
+    estimate = estimate_profile_memory(profile.model_path, values, devices)
+    return estimate.to_payload() if estimate is not None else None
+
+
 def _saved_profile_payload(
     request: Request, record: ModelProfileRecord, profile: ModelProfile
 ) -> dict[str, object]:
@@ -586,6 +617,7 @@ def _saved_profile_payload(
         catalog=catalog,
         recommendations=request.app.state.recommendations,
         executables=_runtime_executables(request),
+        devices=_runtime_devices(request),
     )
     registry = cast(RuntimeRegistry, request.app.state.runtime_registry)
     runtime = registry.get(record.runtime_id)
@@ -601,9 +633,11 @@ def _profile_payload(
     catalog: ArgumentCatalog,
     recommendations: Sequence[Recommendation] = (),
     executables: Mapping[str, Path] | None = None,
+    devices: Mapping[str, Devices] | None = None,
 ) -> dict[str, object]:
     source = artifacts.source_for_profile(profile) if artifacts is not None else None
     executable = (executables or {}).get(profile.runtime_id)
+    runtime_devices = (devices or {}).get(profile.runtime_id)
     validation_state = "available"
     download: dict[str, object] | None = None
     if artifacts is not None:
@@ -645,6 +679,11 @@ def _profile_payload(
         "hash": profile_hash(profile, catalog, executable) if executable is not None else None,
         "recommendation": recommendation_status(profile, recommendations, catalog),
         "benchmark_results": profile.benchmark_results or {},
+        "memory_estimate": (
+            _memory_estimate(profile_from_record(profile, catalog), runtime_devices)
+            if runtime_devices is not None
+            else None
+        ),
         "validation_state": validation_state,
         "auto_enable": profile.enable_on_download is not None,
         "download": download,
@@ -682,6 +721,7 @@ def _server_payload(
     supervisor: RouterSupervisor,
     settings: Settings,
     memory: list[dict[str, object]] | None = None,
+    profiler_saving: dict[str, str] | None = None,
 ) -> dict[str, object]:
     return {
         "state": supervisor.state,
@@ -694,6 +734,8 @@ def _server_payload(
         "context": supervisor.context,
         "arguments": supervisor.launch_arguments,
         "system": _system_metrics(settings.data_dir),
+        # A profiler report being written; the router stops once it is saved.
+        "profiler_saving": profiler_saving,
     }
 
 
@@ -1084,7 +1126,11 @@ def create_app(
                 "recommended_profiles_linked",
                 extra={"component": "profiles", "event": "linked", "aliases": list(linked)},
             )
+        app.state.router_profiler = RouterProfiler(
+            app.state.settings_store, app_settings.data_dir / "debug" / "captures"
+        )
         app.state.router_supervisor = router_supervisor or RouterSupervisor(
+            hooks=app.state.router_profiler,
             restart_policy=RouterRestartPolicy(
                 max_attempts=app_settings.router_restart_max_attempts,
                 window_seconds=app_settings.router_restart_window_seconds,
@@ -1587,6 +1633,73 @@ def create_app(
         )
         return {"path": str(path), "format": 1}
 
+    def _profiler(request: Request) -> RouterProfiler:
+        return cast(RouterProfiler, request.app.state.router_profiler)
+
+    def profiler_conflict(error: ProfilerError) -> HTTPException:
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+
+    @app.get("/api/diagnostics/profiler")
+    async def profiler_status(request: Request) -> dict[str, object]:
+        return await _profiler(request).status()
+
+    @app.put("/api/diagnostics/profiler")
+    async def update_profiler(
+        settings_request: ProfilerSettingsRequest, request: Request
+    ) -> dict[str, object]:
+        profiler = _profiler(request)
+        nsys_path = settings_request.nsys_path.strip()
+        if nsys_path and not Path(nsys_path).is_file():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Nsight Systems was not found at {nsys_path}",
+            )
+        try:
+            config = ProfilerConfig(**{**settings_request.model_dump(), "nsys_path": nsys_path})
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
+        profiler.save(config)
+        return await profiler.status()
+
+    @app.post("/api/diagnostics/profiler/capture/start")
+    async def start_profiler_capture(request: Request) -> dict[str, object]:
+        profiler = _profiler(request)
+        try:
+            await profiler.start_capture()
+        except ProfilerError as error:
+            raise profiler_conflict(error) from error
+        return await profiler.status()
+
+    @app.post("/api/diagnostics/profiler/capture/stop")
+    async def stop_profiler_capture(request: Request) -> dict[str, object]:
+        profiler = _profiler(request)
+        try:
+            await profiler.stop_capture()
+        except ProfilerError as error:
+            raise profiler_conflict(error) from error
+        return await profiler.status()
+
+    @app.get("/api/diagnostics/profiler/captures/{name}")
+    async def download_profiler_capture(name: str, request: Request) -> FileResponse:
+        try:
+            path = _profiler(request).capture_path(name)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+
+    @app.delete("/api/diagnostics/profiler/captures/{name}")
+    async def delete_profiler_capture(name: str, request: Request) -> dict[str, object]:
+        profiler = _profiler(request)
+        try:
+            profiler.delete_capture(name)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ProfilerError as error:
+            raise profiler_conflict(error) from error
+        return await profiler.status()
+
     @app.get("/api/events")
     async def stream_events(
         request: Request,
@@ -1636,7 +1749,8 @@ def create_app(
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
         sampler = cast(ProcessMemorySampler, request.app.state.process_memory)
         memory = await asyncio.to_thread(sampler.sample, supervisor.pid)
-        return _server_payload(supervisor, app_settings, memory)
+        profiler = cast(RouterProfiler, request.app.state.router_profiler)
+        return _server_payload(supervisor, app_settings, memory, profiler.saving())
 
     @app.get("/api/server/runs")
     async def list_server_runs(request: Request) -> list[dict[str, object]]:
@@ -1835,6 +1949,7 @@ def create_app(
             "tools": record.tools,
             "tool_names": record.tool_names,
             "system_prompt_id": record.system_prompt_id,
+            "system_prompt_extra": record.system_prompt_extra,
             "reasoning_level": record.reasoning_level,
             "typescript_strict": record.typescript_strict,
             "verbose_log": record.verbose_log,
@@ -2013,6 +2128,7 @@ def create_app(
                 tools=run_request.tools,
                 tool_names=run_request.tool_names,
                 system_prompt=system_prompt,
+                system_prompt_extra=run_request.system_prompt_extra,
                 reasoning_level=run_request.reasoning_level,
                 verbose_log=run_request.verbose_log,
                 compact_context=run_request.compact_context,
@@ -2549,6 +2665,7 @@ def create_app(
                     catalog=catalog,
                     recommendations=request.app.state.recommendations,
                     executables=_runtime_executables(request),
+                    devices=_runtime_devices(request),
                 )
                 if applied.profile is not None
                 else None
@@ -2563,6 +2680,7 @@ def create_app(
         artifacts = cast(ModelArtifactRegistry, request.app.state.model_artifact_registry)
         catalog = _argument_catalog(request)
         executables = _runtime_executables(request)
+        devices = _runtime_devices(request)
         return [
             _profile_payload(
                 profile,
@@ -2570,6 +2688,7 @@ def create_app(
                 catalog=catalog,
                 recommendations=request.app.state.recommendations,
                 executables=executables,
+                devices=devices,
             )
             for profile in registry.list()
         ]
@@ -2593,6 +2712,7 @@ def create_app(
                 "command": "",
                 "preset": "",
                 "router_arguments": _router_preview(request, runtime),
+                "memory_estimate": None,
             }
         issues = _profile_issues(request, profile, runtime)
         executable = Path(runtime.executable_path)
@@ -2602,6 +2722,7 @@ def create_app(
             "command": render_command(profile, catalog, executable),
             "preset": render_preset_unchecked(profile, catalog, redact=True),
             "router_arguments": _router_preview(request, runtime),
+            "memory_estimate": _memory_estimate(profile, Devices.from_listing(runtime.devices)),
         }
 
     @app.post("/api/profiles", status_code=status.HTTP_201_CREATED)
@@ -2719,7 +2840,9 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=list(error.errors)
             ) from error
-        return _profile_payload(record, catalog=_argument_catalog(request))
+        return _profile_payload(
+            record, catalog=_argument_catalog(request), devices=_runtime_devices(request)
+        )
 
     @app.delete(
         "/api/profiles/{profile_id}/snapshots/{snapshot_id}",
@@ -2748,6 +2871,7 @@ def create_app(
             catalog=_argument_catalog(request),
             recommendations=request.app.state.recommendations,
             executables=_runtime_executables(request),
+            devices=_runtime_devices(request),
         )
 
     @app.post("/api/profiles/{profile_id}/upgrade")
@@ -2791,6 +2915,7 @@ def create_app(
             artifacts,
             catalog=_argument_catalog(request),
             executables=_runtime_executables(request),
+            devices=_runtime_devices(request),
         )
 
     @app.delete("/api/profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -2840,6 +2965,7 @@ def create_app(
             artifacts,
             catalog=_argument_catalog(request),
             executables=_runtime_executables(request),
+            devices=_runtime_devices(request),
         )
 
     @app.get("/api/profiles/{profile_id}/export", response_class=PlainTextResponse)
@@ -2951,6 +3077,7 @@ def create_app(
                     artifacts,
                     catalog=catalog,
                     executables=_runtime_executables(request),
+                    devices=_runtime_devices(request),
                 )
             profile = ModelProfile(
                 alias=alias,
@@ -3242,6 +3369,7 @@ def create_app(
             artifacts,
             catalog=_argument_catalog(request),
             executables=_runtime_executables(request),
+            devices=_runtime_devices(request),
         )
 
     @app.delete("/api/library/{download_id}")

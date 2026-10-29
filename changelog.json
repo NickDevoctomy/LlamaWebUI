@@ -1,8 +1,70 @@
 {
   "versions": [
     {
+      "version": "0.6.0",
+      "release_date": "2026-10-28",
+      "changes": [
+        {
+          "type": "feat",
+          "description": "Estimated memory use for each profile, worked out from the model file and its settings. Hover over it in the profile list for the parts, or click it for a full breakdown of weights, KV cache, recurrent state and compute buffers across GPU and RAM."
+        },
+        {
+          "type": "feat",
+          "description": "The memory estimate updates live in the profile editor's launch preview as you change settings, and warns when a profile won't fit in GPU memory."
+        },
+        {
+          "type": "feat",
+          "description": "Benchmarks and assistant briefs can add text after the system prompt, such as a model's own reasoning switch. Runs are only compared with runs that added the same text."
+        },
+        {
+          "type": "feat",
+          "description": "New recommended profile: Qwen 3.6 35B A3B with MTP for 24 GB GPUs, in Q4 and Q8 variants."
+        },
+        {
+          "type": "feat",
+          "description": "Profiling of llama-server with NVIDIA Nsight Systems, from a new Debug tab in Settings. One switch turns it on or off; when on, the router starts under the profiler and records either every run from start to stop, or between Start capture and Stop and save. Optional settings record kernels inside CUDA graphs and CPU call stacks, with a sampling rate."
+        },
+        {
+          "type": "feat",
+          "description": "Profiler reports are listed on the Debug tab to download or delete. Stopping a profiled router waits for its report to be written, and the top bar shows how long saving has taken."
+        },
+        {
+          "type": "feat",
+          "description": "Scripts to build a llama.cpp runtime with debug symbols and to summarise a profiler report, with a guide in docs/profiling."
+        },
+        {
+          "type": "feat",
+          "description": "The assistant can stop a running benchmark when asked, for example when the model is stuck in a loop."
+        },
+        {
+          "type": "change",
+          "description": "The assistant has new research notes for tuning Qwen3.6 35B A3B on a 24 GB GPU."
+        },
+        {
+          "type": "change",
+          "description": "A running benchmark's Average speed is now the average of the run so far, not the speed over the last few seconds."
+        },
+        {
+          "type": "change",
+          "description": "Benchmark chart legends only name the lines. They used to show each line's last reading, which looked like an average; hover over the chart for readings."
+        },
+        {
+          "type": "fix",
+          "description": "Context use and the server log stay live while the router is profiled."
+        },
+        {
+          "type": "fix",
+          "description": "High backend CPU use: checking whether the default admin password was still set took about 100 ms of CPU on every request. The result is now cached."
+        },
+        {
+          "type": "fix",
+          "description": "Model names now appear in the Library's logical models list. The model file header was being misread, so every model showed as \"Local model\"."
+        }
+      ]
+    },
+    {
       "version": "0.5.0",
-      "release_date": null,
+      "release_date": "2026-10-28",
       "changes": [
         {
           "type": "feat",

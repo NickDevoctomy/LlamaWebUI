@@ -297,5 +297,26 @@ describe('LaunchPreview', () => {
     render(<LaunchPreview clientIssues={[]} error="preview failed" onRefresh={() => undefined} pending />)
     expect(screen.getByText('No launch blockers')).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent('preview failed')
+    expect(screen.queryByRole('region', { name: 'Estimated memory' })).toBeNull()
+  })
+
+  it('shows the memory estimate for the settings being edited', () => {
+    const gib = 1024 ** 3
+    render(<LaunchPreview
+      clientIssues={[]}
+      onRefresh={() => undefined}
+      pending={false}
+      preview={{
+        valid: true, errors: [], warnings: [], issues: [], arguments: [], command: '', preset: '', router_arguments: [],
+        memory_estimate: {
+          gpu_bytes: 4 * gib, cpu_bytes: gib, gpu_capacity_bytes: 8 * gib, context_size: 4096, slots: 1, growth: [], notes: [],
+          parts: [{ id: 'weights', label: 'Model weights', gpu_bytes: 4 * gib, cpu_bytes: gib, detail: 'All layers on the GPU.', approximate: false }],
+        },
+      }}
+    />)
+
+    const section = screen.getByRole('region', { name: 'Estimated memory' })
+    expect(within(section).getByRole('heading')).toHaveTextContent('4.0 GB GPU · 1.0 GB RAM')
+    expect(within(section).getByRole('rowheader', { name: /Model weights/ })).toBeInTheDocument()
   })
 })

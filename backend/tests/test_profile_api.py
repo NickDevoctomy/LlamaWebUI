@@ -2,6 +2,7 @@ from pathlib import Path
 
 from conftest import Login
 from fastapi.testclient import TestClient
+from gguf_files import write_gguf
 
 from llamawebui.app import create_app
 from llamawebui.config import Settings
@@ -875,3 +876,60 @@ def test_profile_version_moves_up_on_change_or_takes_a_typed_value(
     assert invalid.status_code == 422
     assert set_on_create["version"] == 3
     assert not_recommended.status_code == 409
+
+
+def test_profiles_and_previews_carry_a_memory_estimate(tmp_path: Path, login: Login) -> None:
+    executable = tmp_path / "llama-server.exe"
+    executable.touch()
+    model = write_gguf(
+        tmp_path / "model.gguf",
+        [
+            ("general.architecture", "llama"),
+            ("llama.block_count", 2),
+            ("llama.context_length", 4096),
+            ("llama.embedding_length", 64),
+            ("llama.attention.head_count", 8),
+            ("llama.attention.head_count_kv", 2),
+        ],
+        [("token_embd.weight", (64, 100), 6400), ("blk.0.attn_q.weight", (64, 64), 4096)],
+    )
+    unreadable = tmp_path / "other.gguf"
+    unreadable.touch()
+
+    async def fake_probe(path: Path) -> RuntimeProbeResult:
+        return RuntimeProbeResult(
+            executable=path.resolve(),
+            version=RuntimeVersion(build="1", commit=None, raw="version"),
+            capabilities=RuntimeCapabilities(
+                options=frozenset({"model", "ctx-size", "n-gpu-layers"}), raw_help="help"
+            ),
+            devices_output="Available devices:\n  CUDA0: Test GPU (8192 MiB, 8000 MiB free)",
+            errors=(),
+        )
+
+    app = create_app(Settings(data_dir=tmp_path / "data"), runtime_prober=fake_probe)
+    with TestClient(app) as client:
+        login(client)
+        runtime_id = client.post(
+            "/api/runtimes", json={"name": "CUDA", "executable_path": str(executable)}
+        ).json()["id"]
+        payload = {
+            "alias": "local-model",
+            "runtime_id": runtime_id,
+            "model_path": str(model),
+            "arguments": [{"id": "ctx-size", "value": 1024}],
+        }
+        created = client.post("/api/profiles", json=payload).json()
+        listed = client.get("/api/profiles").json()[0]
+        preview = client.post("/api/profiles/preview", json=payload).json()
+        unreadable_preview = client.post(
+            "/api/profiles/preview", json={**payload, "model_path": str(unreadable)}
+        ).json()
+
+    for response in (created, listed, preview):
+        estimate = response["memory_estimate"]
+        assert estimate["context_size"] == 1024
+        assert estimate["gpu_capacity_bytes"] == 8192 * 1024 * 1024
+        assert estimate["cpu_bytes"] >= 6400
+        assert estimate["parts"][1]["id"] == "kv"
+    assert unreadable_preview["memory_estimate"] is None

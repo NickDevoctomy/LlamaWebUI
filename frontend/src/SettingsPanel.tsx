@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Download, FileCheck2, Info, KeyRound, LoaderCircle, Save, Settings, ShieldCheck, Trash2, Upload } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { api, type ApprovalCategory, type LinterStatus, type SecretName } from './api'
+import { DebugTab } from './DebugTab'
 import { OpenRouterModelPicker } from './OpenRouterModelPicker'
 import { formatBytes } from './Dashboard'
 
@@ -240,13 +241,15 @@ function AssistantTab({ canManage }: { canManage: boolean }) {
   </>
 }
 
-type SettingsTab = 'benchmark' | 'security' | 'assistant' | SecretName
+type SettingsTab = 'benchmark' | 'security' | 'assistant' | 'debug' | SecretName
 
-export function SettingsPanel({ canManage, canViewSettings = true, canViewSecrets = false, canManageSecrets = false }: {
+export function SettingsPanel({ canManage, canViewSettings = true, canViewSecrets = false, canManageSecrets = false, canViewDiagnostics = false, canManageDiagnostics = false }: {
   canManage: boolean
   canViewSettings?: boolean
   canViewSecrets?: boolean
   canManageSecrets?: boolean
+  canViewDiagnostics?: boolean
+  canManageDiagnostics?: boolean
 }) {
   const tabs: { key: SettingsTab; label: string }[] = [
     ...(canViewSettings ? [{ key: 'benchmark' as const, label: 'Benchmark' }, { key: 'security' as const, label: 'Security' }] : []),
@@ -254,11 +257,12 @@ export function SettingsPanel({ canManage, canViewSettings = true, canViewSecret
     // The OpenRouter tab holds the API key (secrets) and the assistant's model (settings).
     ...(canViewSecrets || canViewSettings ? [{ key: 'openrouter-api-key' as const, label: SECRETS['openrouter-api-key'].tab }] : []),
     ...(canViewSettings ? [{ key: 'assistant' as const, label: 'Assistant' }] : []),
+    ...(canViewDiagnostics ? [{ key: 'debug' as const, label: 'Debug' }] : []),
   ]
   const [selected, setTab] = useState<SettingsTab>()
   const tab = selected ?? tabs[0]?.key
   return <section className="data-panel settings-panel">
-    <div className="panel-heading"><div><h2>Settings</h2><p>Control-plane preferences, provider credentials and the tools features rely on.</p></div><Settings size={20} /></div>
+    <div className="panel-heading"><div><h2>Settings</h2><p>Control-plane preferences, provider credentials, the tools features rely on and debugging.</p></div><Settings size={20} /></div>
     <div aria-label="Settings" className="segmented settings-tabs" role="tablist">
       {tabs.map(({ key, label }) => <button aria-selected={tab === key} key={key} onClick={() => setTab(key)} role="tab" type="button">{label}</button>)}
     </div>
@@ -269,6 +273,7 @@ export function SettingsPanel({ canManage, canViewSettings = true, canViewSecret
       {canViewSecrets && <SecretTab key={tab} canManage={canManageSecrets} name={tab} />}
       {canViewSettings && <OpenRouterModelPicker canManage={canManage} />}
     </div>}
+    {tab === 'debug' && <div role="tabpanel" aria-label="Debug"><DebugTab canManage={canManageDiagnostics} /></div>}
     {tab === 'benchmark' && <div role="tabpanel" aria-label="Benchmark">
       <div className="settings-section"><h3>Tools</h3><p>Extra tools benchmark agents can be given. Each one is offered in a run&apos;s tool list once it is installed.</p></div>
       <div className="record-list"><EslintRow canManage={canManage} /></div>

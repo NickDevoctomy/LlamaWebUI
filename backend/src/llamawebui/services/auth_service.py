@@ -28,6 +28,7 @@ from llamawebui.services.authorization import PRIVILEGE_KEYS
 
 DEFAULT_ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_PASSWORD = "admin"
+_DEFAULT_HASH_CACHE_SIZE = 256
 SESSION_COOKIE_NAME = "llamawebui_session"
 SESSION_TTL = timedelta(days=7)
 CSRF_HEADER = "X-Requested-With"
@@ -114,6 +115,7 @@ class AuthService:
     def __init__(self, engine: Engine) -> None:
         self._sessions = sessionmaker(engine, expire_on_commit=False)
         self._hasher = PasswordHasher()
+        self._default_hashes: dict[str, bool] = {}
 
     def ensure_default_admin(self) -> None:
         """Seed the default ``admin`` / ``admin`` account on first run."""
@@ -396,10 +398,21 @@ class AuthService:
             return self._is_default_hash(user.password_hash)
 
     def _is_default_hash(self, password_hash: str) -> bool:
+        # Every request resolves its session, and an Argon2 verify costs ~100 ms of CPU.
+        # The answer for a stored hash never changes (a new password is a new salted hash),
+        # so it is worked out once per hash.
+        cached = self._default_hashes.get(password_hash)
+        if cached is not None:
+            return cached
+        default: bool
         try:
-            return self._hasher.verify(password_hash, DEFAULT_ADMIN_PASSWORD)
+            default = self._hasher.verify(password_hash, DEFAULT_ADMIN_PASSWORD)
         except (VerifyMismatchError, InvalidHashError):
-            return False
+            default = False
+        if len(self._default_hashes) >= _DEFAULT_HASH_CACHE_SIZE:
+            self._default_hashes.clear()
+        self._default_hashes[password_hash] = default
+        return default
 
     def _authenticated_user(
         self,

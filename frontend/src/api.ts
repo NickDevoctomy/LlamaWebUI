@@ -16,6 +16,8 @@ export interface ServerStatus {
   memory?: ModelMemory[]
   /** Tokens held in each model slot's context. */
   context?: ModelContext[]
+  /** Nsight Systems is writing this report; the router stops once it is saved. */
+  profiler_saving?: { name: string; started_at: string } | null
   system: {
     cpu_percent: number
     ram_used_bytes: number
@@ -89,6 +91,8 @@ export interface Profile {
   recommendation?: ProfileRecommendation | null
   /** Latest completed result per benchmark id; kept when the runs are deleted. */
   benchmark_results?: Record<string, BenchmarkResult>
+  /** What the model should take once loaded; null when its files cannot be read. */
+  memory_estimate?: MemoryEstimate | null
   validation_state: 'available' | 'unverified' | 'pending' | 'broken'
   /** Switches on by itself when its model download completes. */
   auto_enable?: boolean
@@ -209,6 +213,8 @@ export interface Brief {
   /** Null until the server fills in the default benchmark. */
   benchmark_id?: string | null
   reasoning_level?: string | null
+  /** Text every run adds after its system prompt, such as a model's own reasoning switch. */
+  system_prompt_extra?: string | null
   /** Every target, most important first. */
   priority?: BriefTarget[]
   /** Work through to the end without stopping to ask questions; true when absent. */
@@ -359,6 +365,43 @@ export interface LibraryList<T> {
   publish_problem: string | null
 }
 
+export interface ProfilerConfig {
+  /** Start the router under Nsight Systems. */
+  enabled: boolean
+  /** Empty uses the newest Nsight Systems install found. */
+  nsys_path: string
+  /** nsys --trace, e.g. cuda,nvtx,cublas. */
+  trace: string
+  /** Record CPU call stacks; needs the backend to run as administrator. */
+  cpu_sampling: boolean
+  /** CPU samples per second, 100-8000. */
+  sampling_hz: number
+  /** Start a capture as soon as the router is ready. */
+  capture_on_start: boolean
+  /** Record each kernel inside CUDA graphs; slows the router down. */
+  graph_nodes: boolean
+}
+
+export interface ProfilerCapture {
+  name: string
+  path: string
+  size: number
+  created_at: string
+}
+
+export interface ProfilerStatus {
+  config: ProfilerConfig
+  nsys: { path: string | null; version: string | null }
+  elevated: boolean
+  /** The running router was started under Nsight Systems. */
+  router_profiled: boolean
+  capture: { name: string; started_at: string } | null
+  /** The report nsys is writing now; long for captures with CPU call stacks. */
+  saving: { name: string; started_at: string } | null
+  last_error: string | null
+  captures: ProfilerCapture[]
+}
+
 export interface SecuritySettings {
   /** Secrets calls are accepted from other machines, not only from the server itself. */
   allow_remote_secrets: boolean
@@ -462,6 +505,8 @@ export interface BenchmarkRun {
   /** The tools it was given; null for runs from before they could be chosen, which had them all. */
   tool_names?: string[] | null
   system_prompt_id: string | null
+  /** Text added after the system prompt, such as a model's own reasoning switch. */
+  system_prompt_extra?: string | null
   /** 'off', an effort level, or null for the model's own default. */
   reasoning_level: string | null
   /** For a run with the TypeScript tools, whether check_typescript was strict; null otherwise. */
@@ -480,8 +525,9 @@ export interface BenchmarkRun {
   finished_at: string | null
   /** Current speeds while the run is in progress. */
   live?: {
-    prefill?: { tokens: number | null; rate: number | null } | null
-    decode?: { tokens: number | null; rate: number | null } | null
+    /** rate is the speed over the recent window, average the run so far. */
+    prefill?: { tokens: number | null; rate: number | null; average?: number | null } | null
+    decode?: { tokens: number | null; rate: number | null; average?: number | null } | null
     /** The tool call being written: its name and bytes of arguments so far. */
     tool_call?: { name: string; bytes: number } | null
     /** Tokens in the model's context right now, and its size. */
@@ -852,6 +898,30 @@ export interface ProfilePreview extends ProfileValidation {
   command: string
   preset: string
   router_arguments: string[]
+  memory_estimate?: MemoryEstimate | null
+}
+
+export interface MemoryPart {
+  id: string
+  label: string
+  gpu_bytes: number
+  cpu_bytes: number
+  detail: string
+  /** A rule of thumb rather than computed from the model. */
+  approximate: boolean
+}
+
+export interface MemoryEstimate {
+  gpu_bytes: number
+  cpu_bytes: number
+  /** Total memory of the runtime's GPUs; null without a GPU or when it is unknown. */
+  gpu_capacity_bytes: number | null
+  context_size: number
+  slots: number
+  parts: MemoryPart[]
+  /** RAM that fills up while the server runs; not counted in the totals. */
+  growth: MemoryPart[]
+  notes: string[]
 }
 
 export interface ProfileCreate {
@@ -1021,7 +1091,7 @@ export const api = {
   benchmarkRun: (runId: string) => request<BenchmarkRunDetail>(`/api/benchmarks/runs/${runId}`),
   benchmarkArtifact: (runId: string, path: string) =>
     request<{ path: string; content: string }>(`/api/benchmarks/runs/${runId}/artifacts/${path.split('/').map(encodeURIComponent).join('/')}`),
-  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number | null; tools: boolean; tool_names: string[] | null; system_prompt_id: string | null; reasoning_level: string | null; verbose_log: boolean; compact_context: boolean }) =>
+  startBenchmark: (body: { profile_id: string; benchmark_id: string; max_tokens: number | null; tools: boolean; tool_names: string[] | null; system_prompt_id: string | null; system_prompt_extra: string | null; reasoning_level: string | null; verbose_log: boolean; compact_context: boolean }) =>
     request<BenchmarkRunDetail>('/api/benchmarks/runs', { method: 'POST', body: JSON.stringify(body) }),
   cancelBenchmark: (runId: string) =>
     request<BenchmarkRun>(`/api/benchmarks/runs/${runId}/cancel`, { method: 'POST' }),
@@ -1029,6 +1099,12 @@ export const api = {
   installEslint: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools/eslint', { method: 'POST' }),
   removeEslint: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools/eslint', { method: 'DELETE' }),
   securitySettings: () => request<SecuritySettings>('/api/settings/security'),
+  profiler: () => request<ProfilerStatus>('/api/diagnostics/profiler'),
+  updateProfiler: (config: ProfilerConfig) => request<ProfilerStatus>('/api/diagnostics/profiler', { method: 'PUT', body: JSON.stringify(config) }),
+  startCapture: () => request<ProfilerStatus>('/api/diagnostics/profiler/capture/start', { method: 'POST' }),
+  stopCapture: () => request<ProfilerStatus>('/api/diagnostics/profiler/capture/stop', { method: 'POST' }),
+  deleteCapture: (name: string) => request<ProfilerStatus>(`/api/diagnostics/profiler/captures/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  captureUrl: (name: string) => `/api/diagnostics/profiler/captures/${encodeURIComponent(name)}`,
   updateSecuritySettings: (allowRemoteSecrets: boolean) => request<SecuritySettings>('/api/settings/security', { method: 'PUT', body: JSON.stringify({ allow_remote_secrets: allowRemoteSecrets }) }),
   openRouterModels: (query: string) => request<{ models: OpenRouterModel[]; total: number }>(`/api/settings/openrouter/models?${new URLSearchParams({ q: query })}`),
   openRouterModel: () => request<{ model: SelectedOpenRouterModel | null }>('/api/settings/openrouter/model'),

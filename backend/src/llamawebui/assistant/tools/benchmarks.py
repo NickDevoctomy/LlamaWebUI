@@ -138,6 +138,12 @@ def _reasoning_level(context: ToolContext) -> str | None:
     return brief.reasoning_level if brief else None
 
 
+def _system_prompt_extra(context: ToolContext) -> str | None:
+    """The text the brief adds after every run's system prompt; blank adds nothing."""
+    brief = _brief(context)
+    return ((brief.system_prompt_extra or "").strip() or None) if brief else None
+
+
 def measured_now(services: ToolServices, reference: str) -> bool:
     """Whether a completed run measured the profile exactly as it launches now."""
     registry = services.profiles
@@ -196,15 +202,16 @@ async def describe_benchmark(
         raise ToolError(f"{record.alias} is disabled; enable it with update_profile first")
     benchmark = _benchmark(context)
     level = _reasoning_level(context)
-    return (
-        f"Benchmark {record.alias} with {benchmark.title}",
-        {
-            "profile": record.alias,
-            "version": record.version,
-            "benchmark": benchmark.title,
-            "reasoning": level or "model default",
-        },
-    )
+    details: dict[str, object] = {
+        "profile": record.alias,
+        "version": record.version,
+        "benchmark": benchmark.title,
+        "reasoning": level or "model default",
+    }
+    extra = _system_prompt_extra(context)
+    if extra:
+        details["added to system prompt"] = extra
+    return f"Benchmark {record.alias} with {benchmark.title}", details
 
 
 async def run_benchmark(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
@@ -213,6 +220,7 @@ async def run_benchmark(context: ToolContext, arguments: Mapping[str, object]) -
     record = find_profile(context, text_argument(arguments, "profile"))
     benchmark = _benchmark(context)
     reasoning = _reasoning_level(context)
+    extra = _system_prompt_extra(context)
     system_prompt = next(
         (item for item in services.system_prompts() if item.id == DEFAULT_SYSTEM_PROMPT_ID), None
     )
@@ -223,6 +231,7 @@ async def run_benchmark(context: ToolContext, arguments: Mapping[str, object]) -
             None,
             tools=True,
             system_prompt=system_prompt,
+            system_prompt_extra=extra,
             reasoning_level=reasoning,
             conversation_id=context.conversation_id or None,
         )
@@ -235,6 +244,7 @@ async def run_benchmark(context: ToolContext, arguments: Mapping[str, object]) -
             "profile": record.alias,
             "benchmark": benchmark.id,
             "reasoning_level": reasoning,
+            "system_prompt_extra": extra,
             "note": "The benchmark runs in the background and stops the router when done. "
             "You will be notified when it finishes; do not poll for it.",
         },
@@ -392,8 +402,8 @@ def evaluation(brief: Brief, record: BenchmarkRunRecord) -> dict[str, object]:
 _LOWER_IS_BETTER = frozenset({"load", "peak RAM", "peak VRAM"})
 def _baseline(context: ToolContext, record: BenchmarkRunRecord) -> BenchmarkRunRecord | None:
     """The run to compare with: this conversation's first comparable run, else the latest
-    comparable one before it. Comparable means completed, earlier, and the same benchmark
-    and reasoning level."""
+    comparable one before it. Comparable means completed, earlier, and the same benchmark,
+    reasoning level and added system prompt text."""
     runs = context.services.benchmark_runs
 
     def comparable(item: BenchmarkRunRecord) -> bool:
@@ -402,6 +412,7 @@ def _baseline(context: ToolContext, record: BenchmarkRunRecord) -> BenchmarkRunR
             and item.state == "completed"
             and item.benchmark_id == record.benchmark_id
             and item.reasoning_level == record.reasoning_level
+            and item.system_prompt_extra == record.system_prompt_extra
             and item.started_at <= record.started_at
         )
 
@@ -489,6 +500,40 @@ async def evaluate_run(context: ToolContext, arguments: Mapping[str, object]) ->
         if decode["change_percent"] is not None:
             summary += f"; decode {decode['change_percent']:+}% vs baseline"
     return json_result(result, summary)
+
+
+def _running(context: ToolContext) -> BenchmarkRunRecord:
+    run_id = context.services.benchmark_runner.active_run_id
+    if run_id is None:
+        raise ToolError("no benchmark is running")
+    return _run(context, run_id)
+
+
+async def describe_stop_benchmark(
+    context: ToolContext, arguments: Mapping[str, object]
+) -> tuple[str, dict[str, object]]:
+    record = _running(context)
+    return f"Stop the benchmark of {record.profile_alias}", {
+        "run": record.id,
+        "profile": record.profile_alias,
+    }
+
+
+async def stop_benchmark(context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
+    record = _running(context)
+    if not await context.services.benchmark_runner.cancel(record.id):
+        raise ToolError(f"run {record.id} has already finished")
+    return json_result(
+        {
+            "run_id": record.id,
+            "profile": record.profile_alias,
+            "state": "cancelled",
+            "note": "The run is saved as cancelled with what it measured so far, and the router "
+            "is stopped. Its figures cover only part of a run, so don't compare them with "
+            "completed runs.",
+        },
+        "benchmark stopped",
+    )
 
 
 async def describe_stop(
@@ -610,6 +655,18 @@ BENCHMARK_TOOLS = (
         ),
         "server.read",
         evaluate_run,
+    ),
+    Tool(
+        "stop_benchmark",
+        "Stop the running benchmark, for example when the operator asks, or when a run has gone "
+        "wrong: the model repeating the same tool call, or its context filling up. The run is "
+        "saved as cancelled with what it measured so far, and the router is stopped. You aren't "
+        "woken while a run goes, only when it ends or the operator writes.",
+        object_schema(),
+        "server.lifecycle.write",
+        stop_benchmark,
+        approval="benchmarks",
+        describe=describe_stop_benchmark,
     ),
     Tool(
         "stop_router",

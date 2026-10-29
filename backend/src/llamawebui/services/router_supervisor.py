@@ -13,6 +13,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 from time import monotonic
 from typing import Any, Protocol, cast
 
@@ -25,6 +26,7 @@ from llamawebui.services.router_telemetry import RouterTelemetry
 
 LOGGER = logging.getLogger("llamawebui.router")
 _EXIT_POLL_SECONDS = 0.2
+_LOG_FILE_POLL_SECONDS = 0.25
 
 
 class RouterOutput(Protocol):
@@ -44,6 +46,22 @@ class RouterProcess(Protocol):
     async def terminate_tree(self, *, force: bool) -> None: ...
 
     async def wait(self) -> int: ...
+
+
+class RouterHooks(Protocol):
+    """Lets a profiler wrap the router command and act around its lifetime."""
+
+    def launch_arguments(self, arguments: Sequence[str]) -> tuple[str, ...]: ...
+
+    def log_file(self) -> Path | None:
+        """Where the router logs when its console output does not reach the supervisor."""
+        ...
+
+    async def router_ready(self) -> None: ...
+
+    async def router_stopping(self) -> None: ...
+
+    def router_exited(self) -> None: ...
 
 
 RouterLauncher = Callable[[Sequence[str]], Awaitable[RouterProcess]]
@@ -184,12 +202,15 @@ class RouterSupervisor:
         log_capacity: int = 500,
         restart_policy: RouterRestartPolicy | None = None,
         clock: Callable[[], float] = monotonic,
+        hooks: RouterHooks | None = None,
     ) -> None:
         self._launcher = launcher
         self._health_probe = health_probe
+        self._hooks = hooks
         self._process: RouterProcess | None = None
         self._watch_task: asyncio.Task[None] | None = None
         self._log_task: asyncio.Task[None] | None = None
+        self._log_file_task: asyncio.Task[None] | None = None
         self._state = RouterState.STOPPED
         self._last_exit_code: int | None = None
         self._logs: deque[str] = deque(maxlen=log_capacity)
@@ -285,6 +306,8 @@ class RouterSupervisor:
         self._last_exit_code = None
         # Each launch, including an automatic restart, starts a new session.
         self._reset_timing()
+        if self._hooks is not None:
+            arguments = self._hooks.launch_arguments(arguments)
         try:
             process = await self._launcher(arguments)
         except Exception:
@@ -300,6 +323,12 @@ class RouterSupervisor:
             self._log_task = asyncio.create_task(self._capture_logs(process.stdout))
             self._log_task.add_done_callback(
                 lambda task: self._background_task_done("log_capture", task)
+            )
+        log_file = self._hooks.log_file() if self._hooks is not None else None
+        if log_file is not None:
+            self._log_file_task = asyncio.create_task(self._follow_log_file(log_file, process))
+            self._log_file_task.add_done_callback(
+                lambda task: self._background_task_done("log_file", task)
             )
 
     async def wait_until_ready(
@@ -331,6 +360,8 @@ class RouterSupervisor:
                 self._set_state(RouterState.CRASHED)
             raise TimeoutError(f"router did not become ready within {timeout_seconds:g}s") from None
         self.mark_ready()
+        if self._hooks is not None:
+            await self._hooks.router_ready()
 
     def mark_ready(self) -> None:
         require_transition(self._state, RouterState.READY)
@@ -360,6 +391,9 @@ class RouterSupervisor:
             self._set_state(RouterState.CRASHED)
             raise RuntimeError("router process is missing")
 
+        # A profiler writes its report now: stopping the router ends it without one.
+        if self._hooks is not None:
+            await self._hooks.router_stopping()
         await process.terminate_tree(force=False)
         try:
             await asyncio.wait_for(asyncio.shield(process.wait()), timeout_seconds)
@@ -376,9 +410,14 @@ class RouterSupervisor:
         if self._log_task is not None:
             await self._log_task
             self._log_task = None
+        if self._log_file_task is not None:
+            await self._log_file_task
+            self._log_file_task = None
 
     async def _watch(self, process: RouterProcess) -> None:
         exit_code = await process.wait()
+        if self._hooks is not None:
+            self._hooks.router_exited()
         if process is not self._process:
             return
         self._last_exit_code = exit_code
@@ -485,14 +524,44 @@ class RouterSupervisor:
 
     async def _capture_logs(self, output: RouterOutput) -> None:
         while line := await output.readline():
-            text = line.decode(errors="replace").rstrip("\r\n")
-            self._append_log(text)
-            self._parse_timing(text)
-            self._telemetry.observe(text)
-            LOGGER.debug(
-                "router_output",
-                extra={"component": "router", "event": "output", "line": redact_text(text)},
-            )
+            self._observe_line(line)
+
+    async def _follow_log_file(self, path: Path, process: RouterProcess) -> None:
+        """Read the router's log file as it grows, until the router exits.
+
+        A profiler can keep the router's console output from reaching the supervisor (nsys
+        profile gives the program a console of its own), so the router also writes its log,
+        including its model processes' lines, to a file.
+        """
+        position = 0
+        partial = b""
+        while True:
+            exited = process.returncode is not None
+            try:
+                with path.open("rb") as log:
+                    log.seek(position)
+                    data = log.read()
+            except FileNotFoundError:
+                data = b""
+            position += len(data)
+            *lines, partial = (partial + data).split(b"\n")
+            for line in lines:
+                self._observe_line(line)
+            if exited:
+                if partial:
+                    self._observe_line(partial)
+                return
+            await asyncio.sleep(_LOG_FILE_POLL_SECONDS)
+
+    def _observe_line(self, line: bytes) -> None:
+        text = line.decode(errors="replace").rstrip("\r\n")
+        self._append_log(text)
+        self._parse_timing(text)
+        self._telemetry.observe(text)
+        LOGGER.debug(
+            "router_output",
+            extra={"component": "router", "event": "output", "line": redact_text(text)},
+        )
 
     def _parse_timing(self, text: str) -> None:
         prompt = re.search(

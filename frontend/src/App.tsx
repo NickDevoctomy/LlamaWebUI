@@ -62,7 +62,7 @@ const navigation = [
   ['Access', KeyRound, 'tokens.read', 'Administration'],
   ['Users', UserRound, 'auth.read', 'Administration'],
   ['Roles', Shield, 'auth.read', 'Administration'],
-  ['Settings', Settings, ['settings.read', 'secrets.read'], 'Administration'],
+  ['Settings', Settings, ['settings.read', 'secrets.read', 'diagnostics.read'], 'Administration'],
 ] as const
 
 const sectionSummaries: Record<string, string> = {
@@ -85,6 +85,12 @@ const sectionSummaries: Record<string, string> = {
 
 function sectionGroup(section: string) {
   return navigation.find(([label]) => label === section)?.[3] ?? 'Account'
+}
+
+/** Minutes and seconds since an ISO time, for work that can take a while. */
+function elapsedSince(iso: string) {
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
 function stateLabel(value?: string) {
@@ -166,7 +172,8 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
     queryKey: ['server'],
     queryFn: api.serverStatus,
     enabled: authReady && canRead('server.read'),
-    refetchInterval: (query) => query.state.data?.state === 'ready' ? 2000 : 5000,
+    // Every second while stopping, so a profiler report being saved shows its progress.
+    refetchInterval: (query) => query.state.data?.state === 'stopping' ? 1000 : query.state.data?.state === 'ready' ? 2000 : 5000,
   })
   const history = useStatusHistory(status.data, status.dataUpdatedAt)
   const [navOpen, setNavOpen] = useState(false)
@@ -250,6 +257,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
   const loadedCount = models.data?.filter((model) => model.status.value === 'loaded').length ?? 0
   // The router reports ready while it is still loading a model, so surface that separately.
   const loadingModel = running ? models.data?.find((model) => model.status.value === 'loading') : undefined
+  const savingReport = status.data?.profiler_saving ?? undefined
   const error = lifecycle.error ?? rollback.error ?? status.error
 
   const activeDownloadCount = downloads.data?.filter((job) => ['queued', 'downloading'].includes(job.state)).length ?? 0
@@ -297,10 +305,10 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
         <header className="topbar">
           <button aria-controls="primary-sidebar" aria-expanded={navOpen} aria-label="Open navigation" className="icon-button nav-toggle" onClick={() => setNavOpen(true)} type="button"><Menu size={18} /></button>
           <div className="status-cluster">
-            <div className="status-primary" data-state={loadingModel ? 'loading' : status.data?.state ?? 'offline'} title={loadingModel ? `Router ${status.data?.state}, loading ${loadingModel.id}` : undefined}>
-              <span className={`state-dot ${loadingModel ? 'loading' : status.data?.state ?? 'offline'}`} />
+            <div className="status-primary" data-state={loadingModel || savingReport ? 'loading' : status.data?.state ?? 'offline'} title={savingReport ? `Router stopping: Nsight Systems is saving the profiler report ${savingReport.name}. The router stops once it is saved.` : loadingModel ? `Router ${status.data?.state}, loading ${loadingModel.id}` : undefined}>
+              <span className={`state-dot ${loadingModel || savingReport ? 'loading' : status.data?.state ?? 'offline'}`} />
               <small>Router</small>
-              <strong>{loadingModel ? 'Loading model' : stateLabel(status.data?.state)}</strong>
+              <strong>{savingReport ? `Saving · ${elapsedSince(savingReport.started_at)}` : loadingModel ? 'Loading model' : stateLabel(status.data?.state)}</strong>
             </div>
             <div className="status-stat"><small>Endpoint</small><span className="mono">{status.data?.endpoint ?? 'Unavailable'}</span></div>
             <div className="status-stat"><small>Runtime</small><span>{runtime?.name ?? 'Not selected'}</span></div>
@@ -413,7 +421,7 @@ function AuthenticatedApp({ user, authReady, onLogout, loggingOut }: { user: Awa
           ) : section === 'Account' ? (
             <AccountPanel user={user} />
           ) : section === 'Settings' ? (
-            <SettingsPanel canManage={canRead('settings.write')} canViewSettings={canRead('settings.read')} canViewSecrets={canRead('secrets.read')} canManageSecrets={canRead('secrets.write')} />
+            <SettingsPanel canManage={canRead('settings.write')} canViewSettings={canRead('settings.read')} canViewSecrets={canRead('secrets.read')} canManageSecrets={canRead('secrets.write')} canViewDiagnostics={canRead('diagnostics.read')} canManageDiagnostics={canRead('diagnostics.write')} />
           ) : section === 'Users' ? (
             <UsersPanel users={users.data ?? []} roles={roles.data ?? []} canManage={user.privileges?.includes('auth.write') ?? true} />
           ) : section === 'Roles' ? (

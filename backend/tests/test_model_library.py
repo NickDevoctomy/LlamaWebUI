@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from conftest import Login
 from fastapi.testclient import TestClient
+from gguf_files import write_gguf
 from sqlalchemy.orm import Session
 
 from llamawebui.app import create_app
@@ -261,32 +262,39 @@ def test_library_discovery_keeps_same_named_models_in_separate_directories(
     assert {model.primary_path.parent for model in discovered} == {first_dir, second_dir}
 
 
-def test_library_reads_scalar_gguf_metadata(tmp_path: Path) -> None:
-    model = tmp_path / "model.gguf"
-    metadata = [("general.name", 4, "Demo Model"), ("general.context_length", 10, 4096)]
-    content = bytearray(
-        b"GGUF"
-        + (3).to_bytes(4, "little")
-        + (0).to_bytes(8, "little")
-        + len(metadata).to_bytes(8, "little")
+def test_library_reads_gguf_metadata_past_arrays_and_floats(tmp_path: Path) -> None:
+    # Real files lead with string keys and carry floats and token arrays before the
+    # context length; the reader must step over all of them.
+    write_gguf(
+        tmp_path / "model.gguf",
+        [
+            ("general.architecture", "qwen3"),
+            ("general.name", "Demo Model"),
+            ("general.tags", ["chat", "demo"]),
+            ("general.sampling.top_p", 0.95),
+            ("qwen3.context_length", 40960),
+            ("qwen3.block_count", 28),
+            ("tokenizer.chat_template", "x" * 5000),
+            ("general.file_type", 15),
+        ],
     )
-    for key, value_type, value in metadata:
-        encoded = key.encode()
-        content.extend(len(encoded).to_bytes(8, "little"))
-        content.extend(encoded)
-        content.extend(value_type.to_bytes(4, "little"))
-        if isinstance(value, str):
-            encoded_value = value.encode()
-            content.extend(len(encoded_value).to_bytes(8, "little"))
-            content.extend(encoded_value)
-        else:
-            content.extend(value.to_bytes(8, "little"))
-    model.write_bytes(content)
     registry = DownloadRegistry(create_database_engine(tmp_path / "app.db"), tmp_path)
 
     discovered = ModelLibrary(registry, tmp_path).discover()
 
-    assert discovered[0].metadata == {"general.name": "Demo Model", "general.context_length": 4096}
+    assert discovered[0].metadata == {
+        "general.architecture": "qwen3",
+        "general.name": "Demo Model",
+        "qwen3.context_length": 40960,
+        "general.file_type": 15,
+    }
+
+
+def test_library_reports_no_metadata_for_an_invalid_gguf(tmp_path: Path) -> None:
+    (tmp_path / "model.gguf").write_bytes(b"GGUF\x07\x00\x00\x00")
+    registry = DownloadRegistry(create_database_engine(tmp_path / "app.db"), tmp_path)
+
+    assert ModelLibrary(registry, tmp_path).discover()[0].metadata == {}
 
 
 def test_logical_model_registry_reconciles_discovered_models(tmp_path: Path) -> None:

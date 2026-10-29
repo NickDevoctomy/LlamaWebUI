@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime, timedelta
@@ -59,6 +60,7 @@ def _completed(
     decode: float,
     generated: int,
     level: str | None = "medium",
+    extra: str | None = None,
 ) -> str:
     app: Any = client.app
     profile = app.state.profile_registry.list()[0]
@@ -67,6 +69,7 @@ def _completed(
         app.state.benchmarks[0],
         None,
         reasoning_level=level,
+        system_prompt_extra=extra,
         conversation_id=conversation_id,
     )
     app.state.benchmark_runs.update(
@@ -121,7 +124,8 @@ def test_runs_use_the_briefs_level_and_record_their_settings(tmp_path: Path, log
     with TestClient(_app(tmp_path, ScriptedClient()), client=LOCAL) as client:
         _, conversation_id = _setup(client, login, tmp_path)
         app: Any = client.app
-        context = _context(client, conversation_id)
+        brief = {**BRIEF, "system_prompt_extra": " Reasoning strength: high\n"}
+        context = _context(client, conversation_id, brief=brief)
         approval = client.portal.call(  # type: ignore[union-attr]
             app.state.assistant_engine.tool("run_benchmark").approval_request,
             context,
@@ -137,11 +141,65 @@ def test_runs_use_the_briefs_level_and_record_their_settings(tmp_path: Path, log
     assert started["reasoning_level"] == "medium"
     assert started["benchmark"] == "tetris-no-details"
     assert record.reasoning_level == "medium"
+    # The brief's added text is trimmed and follows the system prompt on every run.
+    assert started["system_prompt_extra"] == "Reasoning strength: high"
+    assert record.system_prompt_extra == "Reasoning strength: high"
+    assert approval[1]["added to system prompt"] == "Reasoning strength: high"
     assert record.conversation_id == conversation_id
     assert record.settings_fingerprint == fingerprint(record.launch_settings)
     assert approval[1]["reasoning"] == "medium"
     assert detail["benchmark_runs"] == 1
     assert listed[0]["conversation_id"] == conversation_id
+
+
+class _RunningRunner:
+    """Stands in for a runner with a benchmark under way."""
+
+    def __init__(self, run_id: str, *, finished: bool = False) -> None:
+        self.active_run_id: str | None = run_id
+        self.finished = finished
+        self.cancelled: list[str] = []
+
+    async def cancel(self, run_id: str) -> bool:
+        self.cancelled.append(run_id)
+        return not self.finished
+
+
+def test_stop_benchmark_cancels_the_running_run(tmp_path: Path, login: Login) -> None:
+    with TestClient(_app(tmp_path, ScriptedClient()), client=LOCAL) as client:
+        _, conversation_id = _setup(client, login, tmp_path)
+        app: Any = client.app
+        idle = _call(_context(client, conversation_id), client, "stop_benchmark", {})
+        profile = app.state.profile_registry.list()[0]
+        run = app.state.benchmark_runs.create(profile, app.state.benchmarks[0], None)
+
+        def context_with(runner: _RunningRunner) -> ToolContext:
+            services = dataclasses.replace(
+                app.state.assistant_engine.services, benchmark_runner=runner
+            )
+            return ToolContext(
+                services,
+                frozenset(tool.privilege for tool in TOOLS),
+                brief=BRIEF,
+                conversation_id=conversation_id,
+            )
+
+        runner = _RunningRunner(run.id)
+        context = context_with(runner)
+        approval = client.portal.call(  # type: ignore[union-attr]
+            app.state.assistant_engine.tool("stop_benchmark").approval_request, context, {}
+        )
+        stopped = _call(context, client, "stop_benchmark", {})
+        done = context_with(_RunningRunner(run.id, finished=True))
+        late = _call(done, client, "stop_benchmark", {})
+
+    assert idle.ok is False and "no benchmark is running" in idle.text
+    assert approval[0] == "Stop the benchmark of test-model"
+    assert approval[1] == {"run": run.id, "profile": "test-model"}
+    assert stopped.ok is True and stopped.summary == "benchmark stopped"
+    assert json.loads(stopped.text)["state"] == "cancelled"
+    assert runner.cancelled == [run.id]
+    assert late.ok is False and "has already finished" in late.text
 
 
 def test_runs_show_their_settings_and_compare_with_a_baseline(tmp_path: Path, login: Login) -> None:
@@ -186,6 +244,15 @@ def test_runs_show_their_settings_and_compare_with_a_baseline(tmp_path: Path, lo
             _call(context, client, "list_benchmark_runs", {"limit": 2, "benchmark_id": "x"}).text
         )
         all_runs = json.loads(_call(context, client, "list_benchmark_runs", {"limit": 2}).text)
+        other_extra = _completed(
+            client,
+            conversation_id,
+            now + timedelta(minutes=15),
+            decode=90.0,
+            generated=1,
+            extra="Reasoning strength: high",
+        )
+        apart = json.loads(_call(context, client, "evaluate_run", {"run_id": other_extra}).text)
 
     assert detail["reasoning_level"] == "medium"
     assert detail["differs_from_profile_now"] == [
@@ -204,6 +271,8 @@ def test_runs_show_their_settings_and_compare_with_a_baseline(tmp_path: Path, lo
     # The conversation's first run compares with the latest comparable run before it.
     assert first["baseline"]["baseline_run_id"] == before
     assert lonely["baseline"] is None
+    # Different added system prompt text is a different workload, so it has no baseline.
+    assert apart["baseline"] is None
     assert chosen["baseline"]["baseline_run_id"] == before
     assert "cannot be a baseline" in bad_baseline.text
     assert runs == {"runs": [], "total": 0}

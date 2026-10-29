@@ -7,12 +7,12 @@ type Series = {
   key: string
   label: string
   values: (number | null)[]
-  /** How a value reads in the legend and tooltip; index is the sample it came from. */
+  /** How a value reads in the tooltip; index is the sample it came from. */
   format: (value: number, index: number) => string
 }
 
 /** A level drawn across the whole run, such as a 1% high, named in the legend. */
-type Reference = { key: string; label: string; value: number; format: (value: number) => string }
+type Reference = { key: string; label: string; value: number }
 
 /** Where a value sits on the axis, from 0 at the bottom to 1 at the top. */
 type Scale = { position: (value: number) => number; ticks: number[] }
@@ -43,18 +43,10 @@ function segments(times: number[], values: (number | null)[]) {
   return runs
 }
 
-/** The last reading a series has, and where it was taken. */
-function latest(values: (number | null)[]) {
-  for (let index = values.length - 1; index >= 0; index--) {
-    const value = values[index]
-    if (value != null) return { value, index }
-  }
-  return undefined
-}
-
 /**
  * Values over a run's real time, on one shared axis from zero. Hovering shows the
- * readings nearest the pointer; a chart of more than one series names each in a legend.
+ * readings nearest the pointer; a chart of more than one series names each in a legend,
+ * without values: the run's figures are shown above the chart.
  */
 function TimeChart({ title, times, series, max, scale: given, references = [], formatAxis, summary }: { title: string; times: number[]; series: Series[]; max?: number; scale?: Scale; references?: Reference[]; formatAxis: (value: number) => string; summary: string }) {
   const scale = given ?? linearScale(max ?? 1)
@@ -81,11 +73,8 @@ function TimeChart({ title, times, series, max, scale: given, references = [], f
     <figcaption className="time-chart-head">
       <span>{title}</span>
       {!single && <ul className="time-chart-legend">
-        {series.map((item) => {
-          const last = latest(item.values)
-          return <li data-series={item.key} key={item.key}><i aria-hidden="true" />{item.label}{last && <span>{item.format(last.value, last.index)}</span>}</li>
-        })}
-        {references.map((item) => <li data-reference data-series={item.key} key={`${item.key}-reference`}><i aria-hidden="true" />{item.label}<span>{item.format(item.value)}</span></li>)}
+        {series.map((item) => <li data-series={item.key} key={item.key}><i aria-hidden="true" />{item.label}</li>)}
+        {references.map((item) => <li data-reference data-series={item.key} key={`${item.key}-reference`}><i aria-hidden="true" />{item.label}</li>)}
       </ul>}
     </figcaption>
     <div aria-hidden="true" className="time-chart-body">
@@ -192,7 +181,7 @@ export function SpeedChart({ run }: { run: BenchmarkRunDetail }) {
     .filter((item) => item.values.some((value) => value != null))
   const references: Reference[] = phases.flatMap(({ key, label, phase }) => {
     const high = phaseSpeeds(run.stats, phase).high
-    return high != null && series.some((item) => item.key === key) ? [{ key, label: `${label} 1% high`, value: high, format: formatRate }] : []
+    return high != null && series.some((item) => item.key === key) ? [{ key, label: `${label} 1% high`, value: high }] : []
   })
   const values = [...series.flatMap((item) => item.values), ...references.map((item) => item.value)].filter((value): value is number => value != null && value > 0)
   if (!values.length) return null

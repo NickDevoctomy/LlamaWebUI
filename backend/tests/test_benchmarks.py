@@ -210,13 +210,25 @@ async def test_a_benchmark_times_each_step_and_writes_its_result_to_the_profile(
     engine, profile = _database(tmp_path)
     client = FakeBenchmarkClient()
     runner, runs, events = _runner(engine, client)
+    live: list[dict[str, object]] = []
 
+    def watch() -> None:
+        decode = runner.progress(record.id).get("decode")  # type: ignore[union-attr]
+        if isinstance(decode, dict):
+            live.append(dict(decode))
+
+    client.on_chunk = watch
     record = runner.start(profile, BENCHMARK, 256)
     assert runner.active_run_id == record.id
     await runner.wait()
 
     finished = runs.get(record.id)
     assert runner.active_run_id is None
+    # While running, rate follows the recent window and average the run so far, which
+    # ends where the saved average does.
+    assert {entry["rate"] for entry in live} >= {20.0, 40.0}
+    assert live[-1]["average"] == pytest.approx(26.0, abs=0.1)
+    assert all(entry["average"] != entry["rate"] for entry in live[-5:])
     assert events == ["start:runtime-1", "stop"]
     assert client.calls == ["load:qwen", "prompt:qwen:make tetris:256"]
     assert (finished.state, finished.stage, finished.error) == ("completed", "done", None)
@@ -629,6 +641,7 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
                 "benchmark_id": "tetris",
                 "max_tokens": 128,
                 "system_prompt_id": "coding-agent",
+                "system_prompt_extra": "Reasoning strength: high",
                 "tool_names": ["write_file", "task_complete"],
                 "verbose_log": True,
             },
@@ -671,6 +684,7 @@ def test_benchmark_api_runs_a_profile_and_keeps_results_after_delete(
     assert run["reasoning_level"] is None
     assert run["system_prompt_id"] == "coding-agent"
     assert "finish_job" in str(run["system_prompt"])
+    assert run["system_prompt_extra"] == "Reasoning strength: high"
     assert run["tools"] is True
     assert run["verbose_log"] is True
     # The old name for finish_job still works, so an old run can be run again.

@@ -70,6 +70,7 @@ function BriefDialog({ initial, initialMessage = '', creating, title, onClose, o
   const [benchmarkId, setBenchmarkId] = useState(initial?.benchmark_id ?? '')
   // Undefined until chosen, so a new brief takes the level of the profile's last result.
   const [reasoning, setReasoning] = useState<string | undefined>(initial ? initial.reasoning_level ?? '' : undefined)
+  const [systemPromptExtra, setSystemPromptExtra] = useState(initial?.system_prompt_extra ?? '')
   const [priority, setPriority] = useState<BriefTarget[]>(initial?.priority ?? DEFAULT_PRIORITY)
   const [autonomous, setAutonomous] = useState(initial?.autonomous ?? true)
   const [conversationTitle, setConversationTitle] = useState('')
@@ -111,6 +112,7 @@ function BriefDialog({ initial, initialMessage = '', creating, title, onClose, o
     parallel_slots: numberOrNull(slots) ?? 1,
     benchmark_id: benchmarkId || null,
     reasoning_level: level || null,
+    system_prompt_extra: systemPromptExtra.trim() || null,
     priority,
     autonomous,
   }, conversationTitle.trim(), firstMessage.trim())
@@ -152,6 +154,7 @@ function BriefDialog({ initial, initialMessage = '', creating, title, onClose, o
         <div className="brief-grid">
           <label className="form-field"><span>Benchmark</span><select onChange={(event) => setBenchmarkId(event.target.value)} value={benchmarkId}><option value="">Default{benchmarks.data?.default_benchmark_id ? ` (${benchmarks.data.benchmarks.find((item) => item.id === benchmarks.data?.default_benchmark_id)?.title ?? benchmarks.data.default_benchmark_id})` : ''}</option>{(benchmarks.data?.benchmarks ?? []).map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select><small>Judges every change.</small></label>
           <label className="form-field"><span>Reasoning</span><select onChange={(event) => setReasoning(event.target.value)} value={level}><option value="">Model default</option>{(benchmarks.data?.reasoning_levels ?? []).map((item) => <option key={item} value={item}>{item}</option>)}</select><small>{reasoning === undefined && measuredLevel ? 'As the profile was last measured.' : 'Every run uses it.'}</small></label>
+          <label className="form-field brief-wide"><span>Added to system prompt <small>(optional)</small></span><textarea className="mono" maxLength={4000} onChange={(event) => setSystemPromptExtra(event.target.value)} placeholder="e.g. Reasoning strength: high" rows={2} spellCheck={false} value={systemPromptExtra} /><small>Sent after the system prompt on every run. For a model that reads its reasoning level from the system prompt, put its line here and leave Reasoning on Model default.</small></label>
         </div>
         <div className="form-field"><span>When targets conflict, favour</span>
           <ol className="priority-list">{priority.map((target, index) => <li key={target}>

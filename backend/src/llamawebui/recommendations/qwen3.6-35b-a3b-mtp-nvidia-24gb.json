@@ -1,0 +1,64 @@
+{
+  "format": "llamawebui.recommendation.v1",
+  "version": 1,
+  "id": "qwen3.6-35b-a3b-mtp-ud-q4-k-xl-nvidia-24gb",
+  "label": "Q4 · 24 GB",
+  "title": "Qwen 3.6 35B A3B with MTP",
+  "summary": "The 35B mixture-of-experts model (3B active) in Unsloth's UD-Q4_K_XL build with its built-in MTP head, on a 24 GB NVIDIA card. Two-token speculative decoding, 128K context and flash attention. Measured about 120 tok/s decode and 1,860 tok/s prefill.",
+  "model": {
+    "repo_id": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+    "quantization": "UD-Q4_K_XL",
+    "revision": null
+  },
+  "tested_on": {
+    "label": "NVIDIA GPU with 24 GB VRAM (tested on an RTX 4090), 128 GB system memory",
+    "gpu_pattern": "NVIDIA",
+    "memory_gb": 128,
+    "unified_memory": false,
+    "backend": "cuda",
+    "notes": "Thread pinning measured on an Intel Core i7-14700F: 16 threads on its P-core threads (0-15)."
+  },
+  "requirements": {
+    "memory_gb": 16,
+    "vram_gb": 24,
+    "backends": ["cuda"]
+  },
+  "profile": {
+    "alias": "qwen3.6-35b-a3b-mtp",
+    "description": "Qwen 3.6 35B A3B UD-Q4_K_XL with MTP for a 24 GB NVIDIA GPU. Speculative decoding drafts 2 tokens from the built-in MTP head (4 overran the context in testing). 128K context, flash attention and 16 threads pinned to cores 0-15. Measured about 120 tok/s decode and 1,860 tok/s prefill. Uses nearly all VRAM, so it runs on its own.",
+    "exclusive": true,
+    "arguments": [
+      { "id": "ctx-size", "value": 131072 },
+      { "id": "ubatch-size", "value": 4096 },
+      { "id": "flash-attn", "value": "on" },
+      { "id": "threads", "value": 16 },
+      { "id": "cpu-range", "value": "0-15" },
+      { "id": "cpu-strict", "value": "1" },
+      { "id": "op-offload", "value": true },
+      { "id": "spec-type", "value": ["draft-mtp"] },
+      { "id": "spec-draft-n-max", "value": 2 }
+    ]
+  },
+  "variants": [
+    {
+      "id": "qwen3.6-35b-a3b-mtp-q8-0-nvidia-24gb",
+      "label": "Q8 · 24 GB",
+      "title": "Qwen 3.6 35B A3B with MTP",
+      "summary": "The 35B mixture-of-experts model (3B active) in the 8-bit Q8_0 build with its built-in MTP head, on a 24 GB NVIDIA card. Higher quality than Q4, but --fit keeps a large share of the model in system memory, so it is much slower: about 54 tok/s decode and 540 tok/s prefill.",
+      "model": {
+        "quantization": "Q8_0"
+      },
+      "requirements": {
+        "memory_gb": 32,
+        "vram_gb": 24
+      },
+      "profile": {
+        "alias": "qwen3.6-35b-a3b-mtp-q8",
+        "description": "Qwen 3.6 35B A3B Q8_0 with MTP for a 24 GB NVIDIA GPU. The 35 GB model does not fit in VRAM, so --fit places what fits on the GPU and keeps the rest in system memory. Speculative decoding drafts 2 tokens from the built-in MTP head. 128K context, flash attention and 16 threads pinned to cores 0-15. Measured about 54 tok/s decode and 540 tok/s prefill. Uses nearly all VRAM, so it runs on its own.",
+        "arguments": [
+          { "id": "fit", "value": "on" }
+        ]
+      }
+    }
+  ]
+}

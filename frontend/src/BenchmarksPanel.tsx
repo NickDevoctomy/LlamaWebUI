@@ -379,10 +379,16 @@ function ContextFigure({ run }: { run: BenchmarkRun }) {
   return <dd data-full={use.percent >= 95 || undefined} title={`${use.used.toLocaleString()} of ${use.size.toLocaleString()} tokens${use.live ? ' now' : ' at most'}`}>{use.percent}%</dd>
 }
 
+/** The first line of the text a run added to its system prompt, short enough for a run's summary. */
+function extraSummary(text: string) {
+  const line = text.split('\n')[0].trim()
+  return line.length > 40 || text.includes('\n') ? `${line.slice(0, 40).trimEnd()}…` : line
+}
+
 /** The same benchmark and settings as an earlier run; the profile is whatever it is now. */
 function retryRequest(run: BenchmarkRun) {
   // Runs from before tools could be chosen had them all, which null asks for.
-  return { profile_id: run.profile_id, benchmark_id: run.benchmark_id, max_tokens: run.max_tokens, tools: run.tools, tool_names: run.tools ? run.tool_names ?? null : [], system_prompt_id: run.system_prompt_id, reasoning_level: run.reasoning_level, verbose_log: Boolean(run.verbose_log), compact_context: Boolean(run.compact_context) }
+  return { profile_id: run.profile_id, benchmark_id: run.benchmark_id, max_tokens: run.max_tokens, tools: run.tools, tool_names: run.tools ? run.tool_names ?? null : [], system_prompt_id: run.system_prompt_id, system_prompt_extra: run.system_prompt_extra ?? null, reasoning_level: run.reasoning_level, verbose_log: Boolean(run.verbose_log), compact_context: Boolean(run.compact_context) }
 }
 
 function RetryButton({ run, profile, blocker, pending, onRetry }: { run: BenchmarkRun; profile?: Profile; blocker?: string; pending: boolean; onRetry: () => void }) {
@@ -505,8 +511,8 @@ const PHASES = [['prefill', 'Prefill'], ['decode', 'Decode']] as const
 /** One phase's 1% low, average and 1% high, stacked under its name, for the run list. */
 function SpeedStack({ run, phase, label }: { run: BenchmarkRun; phase: 'prefill' | 'decode'; label: string }) {
   const speeds = phaseSpeeds(run.stats, phase)
-  // While a run is going only the current speed is known.
-  const average = speeds.average ?? run.live?.[phase]?.rate
+  // While a run is going, the average so far.
+  const average = speeds.average ?? run.live?.[phase]?.average
   return <div className="benchmark-speed">
     <dt>{label} <span>tok/s</span></dt>
     <dd>{SPEED_FIGURES.map((figure) => <span key={figure.key} title={figure.title}><small>{figure.label}</small>{formatRateValue(figure.key === 'average' ? average : speeds[figure.key])}</span>)}</dd>
@@ -579,6 +585,7 @@ function RunDetailBody({ run, onOpenArtifact }: { run: BenchmarkRunDetail; onOpe
     <section className="benchmark-text"><h3>Output</h3><pre>{run.output || (run.state === 'running' ? 'Waiting for output…' : 'No output.')}</pre></section>
     {run.reasoning && <details className="benchmark-text"><summary>Reasoning ({run.reasoning.length.toLocaleString()} characters)</summary><pre>{run.reasoning}</pre></details>}
     {run.system_prompt && <details className="benchmark-text"><summary>System prompt{run.system_prompt_id ? ` (${run.system_prompt_id})` : ''}</summary><pre>{run.system_prompt}</pre></details>}
+    {run.system_prompt_extra && <details className="benchmark-text"><summary>Added to system prompt</summary><pre>{run.system_prompt_extra}</pre></details>}
     <details className="benchmark-text"><summary>Prompt</summary><pre>{run.prompt}</pre></details>
   </>
 }
@@ -601,6 +608,8 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   const [systemPromptId, setSystemPromptId] = useState<string>()
   // '' sends no level, so the model's chat template picks its own default.
   const [reasoningLevel, setReasoningLevel] = useState('')
+  // Sent after the chosen system prompt; blank adds nothing.
+  const [systemPromptExtra, setSystemPromptExtra] = useState('')
   const [verboseLog, setVerboseLog] = useState(false)
   const [compactContext, setCompactContext] = useState(true)
   const [viewing, setViewing] = useState<string>()
@@ -688,7 +697,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
   return <>
     <section className="data-panel benchmark-run-panel" ref={runPanel}>
       <div className="panel-heading"><div><h2>Run a benchmark</h2><p>Starts the server, loads one profile, sends the prompt and measures it, then stops the server again.</p></div><Timer size={18} /></div>
-      <form className="benchmark-form" onSubmit={(event) => { event.preventDefault(); start.mutate({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools: chosenTools.length > 0, tool_names: chosenTools, system_prompt_id: systemPrompt?.id ?? null, reasoning_level: reasoningLevel || null, verbose_log: chosenTools.length > 0 && verboseLog, compact_context: chosenTools.length > 0 && compactContext }) }}>
+      <form className="benchmark-form" onSubmit={(event) => { event.preventDefault(); start.mutate({ profile_id: profile!.id, benchmark_id: benchmark!.id, max_tokens: tokens, tools: chosenTools.length > 0, tool_names: chosenTools, system_prompt_id: systemPrompt?.id ?? null, system_prompt_extra: systemPromptExtra.trim() || null, reasoning_level: reasoningLevel || null, verbose_log: chosenTools.length > 0 && verboseLog, compact_context: chosenTools.length > 0 && compactContext }) }}>
         <label className="compare-pick"><span>Profile</span><select aria-label="Profile" onChange={(event) => setProfileId(event.target.value)} value={profile?.id ?? ''}>
           {profiles.map((item) => <option disabled={!item.enabled} key={item.id} value={item.id}>{item.alias}{item.enabled ? '' : ' (disabled)'}</option>)}
         </select></label>
@@ -711,9 +720,10 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
           <option value="">Model default</option>
           {(catalog.data?.reasoning_levels ?? []).map((level) => <option key={level} value={level}>{reasoningLabel(level)}</option>)}
         </select></label>
+        <label className="compare-pick benchmark-extra"><span>Added to system prompt</span><textarea aria-label="Added to system prompt" maxLength={4000} onChange={(event) => setSystemPromptExtra(event.target.value)} placeholder="Optional, e.g. Reasoning strength: high" rows={2} spellCheck={false} value={systemPromptExtra} /></label>
       </div>
-      <p className="benchmark-hint">Reasoning levels are passed to the model&apos;s chat template, which decides what each one means. Model default is whatever the template picks when nothing is sent, which can be its highest level. A level the template does not support fails the run with its message.</p>
-      {benchmark && <details className="benchmark-prompt"><summary>{systemPrompt ? 'System prompt and prompt' : 'Prompt'}</summary>{systemPrompt && <pre aria-label="System prompt text">{systemPrompt.text}</pre>}<pre>{benchmark.prompt}</pre></details>}
+      <p className="benchmark-hint">Reasoning levels are passed to the model&apos;s chat template, which decides what each one means. Model default is whatever the template picks when nothing is sent, which can be its highest level. A level the template does not support fails the run with its message. A model that reads its level from the system prompt instead, such as <code>Reasoning strength: high</code>, takes that line under Added to system prompt, with Reasoning left on Model default.</p>
+      {benchmark && <details className="benchmark-prompt"><summary>{systemPrompt || systemPromptExtra.trim() ? 'System prompt and prompt' : 'Prompt'}</summary>{systemPrompt && <pre aria-label="System prompt text">{systemPrompt.text}</pre>}{systemPromptExtra.trim() && <pre aria-label="Added system prompt text">{systemPromptExtra.trim()}</pre>}<pre>{benchmark.prompt}</pre></details>}
       {(blocker || start.error) && <p className={start.error ? 'form-error' : 'benchmark-note'} role={start.error ? 'alert' : 'status'}><AlertCircle size={15} /> {start.error?.message ?? blocker}</p>}
       {active && <div className="benchmark-active">
         <div className="benchmark-active-head">
@@ -739,7 +749,7 @@ export function BenchmarksPanel({ profiles, routerState, canRun }: { profiles: P
           {canRun && <input aria-label={`Select run ${run.benchmark_title} on ${run.profile_alias}, ${formatWhen(run.started_at)}`} checked={picked.includes(run.id)} className="benchmark-run-check" disabled={run.state === 'running'} onChange={(event) => toggle(run.id, event.target.checked)} type="checkbox" />}
           <span className="benchmark-run-copy">
             <strong><button aria-label={`View run ${run.benchmark_title} on ${run.profile_alias}`} className="benchmark-run-title" onClick={() => setViewing(run.id)} type="button">{run.benchmark_title} · {run.profile_alias}</button> <span className="profile-tag">v{run.profile_version}</span> <OutcomeTag run={run} /></strong>
-            <span>{formatWhen(run.started_at)}{run.system_prompt_id ? ` · ${run.system_prompt_id}` : ''}{run.reasoning_level ? ` · reasoning ${reasoningLabel(run.reasoning_level).toLowerCase()}` : ''}{run.stats.files_written ? ` · ${run.stats.files_written} ${run.stats.files_written === 1 ? 'file' : 'files'}` : ''}{run.stats.compactions ? ` · ${run.stats.compactions} ${run.stats.compactions === 1 ? 'compaction' : 'compactions'}` : ''}{run.error && run.state === 'failed' ? ` · ${run.error}` : ''}</span>
+            <span>{formatWhen(run.started_at)}{run.system_prompt_id ? ` · ${run.system_prompt_id}` : ''}{run.system_prompt_extra ? ` · + ${extraSummary(run.system_prompt_extra)}` : ''}{run.reasoning_level ? ` · reasoning ${reasoningLabel(run.reasoning_level).toLowerCase()}` : ''}{run.stats.files_written ? ` · ${run.stats.files_written} ${run.stats.files_written === 1 ? 'file' : 'files'}` : ''}{run.stats.compactions ? ` · ${run.stats.compactions} ${run.stats.compactions === 1 ? 'compaction' : 'compactions'}` : ''}{run.error && run.state === 'failed' ? ` · ${run.error}` : ''}</span>
           </span>
           <dl className="benchmark-run-figures">
             <div><dt>Total</dt><dd>{formatSeconds(run.stats.total_seconds ?? run.live?.total)}</dd></div>

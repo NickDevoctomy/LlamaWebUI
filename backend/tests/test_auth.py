@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 
 from llamawebui.app import create_app
@@ -445,3 +447,24 @@ def test_user_deletion_requires_protected_account_rules(tmp_path: Path) -> None:
         admin_id = client.get("/api/auth/users").json()[0]["id"]
         protected = client.delete(f"/api/auth/users/{admin_id}", headers=headers)
         assert protected.status_code == 403
+
+
+def test_default_password_check_runs_once_per_stored_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verified: list[str] = []
+    verify = PasswordHasher.verify
+
+    def counting_verify(self: PasswordHasher, hash: str, password: str | bytes) -> bool:
+        verified.append(str(password))
+        return verify(self, hash, password)
+
+    monkeypatch.setattr(PasswordHasher, "verify", counting_verify)
+    with _client(tmp_path) as client:
+        client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        verified.clear()
+        responses = [client.get("/api/auth/me") for _ in range(5)]
+
+    assert all(response.json()["default_credentials"] is True for response in responses)
+    # Argon2 is deliberately slow; requests reuse the answer for the same stored hash.
+    assert len(verified) <= 1
