@@ -120,6 +120,16 @@ function renderApp({
 }
 
 describe('App', () => {
+  it('shows a profiler report being saved while the router stops', async () => {
+    const startedAt = new Date(Date.now() - 65_000).toISOString()
+    renderApp({
+      serverStatus: { ...(responses['/api/server/status'] as object), state: 'stopping', pid: 42, profiler_saving: { name: 'run.nsys-rep', started_at: startedAt } },
+    })
+
+    const label = await screen.findByText(/^Saving · 1:0\d$/)
+    expect(label.closest('.status-primary')).toHaveAttribute('title', expect.stringContaining('saving the profiler report run.nsys-rep'))
+  })
+
   it('hides navigation sections without the matching read privilege', async () => {
     renderApp({
       currentUser: {

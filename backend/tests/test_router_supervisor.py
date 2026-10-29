@@ -576,3 +576,101 @@ async def test_explicit_stop_cancels_pending_restart(tmp_path: Path) -> None:
 
     assert launch_count == 1
     assert supervisor.state is RouterState.STOPPED
+
+
+class RecordingHooks:
+    def __init__(self, process: FakeProcess) -> None:
+        self.process = process
+        self.events: list[str] = []
+
+    def launch_arguments(self, arguments: Sequence[str]) -> tuple[str, ...]:
+        self.events.append("launch")
+        return ("profiler", *arguments)
+
+    async def router_ready(self) -> None:
+        self.events.append("ready")
+
+    async def router_stopping(self) -> None:
+        # The report must be written while the router is still running.
+        self.events.append("stopping" if self.process.returncode is None else "stopping-late")
+
+    def router_exited(self) -> None:
+        self.events.append("exited")
+
+    def log_file(self) -> Path | None:
+        return None
+
+
+class LogFileHooks(RecordingHooks):
+    def __init__(self, process: FakeProcess, path: Path) -> None:
+        super().__init__(process)
+        self.path = path
+
+    def log_file(self) -> Path | None:
+        return self.path
+
+
+async def test_supervisor_hooks_wrap_the_command_and_run_before_stop(tmp_path: Path) -> None:
+    process = FakeProcess()
+    hooks = RecordingHooks(process)
+    launched: list[tuple[str, ...]] = []
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        launched.append(tuple(arguments))
+        return process
+
+    async def healthy(host: str, port: int) -> bool:
+        return True
+
+    supervisor = RouterSupervisor(launcher, healthy, hooks=hooks)
+    launch = launch_configuration(tmp_path)
+    await supervisor.start(launch)
+    await supervisor.wait_until_ready(launch)
+    await supervisor.stop()
+
+    assert launched == [("profiler", *launch.arguments())]
+    # The supervisor still reports the router's own command.
+    assert supervisor.launch_arguments == launch.arguments()
+    assert hooks.events == ["launch", "ready", "stopping", "exited"]
+
+
+async def test_supervisor_reads_the_router_log_file_a_profiler_asks_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("llamawebui.services.router_supervisor._LOG_FILE_POLL_SECONDS", 0.01)
+    process = FakeProcess()
+    log = tmp_path / "router.log"
+
+    async def launcher(arguments: Sequence[str]) -> RouterProcess:
+        return process
+
+    supervisor = RouterSupervisor(launcher, hooks=LogFileHooks(process, log))
+    await supervisor.start(launch_configuration(tmp_path))
+    await asyncio.sleep(0.05)
+    # The file appears after the router starts, and lines can arrive half-written.
+    log.write_bytes(
+        b"[ 5001] srv    load_model: initializing, n_slots = 1, n_ctx_slot = 4096\r\n[ 5001] slot"
+    )
+    for _ in range(50):
+        if supervisor.context:
+            break
+        await asyncio.sleep(0.01)
+    assert supervisor.context[0]["slots"] == [{"id": 0, "used": 0, "total": 4096}]
+
+    with log.open("ab") as handle:
+        handle.write(b" print_timing: id  0 | task 3 | n_gen = 40, tg =  50.00 t/s\n")
+    for _ in range(50):
+        if supervisor.timing["decode_tokens_per_second"] is not None:
+            break
+        await asyncio.sleep(0.01)
+    assert supervisor.timing["decode_tokens_per_second"] == 50.0
+
+    with log.open("ab") as handle:
+        handle.write(b"last line without a newline")
+    await supervisor.stop()
+
+    assert supervisor.logs[-3:] == (
+        "[ 5001] srv    load_model: initializing, n_slots = 1, n_ctx_slot = 4096",
+        "[ 5001] slot print_timing: id  0 | task 3 | n_gen = 40, tg =  50.00 t/s",
+        "last line without a newline",
+    )

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, Field, field_validator
@@ -190,6 +190,7 @@ from llamawebui.services.router_client import (
 )
 from llamawebui.services.router_event_sync import RouterEventSynchronizer
 from llamawebui.services.router_port import RouterPortProbe, probe_router_port
+from llamawebui.services.router_profiler import ProfilerConfig, ProfilerError, RouterProfiler
 from llamawebui.services.router_supervisor import RouterRestartPolicy, RouterSupervisor
 from llamawebui.services.runtime_probe import RuntimeProber, probe_runtime
 from llamawebui.services.runtime_registry import (
@@ -373,6 +374,16 @@ class SecretUpdateRequest(BaseModel):
 
 class SecuritySettingsRequest(BaseModel):
     allow_remote_secrets: bool
+
+
+class ProfilerSettingsRequest(BaseModel):
+    enabled: bool
+    nsys_path: str = Field(default="", max_length=1000)
+    trace: str = Field(min_length=1, max_length=200)
+    cpu_sampling: bool
+    sampling_hz: int = 250
+    capture_on_start: bool
+    graph_nodes: bool = False
 
 
 class OpenRouterModelRequest(BaseModel):
@@ -710,6 +721,7 @@ def _server_payload(
     supervisor: RouterSupervisor,
     settings: Settings,
     memory: list[dict[str, object]] | None = None,
+    profiler_saving: dict[str, str] | None = None,
 ) -> dict[str, object]:
     return {
         "state": supervisor.state,
@@ -722,6 +734,8 @@ def _server_payload(
         "context": supervisor.context,
         "arguments": supervisor.launch_arguments,
         "system": _system_metrics(settings.data_dir),
+        # A profiler report being written; the router stops once it is saved.
+        "profiler_saving": profiler_saving,
     }
 
 
@@ -1112,7 +1126,11 @@ def create_app(
                 "recommended_profiles_linked",
                 extra={"component": "profiles", "event": "linked", "aliases": list(linked)},
             )
+        app.state.router_profiler = RouterProfiler(
+            app.state.settings_store, app_settings.data_dir / "debug" / "captures"
+        )
         app.state.router_supervisor = router_supervisor or RouterSupervisor(
+            hooks=app.state.router_profiler,
             restart_policy=RouterRestartPolicy(
                 max_attempts=app_settings.router_restart_max_attempts,
                 window_seconds=app_settings.router_restart_window_seconds,
@@ -1615,6 +1633,73 @@ def create_app(
         )
         return {"path": str(path), "format": 1}
 
+    def _profiler(request: Request) -> RouterProfiler:
+        return cast(RouterProfiler, request.app.state.router_profiler)
+
+    def profiler_conflict(error: ProfilerError) -> HTTPException:
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+
+    @app.get("/api/diagnostics/profiler")
+    async def profiler_status(request: Request) -> dict[str, object]:
+        return await _profiler(request).status()
+
+    @app.put("/api/diagnostics/profiler")
+    async def update_profiler(
+        settings_request: ProfilerSettingsRequest, request: Request
+    ) -> dict[str, object]:
+        profiler = _profiler(request)
+        nsys_path = settings_request.nsys_path.strip()
+        if nsys_path and not Path(nsys_path).is_file():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Nsight Systems was not found at {nsys_path}",
+            )
+        try:
+            config = ProfilerConfig(**{**settings_request.model_dump(), "nsys_path": nsys_path})
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+            ) from error
+        profiler.save(config)
+        return await profiler.status()
+
+    @app.post("/api/diagnostics/profiler/capture/start")
+    async def start_profiler_capture(request: Request) -> dict[str, object]:
+        profiler = _profiler(request)
+        try:
+            await profiler.start_capture()
+        except ProfilerError as error:
+            raise profiler_conflict(error) from error
+        return await profiler.status()
+
+    @app.post("/api/diagnostics/profiler/capture/stop")
+    async def stop_profiler_capture(request: Request) -> dict[str, object]:
+        profiler = _profiler(request)
+        try:
+            await profiler.stop_capture()
+        except ProfilerError as error:
+            raise profiler_conflict(error) from error
+        return await profiler.status()
+
+    @app.get("/api/diagnostics/profiler/captures/{name}")
+    async def download_profiler_capture(name: str, request: Request) -> FileResponse:
+        try:
+            path = _profiler(request).capture_path(name)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+
+    @app.delete("/api/diagnostics/profiler/captures/{name}")
+    async def delete_profiler_capture(name: str, request: Request) -> dict[str, object]:
+        profiler = _profiler(request)
+        try:
+            profiler.delete_capture(name)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ProfilerError as error:
+            raise profiler_conflict(error) from error
+        return await profiler.status()
+
     @app.get("/api/events")
     async def stream_events(
         request: Request,
@@ -1664,7 +1749,8 @@ def create_app(
         supervisor = cast(RouterSupervisor, request.app.state.router_supervisor)
         sampler = cast(ProcessMemorySampler, request.app.state.process_memory)
         memory = await asyncio.to_thread(sampler.sample, supervisor.pid)
-        return _server_payload(supervisor, app_settings, memory)
+        profiler = cast(RouterProfiler, request.app.state.router_profiler)
+        return _server_payload(supervisor, app_settings, memory, profiler.saving())
 
     @app.get("/api/server/runs")
     async def list_server_runs(request: Request) -> list[dict[str, object]]:

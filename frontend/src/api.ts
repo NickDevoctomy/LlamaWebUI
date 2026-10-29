@@ -16,6 +16,8 @@ export interface ServerStatus {
   memory?: ModelMemory[]
   /** Tokens held in each model slot's context. */
   context?: ModelContext[]
+  /** Nsight Systems is writing this report; the router stops once it is saved. */
+  profiler_saving?: { name: string; started_at: string } | null
   system: {
     cpu_percent: number
     ram_used_bytes: number
@@ -361,6 +363,43 @@ export interface LibraryList<T> {
   documents: T[]
   /** Why this browser cannot publish documents into the repository, or null if it can. */
   publish_problem: string | null
+}
+
+export interface ProfilerConfig {
+  /** Start the router under Nsight Systems. */
+  enabled: boolean
+  /** Empty uses the newest Nsight Systems install found. */
+  nsys_path: string
+  /** nsys --trace, e.g. cuda,nvtx,cublas. */
+  trace: string
+  /** Record CPU call stacks; needs the backend to run as administrator. */
+  cpu_sampling: boolean
+  /** CPU samples per second, 100-8000. */
+  sampling_hz: number
+  /** Start a capture as soon as the router is ready. */
+  capture_on_start: boolean
+  /** Record each kernel inside CUDA graphs; slows the router down. */
+  graph_nodes: boolean
+}
+
+export interface ProfilerCapture {
+  name: string
+  path: string
+  size: number
+  created_at: string
+}
+
+export interface ProfilerStatus {
+  config: ProfilerConfig
+  nsys: { path: string | null; version: string | null }
+  elevated: boolean
+  /** The running router was started under Nsight Systems. */
+  router_profiled: boolean
+  capture: { name: string; started_at: string } | null
+  /** The report nsys is writing now; long for captures with CPU call stacks. */
+  saving: { name: string; started_at: string } | null
+  last_error: string | null
+  captures: ProfilerCapture[]
 }
 
 export interface SecuritySettings {
@@ -1059,6 +1098,12 @@ export const api = {
   installEslint: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools/eslint', { method: 'POST' }),
   removeEslint: () => request<{ eslint: LinterStatus }>('/api/settings/benchmark-tools/eslint', { method: 'DELETE' }),
   securitySettings: () => request<SecuritySettings>('/api/settings/security'),
+  profiler: () => request<ProfilerStatus>('/api/diagnostics/profiler'),
+  updateProfiler: (config: ProfilerConfig) => request<ProfilerStatus>('/api/diagnostics/profiler', { method: 'PUT', body: JSON.stringify(config) }),
+  startCapture: () => request<ProfilerStatus>('/api/diagnostics/profiler/capture/start', { method: 'POST' }),
+  stopCapture: () => request<ProfilerStatus>('/api/diagnostics/profiler/capture/stop', { method: 'POST' }),
+  deleteCapture: (name: string) => request<ProfilerStatus>(`/api/diagnostics/profiler/captures/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  captureUrl: (name: string) => `/api/diagnostics/profiler/captures/${encodeURIComponent(name)}`,
   updateSecuritySettings: (allowRemoteSecrets: boolean) => request<SecuritySettings>('/api/settings/security', { method: 'PUT', body: JSON.stringify({ allow_remote_secrets: allowRemoteSecrets }) }),
   openRouterModels: (query: string) => request<{ models: OpenRouterModel[]; total: number }>(`/api/settings/openrouter/models?${new URLSearchParams({ q: query })}`),
   openRouterModel: () => request<{ model: SelectedOpenRouterModel | null }>('/api/settings/openrouter/model'),

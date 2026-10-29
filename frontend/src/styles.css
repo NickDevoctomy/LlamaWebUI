@@ -316,6 +316,7 @@ h1 { margin: 0; color: var(--fg); font-size: 32px; font-weight: 700; line-height
 .button.row-button { min-height: 30px; padding: 0 10px; color: var(--fg-2); background: transparent; border-color: var(--line-strong); font-size: 12.5px; }
 .button.row-button:hover:not(:disabled) { color: var(--fg); background: var(--hover); }
 label.button { cursor: pointer; }
+a.button { text-decoration: none; }
 .icon-button { width: 34px; height: 34px; flex: none; padding: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); display: grid; place-items: center; color: var(--fg-2); background: var(--surface); }
 .icon-button:hover:not(:disabled) { color: var(--fg); border-color: var(--line-strong); background: var(--hover); }
 .icon-button.small { width: 30px; height: 30px; border-color: transparent; background: transparent; }
