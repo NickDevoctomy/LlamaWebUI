@@ -5,6 +5,7 @@
 .DESCRIPTION
     Produces a profiler-friendly build: full optimisation plus PDBs for every exe/dll, and
     -lineinfo on the CUDA kernels so Nsight Compute can map kernels back to source lines.
+    With -Release it produces a plain CMake Release build instead (no PDBs, no -lineinfo).
 
     Deploys llama-server, llama-bench and their DLLs, plus the CUDA runtime DLLs, so the folder
     is self-contained. The first time, register the printed llama-server.exe path in the app
@@ -16,20 +17,23 @@
 .EXAMPLE
     .\scripts\profiling\build-llama-runtime.ps1
     .\scripts\profiling\build-llama-runtime.ps1 -Clean
+    .\scripts\profiling\build-llama-runtime.ps1 -Release -SourceDir .\temp\llama.cpp -Name krafton-llama.cpp
     .\scripts\profiling\build-llama-runtime.ps1 -SourceDir .\temp\llama.cpp-b12000-cuda -CudaArchitectures "89;120"
 #>
 [CmdletBinding()]
 param(
     # Paths default to the repository root, two folders up from this script.
     [string]$SourceDir = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "temp\llama.cpp-b11815-cuda"),
-    # Folder name under data\runtimes. Defaults to "<tag>-cuda-debugsym".
+    # Folder name under data\runtimes. Defaults to "<tag>-cuda-debugsym" ("<tag>-cuda" with -Release).
     [string]$Name,
     [string]$DataDir = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "data"),
     # 89 = RTX 40xx. One architecture keeps the CUDA compile time down.
     [string]$CudaArchitectures = "89",
     [string[]]$Targets = @("llama-server", "llama-bench"),
     # Wipe the CMake build folder first (needed after changing CMake options).
-    [switch]$Clean
+    [switch]$Clean,
+    # Plain Release build: no debug symbols or CUDA line info.
+    [switch]$Release
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,9 +57,10 @@ if (-not (Test-Path (Join-Path $SourceDir "CMakeLists.txt"))) {
 
 $tag = (& git -C $SourceDir tag --points-at HEAD) | Select-Object -First 1
 if (-not $tag) { $tag = (& git -C $SourceDir rev-parse --short HEAD) }
-if (-not $Name) { $Name = "$tag-cuda-debugsym" }
+if (-not $Name) { $Name = if ($Release) { "$tag-cuda" } else { "$tag-cuda-debugsym" } }
+$buildType = if ($Release) { "Release" } else { "RelWithDebInfo" }
 
-$buildDir = Join-Path $SourceDir "build-debugsym"
+$buildDir = Join-Path $SourceDir $(if ($Release) { "build-release" } else { "build-debugsym" })
 $deployDir = Join-Path (Join-Path $DataDir "runtimes") $Name
 
 # --- Toolchain: MSVC environment (also puts VS's bundled CMake and Ninja on PATH) ---
@@ -78,12 +83,15 @@ if ($Clean -and (Test-Path $buildDir)) { Remove-Item -Recurse -Force $buildDir }
 
 # MSVC's default RelWithDebInfo uses /Ob1, which limits inlining and skews profiles.
 # Use release-level optimisation (/O2 /Ob2) and keep the symbols.
-$cmakeArgs = @(
-    "-S", $SourceDir, "-B", $buildDir, "-G", "Ninja",
-    "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
-    "-DCMAKE_C_FLAGS_RELWITHDEBINFO=/O2 /Ob2 /Zi /DNDEBUG",
-    "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=/O2 /Ob2 /Zi /DNDEBUG",
-    "-DCMAKE_CUDA_FLAGS=-lineinfo",
+$cmakeArgs = @("-S", $SourceDir, "-B", $buildDir, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=$buildType")
+if (-not $Release) {
+    $cmakeArgs += @(
+        "-DCMAKE_C_FLAGS_RELWITHDEBINFO=/O2 /Ob2 /Zi /DNDEBUG",
+        "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=/O2 /Ob2 /Zi /DNDEBUG",
+        "-DCMAKE_CUDA_FLAGS=-lineinfo"
+    )
+}
+$cmakeArgs += @(
     "-DCMAKE_CUDA_ARCHITECTURES=$CudaArchitectures",
     "-DGGML_CUDA=ON",
     "-DLLAMA_BUILD_TESTS=OFF",
@@ -131,7 +139,7 @@ foreach ($pattern in @("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")) 
 }
 
 Set-Content -Path (Join-Path $deployDir $marker) -Encoding utf8 -Value @(
-    "source=$SourceDir", "tag=$tag", "cuda_architectures=$CudaArchitectures", "built=$(Get-Date -Format o)"
+    "source=$SourceDir", "tag=$tag", "build_type=$buildType","cuda_architectures=$CudaArchitectures", "built=$(Get-Date -Format o)"
 )
 
 $server = Join-Path $deployDir "llama-server.exe"
